@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import multiprocessing
+import shutil
 import stat
 import threading
 import time
@@ -622,7 +623,7 @@ def test_admin_ui_leaf_generation_rejects_non_ca_issuer_material(tmp_path) -> No
         ).decode(),
     )
 
-    with pytest.raises(ValueError, match="requires a CA certificate"):
+    with pytest.raises(ValueError, match="issuer certificate is not a CA certificate"):
         certificate_core.materialize_admin_ui_server_certificate(
             tmp_path,
             bundle,
@@ -797,3 +798,186 @@ def test_generated_ca_and_admin_ui_leaf_pass_strict_x509_verification(
         material.keyfile,
         "admin.example.test",
     )
+
+
+def _self_signed_ca_pem(
+    *,
+    basic_constraints_critical: bool | None = True,
+    key_usage: bool = True,
+    key_cert_sign: bool = True,
+    subject_key_identifier: bool = True,
+) -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Strict Profile CA")])
+    now = datetime.now(UTC)
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=30))
+    )
+    if basic_constraints_critical is not None:
+        builder = builder.add_extension(
+            x509.BasicConstraints(ca=True, path_length=None),
+            critical=basic_constraints_critical,
+        )
+    if key_usage:
+        builder = builder.add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=key_cert_sign,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+    if subject_key_identifier:
+        builder = builder.add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+    return (
+        builder.sign(key, hashes.SHA256())
+        .public_bytes(serialization.Encoding.PEM)
+        .decode()
+    )
+
+
+def test_ca_strict_verification_issues_accepts_rfc5280_ca_profile() -> None:
+    assert certificate_core.ca_strict_verification_issues(_self_signed_ca_pem()) == ()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        # The production ssl-bump CA generated before 6678228 has this shape.
+        ({"key_usage": False}, "no keyUsage extension"),
+        ({"key_cert_sign": False}, "does not allow keyCertSign"),
+        ({"basic_constraints_critical": False}, "not marked critical"),
+        ({"basic_constraints_critical": None}, "no basicConstraints extension"),
+        ({"subject_key_identifier": False}, "no subjectKeyIdentifier extension"),
+    ],
+)
+def test_ca_strict_verification_issues_reports_strict_client_gaps(
+    kwargs, expected
+) -> None:
+    issues = certificate_core.ca_strict_verification_issues(
+        _self_signed_ca_pem(**kwargs)
+    )
+
+    assert len(issues) == 1
+    assert expected in issues[0]
+
+
+def test_ca_strict_verification_issues_reports_unparseable_material() -> None:
+    assert certificate_core.ca_strict_verification_issues(CERT_A) == (
+        "CA certificate is not valid PEM material.",
+    )
+
+
+def test_certificate_metadata_is_extracted_in_process(monkeypatch) -> None:
+    # Bundle metadata must not fork the openssl CLI (proxy health reads the
+    # local bundle on every full health check) and keeps the CLI's format.
+
+    def fail_subprocess(*_args, **_kwargs):
+        msg = "certificate metadata must not spawn a subprocess"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(certificate_core.subprocess, "run", fail_subprocess)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Org, Inc"),
+            x509.NameAttribute(NameOID.EMAIL_ADDRESS, "ca@example.test"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Squid Proxy CA"),
+        ]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime(2026, 5, 7, 1, 17, 54, tzinfo=UTC))
+        .not_valid_after(datetime(2036, 11, 14, 23, 5, 0, tzinfo=UTC))
+        .sign(key, hashes.SHA256())
+    )
+
+    assert certificate_core._extract_certificate_metadata(
+        cert.public_bytes(serialization.Encoding.PEM).decode()
+    ) == (
+        "C=US, O=Org, Inc, emailAddress=ca@example.test, CN=Squid Proxy CA",
+        "May  7 01:17:54 2026 GMT",
+        "Nov 14 23:05:00 2036 GMT",
+    )
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl CLI required")
+def test_generated_ca_profile_does_not_depend_on_host_openssl_config(
+    monkeypatch,
+) -> None:
+    # Without an openssl.cnf v3_ca section `req -x509` emits no
+    # basicConstraints, producing a CA that no verifier accepts.
+    from services.cert_manager import generate_self_signed_ca_bundle
+
+    monkeypatch.setenv("OPENSSL_CONF", "/dev/null")
+
+    bundle = generate_self_signed_ca_bundle(days_valid=30)
+
+    assert certificate_core.ca_strict_verification_issues(bundle.cert_pem) == ()
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl CLI required")
+def test_generated_ca_fails_closed_when_openssl_output_is_not_compliant(
+    monkeypatch,
+) -> None:
+    from services.cert_manager import generate_self_signed_ca_bundle
+
+    monkeypatch.setenv("OPENSSL_CONF", "/dev/null")
+
+    def run_without_extensions(args, *, timeout=30):
+        stripped: list[str] = []
+        skip_next = False
+        for arg in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "-addext":
+                skip_next = True
+                continue
+            stripped.append(arg)
+        return certificate_core._run_checked(stripped, timeout=timeout)
+
+    with pytest.raises(RuntimeError, match="not RFC 5280 compliant"):
+        generate_self_signed_ca_bundle(
+            days_valid=30, run_checked=run_without_extensions
+        )
+
+
+def test_materialize_removes_temp_file_when_staging_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    bundle = certificate_core.build_certificate_bundle(CERT_A, KEY_A)
+
+    def fail_file_fsync(fd):
+        if stat.S_ISREG(certificate_core.os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "simulated staging fsync failure")
+
+    monkeypatch.setattr(certificate_core.os, "fsync", fail_file_fsync)
+
+    with pytest.raises(OSError, match="simulated staging fsync failure"):
+        certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == []

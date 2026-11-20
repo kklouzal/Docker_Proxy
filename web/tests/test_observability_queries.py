@@ -90,12 +90,16 @@ def _icap_line(
 
 def _insert_request(diag_store, line: str) -> None:
     with diag_store._connect() as conn:
-        assert diag_store._ingest_request_line_with_conn(conn, line)
+        params = diag_store._build_request_insert_params(line)
+        assert params is not None
+        diag_store._flush_request_rows(conn, [params])
 
 
 def _insert_icap(diag_store, line: str) -> None:
     with diag_store._connect() as conn:
-        assert diag_store._ingest_icap_line_with_conn(conn, line)
+        params = diag_store._build_icap_insert_params(line)
+        assert params is not None
+        diag_store._flush_icap_rows(conn, [params])
 
 
 def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
@@ -1605,6 +1609,9 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
 
         def list_recent_icap(self, **_kwargs):
             return []
+
+        def batch_find_requests_by_master_xactions(self, _txs):
+            return {}
 
     class Result:
         def __init__(self, rows):

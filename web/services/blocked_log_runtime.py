@@ -64,6 +64,7 @@ def _normalize_log_ts(value: object) -> int:
 
 
 _BLOCKED_LOG_STOP = object()
+_BLOCKED_LOG_TABLE = "webfilter_blocked_log"
 
 
 class BlockedLogDb:
@@ -113,9 +114,6 @@ class BlockedLogDb:
             or get_env_default_proxy_id(),
         )
 
-    def _table(self, conn) -> str:
-        return "webfilter_blocked_log"
-
     def _connect(self):
         now = _now()
         if self._conn is not None:
@@ -143,7 +141,7 @@ class BlockedLogDb:
             raise
 
         try:
-            blocked_log_table = self._table(conn)
+            blocked_log_table = _BLOCKED_LOG_TABLE
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
                 "id BIGINT PRIMARY KEY AUTO_INCREMENT, "
@@ -156,23 +154,23 @@ class BlockedLogDb:
                 f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
                 ")",
             )
-            self._ensure_column(
+            ensure_column(
                 conn,
-                blocked_log_table,
-                "proxy_id",
-                f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id",
+                table_name=blocked_log_table,
+                column_name="proxy_id",
+                ddl=f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id",
             )
-            self._ensure_index(
+            ensure_index(
                 conn,
-                blocked_log_table,
-                f"idx_{blocked_log_table}_ts_id",
-                f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_ts_id (ts, id)",
+                table_name=blocked_log_table,
+                index_name=f"idx_{blocked_log_table}_ts_id",
+                ddl=f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_ts_id (ts, id)",
             )
-            self._ensure_index(
+            ensure_index(
                 conn,
-                blocked_log_table,
-                f"idx_{blocked_log_table}_proxy_ts",
-                f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)",
+                table_name=blocked_log_table,
+                index_name=f"idx_{blocked_log_table}_proxy_ts",
+                ddl=f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)",
             )
             self._conn = conn
             return conn
@@ -181,14 +179,6 @@ class BlockedLogDb:
                 with contextlib.suppress(Exception):
                     conn.close()
             return None
-
-    @staticmethod
-    def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
-        ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
-
-    @staticmethod
-    def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     def _start_locked(self) -> None:
         if self.max_rows <= 0 or self._writer_started or not self._accepting:
@@ -293,7 +283,7 @@ class BlockedLogDb:
                 break
 
     def _flush(self, conn, batch: list[tuple[int, str, str, str]]) -> None:
-        blocked_log_table = self._table(conn)
+        blocked_log_table = _BLOCKED_LOG_TABLE
         guarded_batch = guarded_proxy_rows(
             conn,
             self._proxy_id(),

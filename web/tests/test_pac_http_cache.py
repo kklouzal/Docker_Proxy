@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from services import pac_request  # type: ignore
 
 
 @pytest.fixture
@@ -22,16 +23,16 @@ def _rendered_state_sha(
     manifest_for_hash["state_sha256"] = ""
     manifest_text = json.dumps(manifest_for_hash, indent=2, sort_keys=True) + "\n"
     rendered_files = [
-        pac_http.RenderedPacFile(relative_path=path, content=content)
+        pac_request.RenderedPacFile(relative_path=path, content=content)
         for path, content in sorted(files.items())
     ]
     rendered_files.append(
-        pac_http.RenderedPacFile(
+        pac_request.RenderedPacFile(
             relative_path=pac_http.PAC_MANIFEST_FILENAME,
             content=manifest_text,
         ),
     )
-    return pac_http.calculate_pac_state_sha(rendered_files)
+    return pac_request.calculate_pac_state_sha(rendered_files)
 
 
 def _write_verified_pac_state(
@@ -176,16 +177,15 @@ def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
     (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one","profiles":[{"client_cidr":"10.0.0.0/8","file":"../secret.pac"}]}""",
-        encoding="utf-8",
-    )
-    (pac_dir / "fallback.pac").write_text(
-        "SAFE __PAC_PROXY_HOST__",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "profiles": [{"client_cidr": "10.0.0.0/8", "file": "../secret.pac"}],
+        },
+        files={"fallback.pac": "SAFE __PAC_PROXY_HOST__"},
     )
 
     data = pac_http.LocalPacCache(str(pac_dir)).resolve(
@@ -202,14 +202,17 @@ def test_local_pac_cache_ignores_manifest_symlink_outside_pac_dir(
     pac_http,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
     (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
-    (pac_dir / "linked.pac").symlink_to(tmp_path / "secret.pac")
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"linked.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    # The state marker covers the outside file's content, so only the
+    # symlink containment check can reject it.
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "linked.pac"},
+        files={"linked.pac": "SECRET"},
     )
+    (pac_dir / "linked.pac").unlink()
+    (pac_dir / "linked.pac").symlink_to(tmp_path / "secret.pac")
 
     data = pac_http.LocalPacCache(str(pac_dir)).resolve(
         client_ip="10.1.2.3",
@@ -516,13 +519,16 @@ def test_request_host_falls_back_when_trusted_forwarded_host_is_malformed(
 
 def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path, pac_http) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_path": "/download/wpad.dat?site=lab",
+            "state_sha256": "state-one",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
@@ -537,13 +543,16 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/%77pad.dat?site=lab","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_path": "/download/%77pad.dat?site=lab",
+            "state_sha256": "state-one",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
@@ -557,13 +566,16 @@ def test_local_pac_cache_exposes_configured_public_pac_url_target(
     pac_http,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_url":"https://pac.example/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_url": "https://pac.example/download/wpad.dat?site=lab",
+            "state_sha256": "state-one",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
@@ -576,16 +588,19 @@ def test_local_pac_cache_rejects_public_pac_path_with_encoded_separator(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download%2fwpad.dat"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_path": "/download%2fwpad.dat",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
     assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
@@ -594,16 +609,19 @@ def test_local_pac_cache_rejects_credentialed_public_pac_url(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_url":"https://user:secret@pac.example/download/wpad.dat?site=lab"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_url": "https://user:secret@pac.example/download/wpad.dat?site=lab",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
     assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is False
 
@@ -617,16 +635,16 @@ def test_local_pac_cache_rejects_missing_authority_public_pac_url(
     url: str,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        json.dumps({"fallback_file": "fallback.pac", "public_pac_url": url}),
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac", "public_pac_url": url},
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
     assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
@@ -635,13 +653,16 @@ def test_local_pac_cache_requires_configured_public_pac_query(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "public_pac_path": "/download/wpad.dat?site=lab",
+            "state_sha256": "state-one",
+        },
+        files={"fallback.pac": "PAC"},
     )
-    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
@@ -656,15 +677,11 @@ def test_local_pac_cache_reloads_when_materialized_files_change(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
-    )
-    (pac_dir / "fallback.pac").write_text(
-        'function FindProxyForURL(){return "PROXY one";}\n',
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
     )
 
     cache = pac_http.LocalPacCache(str(pac_dir))
@@ -673,15 +690,11 @@ def test_local_pac_cache_reloads_when_materialized_files_change(
     )
 
     replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    (replacement / ".state-sha256").write_text("state-two\n", encoding="utf-8")
-    (replacement / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-two"}""",
-        encoding="utf-8",
-    )
-    (replacement / "fallback.pac").write_text(
-        'function FindProxyForURL(){return "PROXY two";}\n',
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        replacement,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY two";}\n'},
     )
 
     old = tmp_path / "old-pac"
@@ -693,21 +706,17 @@ def test_local_pac_cache_reloads_when_materialized_files_change(
     )
 
 
-def test_local_pac_cache_reloads_when_referenced_pac_file_changes(
+def test_local_pac_cache_rejects_in_place_pac_edit_until_state_is_republished(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
     )
     fallback = pac_dir / "fallback.pac"
-    fallback.write_text(
-        'function FindProxyForURL(){return "PROXY one";}\n',
-        encoding="utf-8",
-    )
 
     cache = pac_http.LocalPacCache(str(pac_dir))
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
@@ -717,6 +726,17 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_changes(
     fallback.write_text(
         'function FindProxyForURL(){return "PROXY two repaired";}\n',
         encoding="utf-8",
+    )
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={
+            "fallback.pac": 'function FindProxyForURL(){return "PROXY two repaired";}\n'
+        },
     )
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
@@ -729,17 +749,13 @@ def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
     pac_http,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
     )
     fallback = pac_dir / "fallback.pac"
-    fallback.write_text(
-        'function FindProxyForURL(){return "PROXY one";}\n',
-        encoding="utf-8",
-    )
 
     class CountingPacCache(pac_http.LocalPacCache):
         def __init__(self, pac_dir: str) -> None:
@@ -757,7 +773,6 @@ def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
 
     cache = CountingPacCache(str(pac_dir))
     first = b'function FindProxyForURL(){return "PROXY one";}\n'
-    second = b'function FindProxyForURL(){return "PROXY two";}\n'
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == first
 
@@ -771,7 +786,9 @@ def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
     )
     cache.pac_signature_requests.clear()
 
-    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == second
+    # The changed signature forces one verifying reload, which rejects the
+    # unpublished edit.
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
     assert cache.pac_signature_requests == [
         ("fallback.pac",),
         ("fallback.pac",),
@@ -779,21 +796,20 @@ def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
     ]
 
 
-def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signature(
+def test_local_pac_cache_detects_referenced_pac_file_is_replaced_same_signature(
     tmp_path, pac_http
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
     )
     fallback = pac_dir / "fallback.pac"
     old_content = 'function FindProxyForURL(){return "PROXY one";}\n'
     new_content = 'function FindProxyForURL(){return "DIRECTtwo";}\n'
     assert len(old_content) == len(new_content)
-    fallback.write_text(old_content, encoding="utf-8")
     stat = fallback.stat()
 
     cache = pac_http.LocalPacCache(str(pac_dir))
@@ -806,27 +822,26 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signa
     replacement.replace(fallback)
     os.utime(fallback, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
-    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
-        new_content.encode("utf-8")
-    )
+    # Without signature tracking the cache would keep serving old_content;
+    # the reload then rejects the edit because it is outside the verified state.
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
 
 
-def test_local_pac_cache_reloads_when_referenced_pac_file_ctime_changes_only(
+def test_local_pac_cache_detects_referenced_pac_file_ctime_changes_only(
     tmp_path,
     pac_http,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac"},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
     )
     fallback = pac_dir / "fallback.pac"
     old_content = 'function FindProxyForURL(){return "PROXY one";}\n'
     new_content = 'function FindProxyForURL(){return "DIRECTtwo";}\n'
     assert len(old_content) == len(new_content)
-    fallback.write_text(old_content, encoding="utf-8")
     stat = fallback.stat()
 
     cache = pac_http.LocalPacCache(str(pac_dir))
@@ -839,9 +854,9 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_ctime_changes_only(
     os.utime(fallback, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
     assert fallback.stat().st_ino == stat.st_ino
-    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
-        new_content.encode("utf-8")
-    )
+    # Without signature tracking the cache would keep serving old_content;
+    # the reload then rejects the edit because it is outside the verified state.
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
 
 
 def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(
@@ -869,7 +884,7 @@ def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
     tmp_path,
     pac_http,
 ) -> None:
-    from services.pac_renderer import RenderedPacFile, calculate_pac_state_sha
+    from services.pac_request import RenderedPacFile, calculate_pac_state_sha
 
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
@@ -1054,28 +1069,18 @@ def test_local_pac_cache_tracks_missing_profile_file_appearance_and_deletion(
     pac_http,
 ) -> None:
     pac_dir = tmp_path / "pac"
-    pac_dir.mkdir()
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "fallback_file": "fallback.pac",
-                "profiles": [
-                    {
-                        "profile_id": 10,
-                        "client_cidr": "10.0.0.0/8",
-                        "file": "corp.pac",
-                    },
-                ],
-                "state_sha256": "state-one",
-            }
-        ),
-        encoding="utf-8",
-    )
-    fallback = pac_dir / "fallback.pac"
-    fallback.write_text(
-        'function FindProxyForURL(){return "PROXY fallback";}\n',
-        encoding="utf-8",
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "profiles": [
+                {"profile_id": 10, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            ],
+        },
+        files={
+            "fallback.pac": 'function FindProxyForURL(){return "PROXY fallback";}\n'
+        },
     )
 
     cache = pac_http.LocalPacCache(str(pac_dir))
@@ -1093,13 +1098,11 @@ def test_local_pac_cache_tracks_missing_profile_file_appearance_and_deletion(
         encoding="utf-8",
     )
 
-    appeared = cache.resolve_with_metadata(
-        client_ip="10.1.2.3",
-        request_host="proxy.example",
+    # A profile file that appears outside the published state is not served.
+    assert (
+        cache.resolve_with_metadata(client_ip="10.1.2.3", request_host="proxy.example")
+        is None
     )
-    assert appeared is not None
-    assert appeared.selected_file == "corp.pac"
-    assert appeared.content == b'function FindProxyForURL(){return "PROXY corp";}\n'
 
     (pac_dir / "corp.pac").unlink()
 
@@ -1245,3 +1248,24 @@ def test_resolve_pac_reports_emergency_fallback_when_verified_state_is_corrupt(
         "state marker" in resolved.diagnostic
         or "materialized files" in resolved.diagnostic
     )
+
+
+def test_local_pac_cache_rejects_marker_that_is_not_a_rendered_state_sha(
+    tmp_path, pac_http
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        json.dumps({"fallback_file": "fallback.pac", "state_sha256": "state-one"}),
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text(
+        'function FindProxyForURL(){return "DIRECT";}\n',
+        encoding="utf-8",
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})

@@ -31,11 +31,19 @@ def candidate_group_match_tokens(value: Any, *, preserve_full_dn: bool) -> set[s
     tokens = {normalize_group_token(text)}
     if preserve_full_dn and (dn_key := ldap_dn_match_key(text)):
         tokens.add(f"dn:{dn_key}")
-    if rdn_value := first_ldap_group_rdn_value(text):
-        tokens.add(normalize_group_token(rdn_value))
-    if local_name := domain_group_local_name(text):
-        tokens.add(normalize_group_token(local_name))
+    for alias in (first_ldap_group_rdn_value(text), domain_group_local_name(text)):
+        if _is_plain_group_alias(alias):
+            tokens.add(normalize_group_token(alias))
     return {token for token in tokens if token}
+
+
+def _is_plain_group_alias(alias: str) -> bool:
+    """Return whether an alias is a short name rather than a DN-shaped value.
+
+    A cn spelled like a DN (for example "CN=Admins,OU=Groups,DC=x") must not
+    match a configured full-DN group.
+    """
+    return bool(alias) and not ldap_dn_match_key(alias)
 
 
 def ldap_dn_match_key(value: str) -> str:

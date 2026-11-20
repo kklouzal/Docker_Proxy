@@ -209,3 +209,75 @@ def test_read_last_lines_preserves_complete_blank_and_replacement_lines(
     cache_log.write_bytes(b"discard\nvalid \xff\n\n")
 
     assert SslErrorsStore(str(cache_log))._read_last_lines(2) == ["valid �", ""]
+
+
+def test_cache_log_millisecond_timestamps_parse_like_second_timestamps() -> None:
+    from services.ssl_errors_store import _canonical_reason, _parse_cache_log_ts
+
+    # Squid appends milliseconds to the timestamp of messages above debug level 1.
+    plain_ts, plain_msg = _parse_cache_log_ts(
+        "2026/08/04 12:00:00 kid1| ERROR: failure while accepting a TLS connection"
+    )
+    ms_ts, ms_msg = _parse_cache_log_ts(
+        "2026/08/04 12:00:00.123 kid1| ERROR: failure while accepting a TLS connection"
+    )
+
+    assert ms_ts == plain_ts
+    assert ms_msg == plain_msg == "ERROR: failure while accepting a TLS connection"
+    assert _canonical_reason(ms_msg) == _canonical_reason(plain_msg)
+
+
+def test_seed_skips_untimestamped_records_that_cannot_be_deduplicated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cache_log = tmp_path / "cache.log"
+    cache_log.write_text(
+        "TLS handshake failed host=undated.example\n"
+        "2026/08/04 12:00:00| TLS handshake failed host=dated.example\n",
+        encoding="utf-8",
+    )
+    store = SslErrorsStore(str(cache_log), seed_max_lines=10)
+    samples: list[str] = []
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: nullcontext(object()))
+    monkeypatch.setattr(store, "_latest_seen_ts", lambda _conn: 1_700_000_000)
+    monkeypatch.setattr(
+        store,
+        "_upsert",
+        lambda _conn, _domain, _category, _reason, _ts, sample: samples.append(
+            sample,
+        ),
+    )
+
+    store.seed_from_recent_log()
+
+    assert samples == ["TLS handshake failed host=dated.example"]
+
+
+def test_startup_cleanup_tolerates_partially_completed_bounded_delete(
+    monkeypatch,
+) -> None:
+    from services import ssl_errors_store
+    from services.bounded_delete import BoundedDeleteIncompleteError
+
+    store = SslErrorsStore()
+    calls: list[str] = []
+
+    def fail_after_partial_delete(where_sql: str, *_args, **_kwargs) -> int:
+        calls.append(where_sql)
+        raise BoundedDeleteIncompleteError(
+            table="ssl_errors",
+            deleted_rows=500,
+            iterations=1,
+            outcome_uncertain=False,
+            cause=RuntimeError("lost connection"),
+        )
+
+    monkeypatch.setattr(store, "_delete_in_chunks", fail_after_partial_delete)
+    monkeypatch.setattr(ssl_errors_store, "should_log", lambda *_a, **_k: False)
+
+    store._run_startup_cleanup()
+
+    assert len(calls) == 2

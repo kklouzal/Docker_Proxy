@@ -867,7 +867,6 @@ def test_proxy_runtime_background_task_startup_is_isolated_and_retryable(
 
         return _inner
 
-    runtime.live_stats_store = SimpleNamespace(start_background=failing("live_stats"))
     runtime.diagnostic_store = SimpleNamespace(start_background=failing("diagnostic"))
     runtime.timeseries_store = SimpleNamespace(start_background=failing("timeseries"))
     runtime.ssl_errors_store = SimpleNamespace(start_background=failing("ssl_errors"))
@@ -887,12 +886,10 @@ def test_proxy_runtime_background_task_startup_is_isolated_and_retryable(
     runtime.start_background_tasks()
 
     assert calls == [
-        "live_stats",
         "diagnostic",
         "timeseries",
         "ssl_errors",
         "adblock",
-        "live_stats",
         "diagnostic",
         "timeseries",
         "ssl_errors",
@@ -919,12 +916,11 @@ def test_runtime_stop_background_tasks_uses_one_bounded_shared_deadline(monkeypa
             return True
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
-    runtime.live_stats_store = Store("live")
     runtime.diagnostic_store = Store("diagnostic")
     runtime.timeseries_store = Store("timeseries")
     runtime.ssl_errors_store = Store("ssl")
     runtime.adblock_store = Adblock()
-    ticks = iter((100.0, 101.0, 102.0, 103.0, 104.0, 105.0))
+    ticks = iter((100.0, 101.0, 102.0, 103.0, 104.0))
     patch_module_clock(monkeypatch, "proxy.runtime", monotonic=lambda: next(ticks))
 
     assert runtime.stop_background_tasks(timeout=10.0) is True
@@ -933,7 +929,6 @@ def test_runtime_stop_background_tasks_uses_one_bounded_shared_deadline(monkeypa
         ("ssl", 8.0),
         ("timeseries", 7.0),
         ("diagnostic", 6.0),
-        ("live", 5.0),
     ]
 
 
@@ -959,11 +954,10 @@ def test_runtime_stop_background_tasks_continues_after_failure():
             return True
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
-    runtime.live_stats_store = Store("live", False)
     runtime.diagnostic_store = Store("diagnostic", RuntimeError("boom"))
     runtime.timeseries_store = Store("timeseries")
     runtime.ssl_errors_store = Store("ssl")
     runtime.adblock_store = Adblock()
 
     assert runtime.stop_background_tasks(timeout=1.0) is False
-    assert calls == ["adblock", "ssl", "timeseries", "diagnostic", "live"]
+    assert calls == ["adblock", "ssl", "timeseries", "diagnostic"]

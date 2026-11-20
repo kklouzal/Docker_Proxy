@@ -63,6 +63,26 @@ _SAML_HTTP_REDIRECT_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirec
 _MAX_URL_PERCENT_DECODE_PASSES = 8
 
 
+# Fetched metadata is cached only while the fetch settings still match.
+_RECORD_CURRENT_METADATA_SQL = """
+UPDATE saml_auth_profiles
+   SET raw_metadata_xml = %s, parsed_metadata_json = %s,
+       entity_id = %s, fetched_ts = %s, cache_expires_ts = %s,
+       valid_until_ts = %s, last_refresh_ok = 1,
+       last_refresh_ts = %s, last_refresh_detail = %s,
+       updated_ts = %s
+ WHERE provider = %s AND metadata_url = %s AND require_https = %s
+   AND verify_tls = %s AND ca_bundle = %s AND timeout_seconds = %s
+   AND max_metadata_bytes = %s
+"""
+_CURRENT_FETCH_SETTINGS_SQL = """
+SELECT 1 FROM saml_auth_profiles
+ WHERE provider = %s AND metadata_url = %s AND require_https = %s
+   AND verify_tls = %s AND ca_bundle = %s AND timeout_seconds = %s
+   AND max_metadata_bytes = %s
+"""
+
+
 def _has_unsafe_url_text(value: str) -> bool:
     return has_url_whitespace_or_control_chars(value)
 
@@ -522,7 +542,15 @@ class SamlAuthStore:
                 parsed,
                 require_https=profile.require_https,
             )
-            self.record_metadata_refresh(profile, raw_xml=raw_xml, parsed=parsed)
+            if not self.record_metadata_refresh(
+                profile, raw_xml=raw_xml, parsed=parsed
+            ):
+                return SamlMetadataRefreshResult(
+                    False,
+                    profile.provider,
+                    "SAML configuration changed while metadata was being refreshed; "
+                    "refresh again.",
+                )
             return SamlMetadataRefreshResult(
                 True,
                 profile.provider,
@@ -600,21 +628,27 @@ class SamlAuthStore:
         *,
         raw_xml: str,
         parsed: dict[str, Any],
-    ) -> None:
+    ) -> bool:
+        """Store fetched metadata only if the fetch settings are still current.
+
+        Returns False when the profile's fetch configuration changed while the
+        metadata was in flight, so stale IdP trust material is never cached.
+        """
         now = int(time.time())
         cache_expires_ts = _cache_expires_ts(parsed, now)
         valid_until_ts = int(parsed.get("valid_until_ts") or 0)
+        current_params = (
+            profile.provider,
+            profile.metadata_url,
+            int(profile.require_https),
+            int(profile.verify_tls),
+            profile.ca_bundle,
+            profile.timeout_seconds,
+            profile.max_metadata_bytes,
+        )
         with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE saml_auth_profiles
-                   SET raw_metadata_xml = %s, parsed_metadata_json = %s,
-                       entity_id = %s, fetched_ts = %s, cache_expires_ts = %s,
-                       valid_until_ts = %s, last_refresh_ok = 1,
-                       last_refresh_ts = %s, last_refresh_detail = %s,
-                       updated_ts = %s
-                 WHERE provider = %s
-                """,
+            cursor = conn.execute(
+                _RECORD_CURRENT_METADATA_SQL,
                 (
                     raw_xml,
                     json.dumps(parsed, sort_keys=True),
@@ -625,8 +659,16 @@ class SamlAuthStore:
                     now,
                     "SAML IdP metadata refreshed successfully.",
                     now,
-                    profile.provider,
+                    *current_params,
                 ),
+            )
+            if cursor.rowcount:
+                return True
+            # MySQL reports changed rows; an identical same-second refresh of an
+            # unchanged profile updates nothing but is still current.
+            return (
+                conn.execute(_CURRENT_FETCH_SETTINGS_SQL, current_params).fetchone()
+                is not None
             )
 
     def record_refresh_status(self, *, ok: bool, detail: str) -> None:
@@ -1038,7 +1080,7 @@ def profile_metadata_ready(
     return bool(profile.enabled and profile_metadata_cache_ready(profile, now=now))
 
 
-def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
+def public_base_url(profile: SamlProviderProfile) -> str:
     configured = (profile.public_base_url or "").strip().rstrip("/")
     if configured:
         return configured
@@ -1049,8 +1091,8 @@ def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
     raise ValueError(msg)
 
 
-def build_sp_info(profile: SamlProviderProfile, request: Any) -> dict[str, str]:
-    base = public_base_url(profile, request)
+def build_sp_info(profile: SamlProviderProfile) -> dict[str, str]:
+    base = public_base_url(profile)
     return {
         "entity_id": f"{base}/auth/saml/metadata",
         "acs_url": f"{base}/auth/saml/acs",
@@ -1058,8 +1100,8 @@ def build_sp_info(profile: SamlProviderProfile, request: Any) -> dict[str, str]:
     }
 
 
-def build_sp_metadata(profile: SamlProviderProfile, request: Any) -> str:
-    sp = build_sp_info(profile, request)
+def build_sp_metadata(profile: SamlProviderProfile) -> str:
+    sp = build_sp_info(profile)
     return f"""<?xml version="1.0"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{xml_escape(sp["entity_id"])}">
   <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
@@ -1073,7 +1115,6 @@ def build_sp_metadata(profile: SamlProviderProfile, request: Any) -> str:
 
 def build_saml_settings(
     profile: SamlProviderProfile,
-    request: Any,
     *,
     require_idp_metadata: bool = True,
 ) -> dict[str, Any]:
@@ -1085,7 +1126,7 @@ def build_saml_settings(
         parsed,
         require_https=profile.require_https,
     )
-    sp = build_sp_info(profile, request)
+    sp = build_sp_info(profile)
     return {
         "strict": True,
         "debug": False,
@@ -1148,7 +1189,7 @@ def build_saml_auth(profile: SamlProviderProfile, request: Any) -> Any:
         raise RuntimeError(msg) from exc
     return OneLogin_Saml2_Auth(
         prepare_flask_request(request),
-        old_settings=build_saml_settings(profile, request),
+        old_settings=build_saml_settings(profile),
     )
 
 

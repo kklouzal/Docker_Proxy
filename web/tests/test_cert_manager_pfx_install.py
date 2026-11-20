@@ -1,9 +1,11 @@
 import pathlib
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -190,28 +192,26 @@ def _fake_pfx_runner(cert_pem: str, key_pem: str, chain_pem: str = ""):
     return fake_run_checked
 
 
-def test_install_pfx_empty_bytes(tmp_path) -> None:
+def test_parse_pfx_empty_bytes() -> None:
     m = _import_cert_manager_module()
-    r = m.install_pfx_as_ca(str(tmp_path), b"", password="")
+    r = m.parse_pfx_bundle(b"", password="")
     assert r.ok is False
     assert "Empty PFX" in r.message
 
 
-def test_install_pfx_openssl_missing(tmp_path) -> None:
+def test_parse_pfx_openssl_missing() -> None:
     m = _import_cert_manager_module()
 
     def fake_run_checked(_args, *, timeout: int = 30) -> NoReturn:
         msg = "openssl"
         raise FileNotFoundError(msg)
 
-    r = m.install_pfx_as_ca(
-        str(tmp_path), b"abc", password="", run_checked=fake_run_checked
-    )
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "openssl not found" in r.message
 
 
-def test_install_pfx_openssl_parse_error_is_sanitized(tmp_path) -> None:
+def test_parse_pfx_openssl_parse_error_is_sanitized() -> None:
     m = _import_cert_manager_module()
 
     def fake_run_checked(_args, *, timeout: int = 30) -> NoReturn:
@@ -219,14 +219,12 @@ def test_install_pfx_openssl_parse_error_is_sanitized(tmp_path) -> None:
             returncode=1, cmd=_args, stderr="bad\ninput"
         )
 
-    r = m.install_pfx_as_ca(
-        str(tmp_path), b"abc", password="", run_checked=fake_run_checked
-    )
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "OpenSSL failed" in r.message
 
 
-def test_install_pfx_cert_key_mismatch(tmp_path) -> None:
+def test_parse_pfx_cert_key_mismatch() -> None:
     m = _import_cert_manager_module()
 
     class FakeCP:
@@ -260,29 +258,9 @@ def test_install_pfx_cert_key_mismatch(tmp_path) -> None:
 
         return FakeCP("")
 
-    r = m.install_pfx_as_ca(
-        str(tmp_path), b"abc", password="", run_checked=fake_run_checked
-    )
+    r = m.parse_pfx_bundle(b"abc", password="", run_checked=fake_run_checked)
     assert r.ok is False
     assert "do not match" in r.message
-
-
-def test_install_pfx_happy_path_writes_files(tmp_path) -> None:
-    m = _import_cert_manager_module()
-    cert_pem, key_pem = _pem_ca_material()
-
-    r = m.install_pfx_as_ca(
-        str(tmp_path),
-        b"abc",
-        password="secret",
-        run_checked=_fake_pfx_runner(cert_pem, key_pem),
-    )
-    assert r.ok is True
-
-    # Ensure expected outputs are present.
-    assert (tmp_path / "ca.crt").exists()
-    assert (tmp_path / "ca.key").exists()
-    assert (tmp_path / "uploaded_ca.pfx").exists()
 
 
 def test_parse_pfx_uses_password_file_instead_of_command_arg() -> None:
@@ -881,3 +859,38 @@ def test_parse_pfx_accepts_ec_issuer_signature() -> None:
     assert r.ok is True
     assert r.bundle is not None
     assert r.bundle.chain_pem == root_pem
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl CLI required")
+def test_parse_pfx_imports_legacy_rc2_encrypted_pkcs12(tmp_path) -> None:
+    # Older Windows/AD CS exports encrypt certificate bags with RC2-40, which
+    # OpenSSL 3 only decrypts with its legacy provider loaded.
+    m = _import_cert_manager_module()
+    cert_pem, key_pem = _pem_ca_material()
+    (tmp_path / "ca.crt").write_text(cert_pem, encoding="utf-8")
+    (tmp_path / "ca.key").write_text(key_pem, encoding="utf-8")
+    pfx_path = tmp_path / "legacy.pfx"
+    subprocess.run(
+        [
+            "openssl",
+            "pkcs12",
+            "-export",
+            "-legacy",
+            "-in",
+            str(tmp_path / "ca.crt"),
+            "-inkey",
+            str(tmp_path / "ca.key"),
+            "-out",
+            str(pfx_path),
+            "-passout",
+            "pass:secret",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    r = m.parse_pfx_bundle(pfx_path.read_bytes(), password="secret")
+
+    assert r.ok is True, r.message
+    assert r.bundle is not None
+    assert r.bundle.cert_pem == cert_pem

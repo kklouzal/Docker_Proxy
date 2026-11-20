@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import errno
+import io
 import ipaddress
 import math
 import os
@@ -107,17 +109,24 @@ def read_bounded_complete_lines(
     *,
     max_lines: int,
     max_bytes: int,
+    end_offset: int | None = None,
 ) -> list[str]:
-    """Read complete records from a bounded byte window at the end of a file."""
+    """Read complete records from a bounded byte window at the end of a file.
+
+    ``end_offset`` ends the window early (records at or after it are left for
+    a tailer that resumes there).
+    """
     if max_lines <= 0 or max_bytes <= 0:
         return []
     try:
         with Path(path).open("rb") as handle:
             handle.seek(0, os.SEEK_END)
             size = handle.tell()
+            if end_offset is not None:
+                size = max(0, min(size, int(end_offset)))
             start = max(0, size - max_bytes)
             handle.seek(start)
-            chunk = handle.read(max_bytes)
+            chunk = handle.read(size - start)
             if start > 0:
                 handle.seek(start - 1)
                 previous = handle.read(1)
@@ -144,6 +153,46 @@ def read_bounded_complete_lines(
         return chunk.decode("utf-8", errors="replace").splitlines()[-max_lines:]
     except Exception:
         return []
+
+
+def split_squid_tsv(line: str) -> list[str]:
+    r"""Split one tab-separated Squid logformat row into stripped fields.
+
+    Accepts real tabs and the two-character ``\t`` some builds emit; escaped
+    tabs inside a quoted field stay literal.
+    """
+    s = (line or "").strip("\r\n")
+    if not s:
+        return []
+    if "\\t" in s:
+        normalized = []
+        in_quotes = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '"':
+                normalized.append(ch)
+                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
+                    normalized.append(s[i + 1])
+                    i += 2
+                    continue
+                in_quotes = not in_quotes
+                i += 1
+                continue
+            if not in_quotes and ch == "\\" and i + 1 < len(s) and s[i + 1] == "t":
+                normalized.append("\t")
+                i += 2
+                continue
+            normalized.append(ch)
+            i += 1
+        s = "".join(normalized)
+    if '"' not in s:
+        return [item.strip() for item in s.split("	")]
+    try:
+        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
+    except Exception:
+        return []
+    return [item.strip() for item in row]
 
 
 def _decoded_hostish_has_delimiters(value: str) -> bool:
@@ -275,52 +324,6 @@ def extract_domain(
 
     candidate = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     return normalize_hostish(candidate)
-
-
-def not_cached_reason(
-    method: object | None,
-    result_code: object | None,
-    http_status: object | None = None,
-) -> str:
-    m = str(method or "").strip().upper()
-    rc = str(result_code or "").strip().upper()
-
-    status: int | None = None
-    try:
-        if http_status is not None and str(http_status).strip() != "":
-            status = int(http_status)
-    except Exception:
-        status = None
-    if status is None:
-        try:
-            if "/" in rc:
-                status = int(rc.rsplit("/", 1)[1])
-        except Exception:
-            status = None
-
-    if m and m not in {"GET", "HEAD", "CONNECT"}:
-        return f"{m} method (not cacheable by default)"
-
-    if m == "CONNECT" or rc.startswith(("TCP_TUNNEL", "TCP_CONNECT")):
-        return "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
-
-    if status is not None:
-        if status in {301, 302, 303, 307, 308}:
-            return f"Redirect response ({status}) (often not cached without explicit freshness)"
-        if status >= 400:
-            return f"Error response status {status} (often not cached)"
-
-    if "DENIED" in rc or rc.startswith("TCP_DENIED"):
-        return "Denied by ACL"
-    if "BYPASS" in rc:
-        return "Bypassed (cache deny rule or client no-cache)"
-    if "ABORTED" in rc:
-        return "Aborted (client/upstream closed connection)"
-    if "SWAPFAIL" in rc:
-        return "Cache swap failure"
-    if "MISS" in rc:
-        return "Cache miss (object not in cache)"
-    return "Not served from cache"
 
 
 def cache_hit_sql(result_column: str = "result_code") -> str:

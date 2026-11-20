@@ -129,15 +129,12 @@ class TimeSeriesStore:
         with self._db_init_lock:
             self._db_initialized = False
 
-    def _is_missing_table_error(self, exc: BaseException) -> bool:
-        text = str(exc).lower()
-        return "doesn't exist" in text or "does not exist" in text or "1146" in text
-
     def _with_missing_table_retry(self, fn):
         try:
             return fn()
-        except Exception as exc:
-            if not self._is_missing_table_error(exc):
+        except DATABASE_ERRORS as exc:
+            # ER_NO_SUCH_TABLE only; message text is not a contract.
+            if mysql_error_code(exc) != 1146:
                 raise
             self._mark_db_uninitialized()
             self.init_db()

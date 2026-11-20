@@ -4,7 +4,6 @@ import contextlib
 import ctypes
 import errno
 import fcntl
-import inspect
 import ipaddress
 import json
 import logging
@@ -40,10 +39,10 @@ from services.pac_request import (
     RenderedPacFile,
     _format_host_only_for_pac,
     _safe_pac_state_relative_path,
-    calculate_pac_state_sha,
+    calculate_pac_manifest_state_sha,
     format_proxy_host,
-    select_manifest_file,
-    substitute_request_host,
+    normalize_public_pac_path,
+    render_pac_manifest_text,
 )
 from services.proxy_context import (
     get_proxy_id,
@@ -51,11 +50,7 @@ from services.proxy_context import (
     reset_proxy_id,
     set_proxy_id,
 )
-from services.proxy_registry import (
-    _parse_public_pac_url,
-    get_proxy_registry,
-    normalize_public_pac_path,
-)
+from services.proxy_registry import _parse_public_pac_url, get_proxy_registry
 from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
@@ -418,25 +413,6 @@ def resolve_proxy_pac_target(
     )
 
 
-def build_public_pac_url(raw_host: str = "", *, proxy_id: object | None = None) -> str:
-    if proxy_id is not None:
-        return resolve_proxy_pac_target(proxy_id).pac_url
-    candidate = (raw_host or "").strip()
-    if not candidate:
-        return ""
-    return _build_pac_url(scheme="http", host=candidate, port=80)
-
-
-def _cidr_to_mask(cidr: str) -> str:
-    try:
-        net = ipaddress.ip_network(cidr, strict=False)
-    except Exception:
-        return "255.255.255.255"
-    if net.version != 4:
-        return "255.255.255.255"
-    return str(net.netmask)
-
-
 def _render_pac(
     proxy_chain: str,
     *,
@@ -467,7 +443,6 @@ def _render_pac(
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
             "  var normalizedProxyHost = normalizePacHost(proxyHost);",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
-            "  var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';",
             "  function isIpv4Address(value) {",
             "    if (!/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(value || '')) return false;",
             "    var parts = value.split('.');",
@@ -513,7 +488,7 @@ def _render_pac(
             "  var cachedIp = '';",
             "  function hostIp() {",
             "    if (cachedIp) return cachedIp;",
-            "    if (isIpv4Address(host)) {",
+            "    if (isIpv4Address(host) || isIpv6Literal) {",
             "      cachedIp = host;",
             "      return cachedIp;",
             "    }",
@@ -558,7 +533,7 @@ def _render_pac(
     ):
         net = ipaddress.ip_network(canonical_cidr, strict=False)
         lines.append(
-            f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
+            f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{net.netmask}')) return 'DIRECT';",
         )
 
     if include_private:
@@ -569,7 +544,11 @@ def _render_pac(
         )
         lines.extend(
             (
-                "  if (isIpv6Literal && /^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
+                # IPv6 literals and IPv6 DNS answers (Firefox's dnsResolve can
+                # return one) both get the private/link-local range check.
+                "  var ipv6Address = /^[0-9a-f:.]+$/i.test(ip) && ip.indexOf(':') >= 0 ? ip.toLowerCase() : '';",
+                "  var ipv6FirstHextet = ipv6Address.split(':', 1)[0];",
+                "  if (/^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
                 "    var ipv6FirstHextetValue = parseInt(ipv6FirstHextet, 16);",
                 f"    if ({ipv6_private_conditions}) return 'DIRECT';",
                 "  }",
@@ -578,7 +557,7 @@ def _render_pac(
         for cidr in PAC_PRIVATE_LOCAL_IPV4_NETS:
             net = ipaddress.ip_network(cidr, strict=False)
             lines.append(
-                f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(cidr)}')) return 'DIRECT';",
+                f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{net.netmask}')) return 'DIRECT';",
             )
 
     lines.extend((f"  return {json.dumps(str(proxy_chain or ''))};", "}"))
@@ -658,29 +637,6 @@ def _manifest_profiles(profiles: Iterable[PacProfile]) -> list[dict[str, object]
     return entries
 
 
-def _resolve_proxy_pac_target_for_state(
-    proxy_id: str,
-    *,
-    pac_profiles_store: object,
-    proxy_registry: object | None,
-) -> ProxyPacTarget:
-    try:
-        signature = inspect.signature(resolve_proxy_pac_target)
-    except TypeError, ValueError:
-        signature = None
-    parameters = signature.parameters if signature is not None else {}
-    accepts_runtime_stores = any(
-        param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()
-    ) or {"pac_profiles_store", "proxy_registry"}.issubset(parameters)
-    if accepts_runtime_stores:
-        return resolve_proxy_pac_target(
-            proxy_id,
-            pac_profiles_store=pac_profiles_store,
-            proxy_registry=proxy_registry,
-        )
-    return resolve_proxy_pac_target(proxy_id)
-
-
 def build_proxy_pac_state(
     proxy_id: object | None = None,
     *,
@@ -694,7 +650,7 @@ def build_proxy_pac_state(
     token = set_proxy_id(normalized_proxy_id)
     try:
         store = pac_profiles_store or get_pac_profiles_store()
-        target = _resolve_proxy_pac_target_for_state(
+        target = resolve_proxy_pac_target(
             normalized_proxy_id,
             pac_profiles_store=store,
             proxy_registry=proxy_registry,
@@ -738,21 +694,8 @@ def build_proxy_pac_state(
             "fallback_file": fallback_file,
             "state_sha256": "",
         }
-        manifest_text_for_hash = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        files_for_hash = [
-            RenderedPacFile(relative_path=path, content=content)
-            for path, content in sorted(pac_files.items())
-        ]
-        files_for_hash.append(
-            RenderedPacFile(
-                relative_path=PAC_MANIFEST_FILENAME,
-                content=manifest_text_for_hash,
-            ),
-        )
-        state_sha256 = calculate_pac_state_sha(files_for_hash)
-
+        state_sha256 = calculate_pac_manifest_state_sha(manifest, pac_files)
         manifest["state_sha256"] = state_sha256
-        manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 
         files = [
             RenderedPacFile(relative_path=path, content=content)
@@ -762,7 +705,7 @@ def build_proxy_pac_state(
             (
                 RenderedPacFile(
                     relative_path=PAC_MANIFEST_FILENAME,
-                    content=manifest_text,
+                    content=render_pac_manifest_text(manifest),
                 ),
                 RenderedPacFile(
                     relative_path=PAC_STATE_SHA_FILENAME,
@@ -844,28 +787,3 @@ def read_materialized_pac_state_sha(
         return marker.read_text(encoding="utf-8", errors="replace").strip()
     except Exception:
         return ""
-
-
-def render_proxy_pac_for_request(
-    *,
-    proxy_id: object | None = None,
-    requester_ip: str = "",
-    request_host: str = "",
-) -> str:
-    state = build_proxy_pac_state(proxy_id)
-    file_map = {item.relative_path: item.content for item in state.files}
-    try:
-        manifest = json.loads(file_map.get(PAC_MANIFEST_FILENAME, "{}") or "{}")
-    except Exception:
-        manifest = {}
-    selected = select_manifest_file(
-        manifest if isinstance(manifest, dict) else {},
-        requester_ip,
-    )
-    pac = file_map.get(selected) or file_map.get(
-        str(manifest.get("fallback_file") or "fallback.pac"),
-        "",
-    )
-    if not pac:
-        pac = build_emergency_pac(resolve_proxy_pac_target(proxy_id))
-    return substitute_request_host(pac, request_host)

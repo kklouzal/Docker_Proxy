@@ -192,9 +192,9 @@ COPY web/services/adblock_artifacts.py \
     web/services/helper_runtime.py \
     web/services/http_optimizations.py \
     web/services/icap_protocol.py \
-    web/services/live_stats.py \
     web/services/materialized_files.py \
     web/services/keyed_locks.py \
+    web/services/log_follower.py \
     web/services/logutil.py \
     web/services/observability_backoff.py \
     web/services/operation_ledger.py \

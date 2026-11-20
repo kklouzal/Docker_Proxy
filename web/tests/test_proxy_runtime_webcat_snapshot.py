@@ -18,7 +18,6 @@ def _build_runtime_services(tmp_path, policy_file, policy_sha):
         adblock_artifacts=SimpleNamespace(compiled_dir=str(tmp_path / "adblock")),
         cert_manager=SimpleNamespace(),
         adblock_store=SimpleNamespace(),
-        live_stats_store=SimpleNamespace(),
         diagnostic_store=SimpleNamespace(),
         timeseries_store=SimpleNamespace(),
         ssl_errors_store=SimpleNamespace(),

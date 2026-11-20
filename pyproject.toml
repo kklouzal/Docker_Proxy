@@ -164,7 +164,6 @@ ignore = [
 "web/services/adblock_store.py" = ["suspicious-url-open-usage", "hashlib-insecure-hash-function", "hardcoded-sql-expression"]
 "web/services/blocked_log_runtime.py" = ["hardcoded-sql-expression"]
 "web/services/diagnostic_store.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
-"web/services/live_stats.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
 "web/services/ssl_errors_store.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
 "web/tests/mysql_test_utils.py" = ["hashlib-insecure-hash-function"]
 "web/tools/adblock_compile.py" = ["hashlib-insecure-hash-function"]

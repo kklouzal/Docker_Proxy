@@ -347,10 +347,10 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
             store.add_user("ok", password)
 
     store.add_user("user_1", "123456789012")
-    assert store.verify_user("user_1", "123456789012") is True
+    assert store.authenticate_user("user_1", "123456789012") is not None
     original_version = store.authenticate_user("user_1", "123456789012")
     assert original_version == store.get_user_session_version("user_1")
-    assert store.verify_user("user_1", "nope") is False
+    assert store.authenticate_user("user_1", "nope") is None
 
     with pytest.raises(ValueError, match="already exists"):
         store.add_user("user_1", "another-valid-password")
@@ -366,10 +366,10 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
         store.delete_user("missing")
 
     store.set_password("user_1", "updated-password")
-    assert store.verify_user("user_1", "updated-password") is True
+    assert store.authenticate_user("user_1", "updated-password") is not None
     assert store.get_user_session_version("user_1") != original_version
     store.delete_user("user_1")
-    assert store.verify_user("user_1", "updated-password") is False
+    assert store.authenticate_user("user_1", "updated-password") is None
     assert store.get_user_session_version("user_1") is None
 
 
@@ -378,9 +378,11 @@ def test_explicit_bootstrap_creates_only_first_user(tmp_path) -> None:
     store = _auth_store_module().AuthStore(secret_path=str(tmp_path / "secret.key"))
 
     assert store.bootstrap_admin("first-admin", "unique-bootstrap-password") is True
-    assert store.verify_user("first-admin", "unique-bootstrap-password") is True
+    assert (
+        store.authenticate_user("first-admin", "unique-bootstrap-password") is not None
+    )
     assert store.bootstrap_admin("replacement", "another-bootstrap-password") is False
-    assert store.verify_user("replacement", "another-bootstrap-password") is False
+    assert store.authenticate_user("replacement", "another-bootstrap-password") is None
 
 
 def test_explicit_bootstrap_rejects_unbounded_passwords(tmp_path) -> None:
@@ -392,3 +394,53 @@ def test_explicit_bootstrap_rejects_unbounded_passwords(tmp_path) -> None:
     with pytest.raises(ValueError, match="between 12 and 1024"):
         store.bootstrap_admin("admin", "x" * 1025)
     assert store.any_users() is False
+
+
+class _NoUserConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, _sql, _params=()):
+        return self
+
+    def fetchone(self):
+        return None
+
+
+def test_unknown_user_spends_a_password_hash_check(tmp_path, monkeypatch) -> None:
+    auth_store = _auth_store_module()
+    checked: list[str] = []
+    real_check = auth_store.check_password_hash
+
+    def recording_check(pw_hash: str, password: str) -> bool:
+        checked.append(password)
+        return real_check(pw_hash, password)
+
+    monkeypatch.setattr(auth_store, "check_password_hash", recording_check)
+    store = auth_store.AuthStore(secret_path=str(tmp_path / "secret.key"))
+    store._schema_ready = True
+    monkeypatch.setattr(store, "_connect", _NoUserConnection)
+
+    assert store.authenticate_user("missing", "candidate-password") is None
+    assert checked == ["candidate-password"]
+
+
+def test_bootstrap_validates_username_before_touching_the_database(
+    tmp_path, monkeypatch
+) -> None:
+    auth_store = _auth_store_module()
+    store = auth_store.AuthStore(secret_path=str(tmp_path / "secret.key"))
+    store._schema_ready = True
+
+    def unexpected_connect():
+        msg = "invalid bootstrap input must not reach MySQL"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(store, "_connect", unexpected_connect)
+
+    for username in ("", "has space", "x" * 65):
+        with pytest.raises(ValueError, match="Username"):
+            store.bootstrap_admin(username, "valid-bootstrap-password")

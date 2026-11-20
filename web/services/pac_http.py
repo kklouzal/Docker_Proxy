@@ -14,9 +14,10 @@ from services.pac_request import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
-    RenderedPacFile,
     _safe_decoded_path_segments,
-    calculate_pac_state_sha,
+    _safe_pac_state_relative_path,
+    _valid_proxy_dns_host,
+    calculate_pac_manifest_state_sha,
     normalize_public_pac_path,
     select_manifest_file,
     substitute_request_host,
@@ -66,22 +67,6 @@ def _trusted_pac_header_networks() -> tuple[
         except ValueError:
             continue
     return tuple(networks)
-
-
-def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
-    try:
-        remote_ip = ipaddress.ip_address((remote_addr or "").strip())
-    except ValueError:
-        return False
-    remote_ips = [remote_ip]
-    mapped_ipv4 = getattr(remote_ip, "ipv4_mapped", None)
-    if mapped_ipv4 is not None:
-        remote_ips.append(mapped_ipv4)
-    return any(
-        candidate.version == network.version and candidate in network
-        for candidate in remote_ips
-        for network in _trusted_pac_header_networks()
-    )
 
 
 def _single_header_value(value: object | None) -> str:
@@ -141,30 +126,14 @@ def _valid_authority_port(value: str) -> bool:
     return 1 <= port <= 65535
 
 
-def _valid_dns_host(value: str) -> bool:
-    candidate = value.rstrip(".").lower()
-    if not candidate or len(candidate) > 253:
-        return False
-    labels = candidate.split(".")
-    if len(labels) < 2:
-        return False
-    return not any(
-        not label
-        or len(label) > 63
-        or not ("a" <= label[0] <= "z" or "0" <= label[0] <= "9")
-        or not ("a" <= label[-1] <= "z" or "0" <= label[-1] <= "9")
-        or any(not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-") for ch in label)
-        for label in labels
-    )
-
-
 def _normalize_request_authority_host(value: str) -> str:
     try:
         parsed_ip = ipaddress.ip_address(value)
     except ValueError:
         if (
             is_ambiguous_ipv4_like_host(value)
-            or not _valid_dns_host(value)
+            # Single-label request hosts are rejected deliberately (6f8c67a).
+            or not _valid_proxy_dns_host(value, require_dot=True)
             or _is_reserved_public_dns_host(value)
         ):
             return ""
@@ -236,13 +205,17 @@ def _normalize_request_authority(value: object | None) -> str:
 
 
 def forwarded_headers_trusted(remote_addr: str | None = None) -> bool:
-    return _remote_addr_trusts_forwarded_headers(remote_addr)
+    try:
+        remote_ip = ipaddress.ip_address((remote_addr or "").strip())
+    except ValueError:
+        return False
+    return _ip_matches_networks(remote_ip, _trusted_pac_header_networks())
 
 
 def forwarded_client_ip_from_headers(
     headers: Any, remote_addr: str | None = None
 ) -> str:
-    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+    if headers is not None and forwarded_headers_trusted(remote_addr):
         xff = _forwarded_client_ip(headers.get("X-Forwarded-For"))
         if xff:
             return xff
@@ -260,7 +233,7 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
 
 
 def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> str:
-    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+    if headers is not None and forwarded_headers_trusted(remote_addr):
         forwarded_host = _normalize_request_authority(
             _single_header_value(headers.get("X-Forwarded-Host"))
         )
@@ -296,27 +269,11 @@ def _request_query_text(query_string: object | None) -> str:
     return str(query_string)
 
 
-def _safe_manifest_file_path(value: object) -> str:
-    candidate = str(value or "").strip().replace("\\", "/")
-    if not candidate or candidate.startswith("/"):
-        return ""
-    parts = candidate.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        return ""
-    first_segment = parts[0]
-    if ":" in first_segment:
-        return ""
-    rel_path = os.path.normpath(candidate).replace("\\", "/")
-    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
-        return ""
-    return rel_path
-
-
 def _safe_manifest_file(
     root: Path,
     rel_path: object,
 ) -> tuple[str, Path] | tuple[str, None]:
-    safe_path = _safe_manifest_file_path(rel_path)
+    safe_path = _safe_pac_state_relative_path(rel_path)
     if not safe_path:
         return "", None
     try:
@@ -326,45 +283,6 @@ def _safe_manifest_file(
     except Exception:
         return "", None
     return safe_path, file_path
-
-
-def _is_rendered_state_sha(value: str) -> bool:
-    candidate = str(value or "").strip().lower()
-    return len(candidate) == 64 and all(ch in "0123456789abcdef" for ch in candidate)
-
-
-def _materialized_state_sha_matches(
-    *,
-    manifest: dict[str, object],
-    files: dict[str, str],
-    state_sha: str,
-) -> bool:
-    # build_proxy_pac_state hashes the manifest before state_sha256 is filled,
-    # then writes the populated manifest and a marker file.  Recompute the same
-    # hash when a real renderer SHA is present so the runtime cache cannot serve
-    # a partially-written or tampered file set just because the marker and
-    # manifest agree with each other.
-    manifest_for_hash = dict(manifest)
-    manifest_for_hash["state_sha256"] = ""
-    manifest_text_for_hash = (
-        json.dumps(
-            manifest_for_hash,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
-    files_for_hash = [
-        RenderedPacFile(relative_path=path, content=content)
-        for path, content in sorted(files.items())
-    ]
-    files_for_hash.append(
-        RenderedPacFile(
-            relative_path=PAC_MANIFEST_FILENAME,
-            content=manifest_text_for_hash,
-        ),
-    )
-    return calculate_pac_state_sha(files_for_hash) == state_sha
 
 
 def default_pac_bytes(request_host: str) -> bytes:
@@ -466,7 +384,7 @@ class LocalPacCache:
     def _manifest_pac_file_candidates(
         self, manifest: dict[str, object]
     ) -> tuple[str, ...]:
-        fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
+        fallback_file = _safe_pac_state_relative_path(manifest.get("fallback_file"))
         if not fallback_file:
             fallback_file = "fallback.pac"
         candidates = {fallback_file}
@@ -475,7 +393,7 @@ class LocalPacCache:
             for entry in profiles:
                 if not isinstance(entry, dict):
                     continue
-                path = _safe_manifest_file_path(entry.get("file"))
+                path = _safe_pac_state_relative_path(entry.get("file"))
                 if path:
                     candidates.add(path)
         return tuple(sorted(candidates))
@@ -574,19 +492,17 @@ class LocalPacCache:
                 state_signatures = final_state_signatures
                 continue
 
-            if _is_rendered_state_sha(
-                state_sha
-            ) and not _materialized_state_sha_matches(
-                manifest=manifest,
-                files=files,
-                state_sha=state_sha,
-            ):
+            # build_proxy_pac_state derives the marker from every rendered
+            # file plus the manifest. Recompute it so a partially written or
+            # altered file set is never served just because the marker and
+            # manifest agree with each other.
+            if calculate_pac_manifest_state_sha(manifest, files) != state_sha:
                 return self._clear_locked(
                     state_signatures=state_signatures,
                     reason="PAC materialized files do not match the state marker.",
                 )
 
-            self._state_sha = state_sha or str(manifest.get("state_sha256") or "")
+            self._state_sha = state_sha
             self._manifest = manifest
             self._files = files
             self._state_signatures = state_signatures
@@ -651,10 +567,12 @@ class LocalPacCache:
         with self._lock:
             if not self._load_locked():
                 return None
-            selected = _safe_manifest_file_path(
+            selected = _safe_pac_state_relative_path(
                 select_manifest_file(self._manifest, client_ip)
             )
-            fallback = _safe_manifest_file_path(self._manifest.get("fallback_file"))
+            fallback = _safe_pac_state_relative_path(
+                self._manifest.get("fallback_file")
+            )
             if not fallback:
                 fallback = "fallback.pac"
             content = self._files.get(selected) or self._files.get(fallback)
@@ -691,10 +609,6 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
         return cache
 
 
-def public_pac_paths(pac_dir: str | None = None) -> frozenset[str]:
-    return get_pac_cache(pac_dir).public_paths()
-
-
 def public_pac_request_allowed(
     path: str,
     query_string: object | None = None,
@@ -706,21 +620,6 @@ def public_pac_request_allowed(
 def public_pac_request_path_safe(path: object) -> bool:
     raw_path = str(path or "/").split("?", 1)[0]
     return _safe_decoded_path_segments(raw_path) is not None
-
-
-def resolve_pac_bytes(
-    *,
-    client_ip: str,
-    request_host: str,
-    pac_dir: str | None = None,
-) -> bytes:
-    data = get_pac_cache(pac_dir).resolve(
-        client_ip=client_ip,
-        request_host=request_host,
-    )
-    if data is not None:
-        return data
-    return default_pac_bytes(request_host)
 
 
 def resolve_pac(

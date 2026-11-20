@@ -163,7 +163,6 @@ def test_production_readiness_calls_are_not_inside_exception_handlers() -> None:
         "config_revisions.py",
         "diagnostic_store.py",
         "directory_auth.py",
-        "live_stats.py",
         "observability_maintenance.py",
         "observability_queries.py",
         "operation_ledger.py",

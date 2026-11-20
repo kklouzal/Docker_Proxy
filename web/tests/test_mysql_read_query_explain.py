@@ -207,7 +207,7 @@ def _assert_indexed_access(
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
+def test_mysql_observability_correlation_readers_use_index_ranges(
     tmp_path: Path,
 ) -> None:
     try:
@@ -221,127 +221,49 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
     store = diagnostic_module.DiagnosticStore()
     store.init_db()
     center = 1_800_000_000
+    txs = [f"tx-edge-a-{seq}" for seq in (10, 20, 30, 40, 50)]
     with connect() as conn:
         _seed_observability_rows(conn, center=center)
-        request_before_plan = _explain_json(
+        batch_plan = _explain_json(
             conn,
             """
-            SELECT ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                   master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                   tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                   ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                   response_cf_mitigated, response_alt_svc, id
-            FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
-            WHERE proxy_id = %s AND domain = %s AND ts BETWEEN %s AND %s
-            ORDER BY ts DESC, id DESC
-            LIMIT %s
+            SELECT ts, master_xaction
+            FROM (
+                SELECT ts, master_xaction, ROW_NUMBER() OVER (
+                    PARTITION BY master_xaction ORDER BY ts DESC, id DESC
+                ) AS tx_rank
+                FROM diagnostic_requests
+                WHERE proxy_id = %s AND master_xaction IN (%s, %s, %s, %s, %s)
+            ) ranked
+            WHERE tx_rank = 1
             """,
-            ("edge-a", "hot.example.test", center - 300, center, 5),
+            ("edge-a", *txs),
         )
-        request_after_plan = _explain_json(
-            conn,
-            """
-            SELECT ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                   master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                   tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                   ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                   response_cf_mitigated, response_alt_svc, id
-            FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
-            WHERE proxy_id = %s AND domain = %s AND ts > %s AND ts <= %s
-            ORDER BY ts ASC, id ASC
-            LIMIT %s
-            """,
-            ("edge-a", "hot.example.test", center, center + 300, 5),
-        )
-        icap_plan = _explain_json(
-            conn,
-            """
-            SELECT ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
-                   adapt_summary, adapt_details, host, user_agent, sni,
-                   exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
-            FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
-            WHERE proxy_id = %s AND domain = %s AND service_family = %s AND ts BETWEEN %s AND %s
-            ORDER BY ts DESC, id DESC
-            LIMIT %s
-            """,
-            ("edge-a", "hot.example.test", "av", center - 600, center, 5),
-        )
-
-    for plan in (request_before_plan, request_after_plan, icap_plan):
-        _assert_no_temp_sort(plan)
     _assert_indexed_access(
-        request_before_plan,
+        batch_plan,
         table="diagnostic_requests",
-        expected_key="idx_diagnostic_requests_proxy_domain_ts_id",
+        expected_key="idx_diagnostic_requests_proxy_tx_ts_id",
     )
-    _assert_indexed_access(
-        request_after_plan,
-        table="diagnostic_requests",
-        expected_key="idx_diagnostic_requests_proxy_domain_ts_id",
-    )
-    _assert_indexed_access(
-        icap_plan,
-        table="diagnostic_icap_events",
-        expected_key="idx_diagnostic_icap_proxy_domain_service_ts_id",
-    )
-
-    token = set_proxy_id("edge-a")
-    try:
-        candidates = store.list_request_candidates_for_domain_near_ts(
-            domain="hot.example.test",
-            around_ts=center,
-            window_seconds=600,
-            limit=7,
-        )
-        assert len(candidates) == 7
-        assert [row["time_delta_seconds"] for row in candidates] == sorted(
-            row["time_delta_seconds"] for row in candidates
-        )
-        assert all(row["domain"] == "hot.example.test" for row in candidates)
-        assert all("related_icap" in row for row in candidates)
-
-        policy_candidates = store.list_request_candidates_for_policy_event(
-            around_ts=center,
-            url="https://hot.example.test/objects/",
-            client_ip="10.0.0.10",
-            domain="hot.example.test",
-            window_seconds=600,
-            limit=5,
-        )
-        assert policy_candidates
-        assert all(row["client_ip"] == "10.0.0.10" for row in policy_candidates)
-        assert all(row["domain"] == "hot.example.test" for row in policy_candidates)
-
-        icap_candidates = store.list_icap_candidates_for_domain_near_ts(
-            domain="hot.example.test",
-            around_ts=center,
-            window_seconds=900,
-            service="av",
-            limit=5,
-        )
-        assert icap_candidates
-        assert all(row["domain"] == "hot.example.test" for row in icap_candidates)
-        assert all(row["service_family"] == "av" for row in icap_candidates)
-    finally:
-        reset_proxy_id(token)
 
     def read_for_proxy(proxy_id: str) -> tuple[str, int, int]:
         token = set_proxy_id(proxy_id)
         try:
-            rows = store.list_request_candidates_for_domain_near_ts(
-                domain="hot.example.test",
+            policy_candidates = store.list_request_candidates_for_policy_event(
                 around_ts=center,
-                window_seconds=900,
-                limit=10,
-            )
-            icap = store.list_icap_candidates_for_domain_near_ts(
+                url="https://hot.example.test/objects/",
+                client_ip="10.0.0.10",
                 domain="hot.example.test",
-                around_ts=center,
-                window_seconds=900,
-                service="av",
-                limit=10,
+                window_seconds=600,
+                limit=5,
             )
-            return proxy_id, len(rows), len(icap)
+            assert all(row["client_ip"] == "10.0.0.10" for row in policy_candidates)
+            assert all(row["domain"] == "hot.example.test" for row in policy_candidates)
+            # _seed_observability_rows numbers rows across proxies in order.
+            first_seq = {"edge-a": 0, "edge-b": 3601, "deleted-old": 7202}[proxy_id]
+            found = store.batch_find_requests_by_master_xactions(
+                [f"tx-{proxy_id}-{first_seq + offset}" for offset in (10, 20, 30)]
+            )
+            return proxy_id, len(policy_candidates), len(found)
         finally:
             reset_proxy_id(token)
 
@@ -350,6 +272,6 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
             executor.map(read_for_proxy, ["edge-a", "edge-b", "deleted-old"] * 3)
         )
     assert all(
-        request_count > 0 and icap_count > 0
-        for _proxy_id, request_count, icap_count in results
+        request_count > 0 and found_count == 3
+        for _proxy_id, request_count, found_count in results
     )

@@ -14,7 +14,6 @@ from services.runtime_helpers import (
     normalize_config_bool,
     normalize_hostish,
     normalize_icap_worker_count,
-    not_cached_reason,
     read_bounded_complete_lines,
 )
 
@@ -354,25 +353,6 @@ def test_extract_domain_prefers_sni_host_then_url() -> None:
     assert extract_domain("https://fallback.example/path") == "fallback.example"
 
 
-def test_not_cached_reason_matches_expected_labels() -> None:
-    assert (
-        not_cached_reason("POST", "TCP_MISS/200")
-        == "POST method (not cacheable by default)"
-    )
-    assert (
-        not_cached_reason("CONNECT", "TCP_TUNNEL/200")
-        == "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
-    )
-    assert (
-        not_cached_reason("GET", "TCP_BYPASS/200")
-        == "Bypassed (cache deny rule or client no-cache)"
-    )
-    assert (
-        not_cached_reason("GET", "TCP_MISS/302")
-        == "Redirect response (302) (often not cached without explicit freshness)"
-    )
-
-
 def test_fsync_parent_dir_opens_parent_and_closes_descriptor(monkeypatch) -> None:
     opened: list[tuple[str, int]] = []
     synced: list[int] = []
@@ -428,3 +408,16 @@ def test_fsync_parent_dir_propagates_actionable_error_and_ignores_close_error(
 
     with pytest.raises(OSError, match="fsync failed"):
         fsync_parent_dir("value.json")
+
+
+def test_read_bounded_complete_lines_stops_at_end_offset(tmp_path) -> None:
+    from services.runtime_helpers import read_bounded_complete_lines
+
+    path = tmp_path / "cache.log"
+    path.write_bytes(b"one\ntwo\nthree\n")
+    assert read_bounded_complete_lines(
+        path, max_lines=10, max_bytes=100, end_offset=len(b"one\ntwo\n")
+    ) == ["one", "two"]
+    assert read_bounded_complete_lines(
+        path, max_lines=10, max_bytes=100, end_offset=len(b"one\ntw")
+    ) == ["one"]

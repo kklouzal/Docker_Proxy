@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from services import pac_request  # type: ignore
 
 from .subprocess_test_utils import check_test_process_output
 
@@ -1149,18 +1150,17 @@ def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
         pac_renderer.RenderedPacFile(relative_path="manifest.json", content="changed"),
     )
 
-    assert pac_renderer.calculate_pac_state_sha(
+    assert pac_request.calculate_pac_state_sha(
         files_a
-    ) == pac_renderer.calculate_pac_state_sha(files_b)
-    assert pac_renderer.calculate_pac_state_sha(
+    ) == pac_request.calculate_pac_state_sha(files_b)
+    assert pac_request.calculate_pac_state_sha(
         files_a
-    ) != pac_renderer.calculate_pac_state_sha(files_c)
+    ) != pac_request.calculate_pac_state_sha(files_c)
 
 
 def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback() -> (
     None
 ):
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1171,10 +1171,10 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
         ],
     }
 
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.4") == "corp.pac"
-    assert pac_renderer.select_manifest_file(manifest, "192.0.2.10") == "catch-all.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.4") == "corp.pac"
+    assert pac_request.select_manifest_file(manifest, "192.0.2.10") == "catch-all.pac"
     assert (
-        pac_renderer.select_manifest_file(
+        pac_request.select_manifest_file(
             {"fallback_file": "fallback.pac", "profiles": []}, "not-an-ip"
         )
         == "fallback.pac"
@@ -1184,7 +1184,6 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
 def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_profiles() -> (
     None
 ):
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1196,13 +1195,12 @@ def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_prof
     }
 
     assert (
-        pac_renderer.select_manifest_file(manifest, "::ffff:10.2.3.44") == "branch.pac"
+        pac_request.select_manifest_file(manifest, "::ffff:10.2.3.44") == "branch.pac"
     )
-    assert pac_renderer.select_manifest_file(manifest, "::ffff:10.9.8.7") == "corp.pac"
+    assert pac_request.select_manifest_file(manifest, "::ffff:10.9.8.7") == "corp.pac"
 
 
 def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() -> None:
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1213,11 +1211,10 @@ def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() 
         ],
     }
 
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "earlier.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.44") == "earlier.pac"
 
 
 def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() -> None:
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1229,11 +1226,11 @@ def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() ->
     }
 
     assert (
-        pac_renderer.select_manifest_file(manifest, "192.0.2.55")
+        pac_request.select_manifest_file(manifest, "192.0.2.55")
         == "canonical-catch-all.pac"
     )
     assert (
-        pac_renderer.select_manifest_file(manifest, "not-an-ip")
+        pac_request.select_manifest_file(manifest, "not-an-ip")
         == "canonical-catch-all.pac"
     )
 
@@ -1241,7 +1238,6 @@ def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() ->
 def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent() -> (
     None
 ):
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1253,11 +1249,9 @@ def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent()
         ],
     }
 
+    assert pac_request.select_manifest_file(manifest, "10.2.3.44") == "first-branch.pac"
     assert (
-        pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "first-branch.pac"
-    )
-    assert (
-        pac_renderer.select_manifest_file(manifest, "192.0.2.55")
+        pac_request.select_manifest_file(manifest, "192.0.2.55")
         == "first-catch-all.pac"
     )
 
@@ -1429,10 +1423,6 @@ def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None
         include_private=False,
     )
 
-    assert (
-        "var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';"
-        in private_rendered
-    )
     assert "ipv6FirstHextetValue >= 0xfc00" in private_rendered
     assert "ipv6FirstHextetValue <= 0xfdff" in private_rendered
     assert "ipv6FirstHextetValue >= 0xfe80" in private_rendered
@@ -1500,6 +1490,64 @@ def test_pac_ipv4_direct_rules_ignore_ipv6_dns_answer_without_throwing() -> None
     )
 
 
+def test_private_pac_bypasses_private_ipv6_dns_answers() -> None:
+    from services import pac_renderer  # type: ignore
+
+    def render(include_private: bool) -> str:
+        return pac_renderer._render_pac(
+            "PROXY proxy.example:3128",
+            proxy_host="proxy.example",
+            direct_domains=[],
+            direct_dst_nets=[],
+            include_private=include_private,
+        )
+
+    private_rendered = render(True)
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "nas.example", "fd12:3456::7")
+        == "DIRECT"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "nas.example", "FE80::1")
+        == "DIRECT"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "www.example", "2001:db8::10")
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(
+            private_rendered, "stale.example", "fd12::7 garbage"
+        )
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(render(False), "nas.example", "fd12:3456::7")
+        == "PROXY proxy.example:3128"
+    )
+
+
+def test_pac_ip_rules_do_not_resolve_ipv6_literal_hosts() -> None:
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=True,
+    )
+
+    # A DNS answer for an IP literal must not change its routing.
+    assert (
+        _evaluate_pac_with_dns_answer(rendered, "2001:db8::10", "10.20.3.4")
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(rendered, "[fd00::1]", "203.0.113.7") == "DIRECT"
+    )
+
+
 def test_pac_ipv4_direct_rules_ignore_malformed_dns_answer_without_throwing() -> None:
     from services import pac_renderer  # type: ignore
 
@@ -1522,7 +1570,6 @@ def test_pac_ipv4_direct_rules_ignore_malformed_dns_answer_without_throwing() ->
 
 
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1535,16 +1582,15 @@ def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
     }
 
     # Profile diagnostics should mirror this same longest-prefix match behavior.
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.8") == "branch.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.8") == "branch.pac"
     assert (
-        pac_renderer.select_manifest_file(manifest, "2001:db8:1::20")
+        pac_request.select_manifest_file(manifest, "2001:db8:1::20")
         == "ipv6-branch.pac"
     )
 
 
 def test_select_manifest_file_ignores_malformed_profile_file_paths() -> None:
-    from services import pac_renderer  # type: ignore
 
     manifest = {
         "fallback_file": "fallback.pac",
@@ -1555,10 +1601,10 @@ def test_select_manifest_file_ignores_malformed_profile_file_paths() -> None:
         ],
     }
 
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.8") == "corp.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.70") == "lab.pac"
+    assert pac_request.select_manifest_file(manifest, "10.2.3.8") == "corp.pac"
     assert (
-        pac_renderer.select_manifest_file(
+        pac_request.select_manifest_file(
             {"fallback_file": "../fallback.pac", "profiles": []}, "192.0.2.10"
         )
         == "fallback.pac"
@@ -1812,7 +1858,7 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
     from services import pac_renderer  # type: ignore
 
     content = json.dumps({"proxy": pac_renderer.PAC_HOST_PLACEHOLDER})
-    assert "[2001:4860:4860::8888]" in pac_renderer.substitute_request_host(
+    assert "[2001:4860:4860::8888]" in pac_request.substitute_request_host(
         content, "[2001:4860:4860::8888]:3128"
     )
 
@@ -1825,7 +1871,7 @@ def test_substitute_request_host_replaces_invalid_host_with_loopback() -> None:
         f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
     )
 
-    rendered = pac_renderer.substitute_request_host(content, 'bad"; alert(1); //')
+    rendered = pac_request.substitute_request_host(content, 'bad"; alert(1); //')
 
     assert 'bad\\"; alert(1);' not in rendered
     assert 'bad"; alert(1);' not in rendered
@@ -1852,7 +1898,7 @@ def test_substitute_request_host_replaces_internal_or_ambiguous_fallback_with_lo
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
 
-    rendered = pac_renderer.substitute_request_host(content, request_host)
+    rendered = pac_request.substitute_request_host(content, request_host)
 
     assert rendered == 'return "PROXY 127.0.0.1:3128; DIRECT";'
     assert request_host.split(":", 1)[0] not in rendered
@@ -1863,13 +1909,13 @@ def test_substitute_request_host_preserves_valid_public_fallback_hosts() -> None
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
 
-    assert pac_renderer.substitute_request_host(content, "proxy.example:8080") == (
+    assert pac_request.substitute_request_host(content, "proxy.example:8080") == (
         'return "PROXY proxy.example:3128; DIRECT";'
     )
-    assert pac_renderer.substitute_request_host(content, "93.184.216.34") == (
+    assert pac_request.substitute_request_host(content, "93.184.216.34") == (
         'return "PROXY 93.184.216.34:3128; DIRECT";'
     )
-    assert pac_renderer.substitute_request_host(content, "[2001:4860:4860::8888]") == (
+    assert pac_request.substitute_request_host(content, "[2001:4860:4860::8888]") == (
         'return "PROXY [2001:4860:4860::8888]:3128; DIRECT";'
     )
 
@@ -1889,15 +1935,15 @@ def test_substitute_request_host_preserves_private_lan_fallback_hosts(
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
 
-    assert pac_renderer.substitute_request_host(content, request_host) == (
+    assert pac_request.substitute_request_host(content, request_host) == (
         f'return "PROXY {expected_host}:3128; DIRECT";'
     )
 
 
-def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:
+def test_emergency_pac_request_host_substitution_replaces_invalid_host() -> None:
     from services import pac_renderer  # type: ignore
 
-    rendered = pac_renderer.substitute_request_host(
+    rendered = pac_request.substitute_request_host(
         pac_renderer.build_emergency_pac(),
         'bad"; alert(1); //',
     )
@@ -2066,7 +2112,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
     monkeypatch.setattr(
         pac_renderer,
         "resolve_proxy_pac_target",
-        lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
+        lambda _proxy_id=None, **_stores: pac_renderer.ProxyPacTarget(
             proxy_id="default",
             public_host="proxy.example",
             pac_scheme="http",
@@ -2122,47 +2168,3 @@ def test_rendered_pac_replaces_invalid_proxy_chain_host() -> None:
         'return "PROXY 127.0.0.1:3128; PROXY backup.example:8080; DIRECT";' in rendered
     )
     assert "proxy'host.example" not in rendered
-
-
-def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
-    from services import pac_profiles_store  # type: ignore
-
-    store = pac_profiles_store.PacProfilesStore()
-    profiles = [
-        pac_profiles_store.PacProfile(1, "Corp", "10.0.0.0/8", [], [], 1),
-        pac_profiles_store.PacProfile(2, "Branch", "10.2.0.0/16", [], [], 2),
-        pac_profiles_store.PacProfile(3, "Lab", "10.2.3.0/24", [], [], 3),
-        pac_profiles_store.PacProfile(4, "Catch-all", "", [], [], 4),
-    ]
-    store.list_profiles = lambda: profiles  # type: ignore[method-assign]
-
-    assert store.match_profile_for_client_ip("10.2.3.70").name == "Lab"
-    assert store.match_profile_for_client_ip("10.2.4.70").name == "Branch"
-    assert store.match_profile_for_client_ip("10.99.4.70").name == "Corp"
-    assert store.match_profile_for_client_ip("192.0.2.44").name == "Catch-all"
-    assert store.match_profile_for_client_ip("not-an-ip").name == "Catch-all"
-
-
-def test_pac_profile_match_normalizes_ipv4_mapped_clients_without_affecting_ipv6() -> (
-    None
-):
-    from services import pac_profiles_store  # type: ignore
-
-    store = pac_profiles_store.PacProfilesStore()
-    profiles = [
-        pac_profiles_store.PacProfile(1, "IPv4", "10.2.3.0/24", [], [], 1),
-        pac_profiles_store.PacProfile(2, "IPv6", "2001:db8:1::/64", [], [], 2),
-        pac_profiles_store.PacProfile(3, "Catch-all", "", [], [], 3),
-    ]
-    store.list_profiles = lambda: profiles  # type: ignore[method-assign]
-
-    dotted_profile = store.match_profile_for_client_ip("10.2.3.44")
-    mapped_profile = store.match_profile_for_client_ip("::ffff:10.2.3.44")
-    assert dotted_profile is not None
-    assert mapped_profile is not None
-    assert mapped_profile.id == dotted_profile.id
-    assert store.match_profile_for_client_ip("2001:db8:1::44").name == "IPv6"
-    assert store.match_profile_for_client_ip("not-an-ip").name == "Catch-all"
-
-    store.list_profiles = lambda: profiles[:-1]  # type: ignore[method-assign]
-    assert store.match_profile_for_client_ip("not-an-ip") is None

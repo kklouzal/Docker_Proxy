@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import io
 import logging
 import os
 import pathlib
@@ -17,6 +15,7 @@ from typing import Any
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import read_bounded_complete_lines, split_squid_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -282,10 +281,8 @@ def parse_access_log_hit_rate(
     access_log_path: str = "/var/log/squid/access-observe.log",
     max_lines: int = 5000,
 ) -> dict[str, float | None]:
-    # Best-effort rolling hit rate from recent structured access log lines.
-    # Squid default log format typically contains:
-    #   ts elapsed client result_code/status bytes method url ...
-    # where result_code looks like TCP_HIT/200, TCP_MISS/200, etc.
+    # Best-effort rolling hit rate from recent rows of the structured
+    # diagnostic logformat (field 6 is %Ss/%>Hs, field 7 is %st).
     def _empty_result() -> dict[str, float | None]:
         return {"request_hit_ratio": None, "byte_hit_ratio": None}
 
@@ -294,107 +291,25 @@ def parse_access_log_hit_rate(
         total = 0
         hit_bytes = 0
         total_bytes = 0
-
-        if not path.exists():
-            return _empty_result(), 0
-
-        # Read last ~max_lines lines without external dependencies.
-        with path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            # Structured diagnostic lines are longer than the old lean access log.
-            read_size = min(size, max_lines * 512)
-            read_start = size - read_size
-            starts_on_line_boundary = read_start == 0
-            if read_start > 0:
-                f.seek(read_start - 1, os.SEEK_SET)
-                starts_on_line_boundary = f.read(1) == b"\n"
-            f.seek(read_start, os.SEEK_SET)
-            chunk = f.read().decode("utf-8", errors="replace")
-
-        lines = chunk.splitlines()
-        if not starts_on_line_boundary and lines:
-            # The byte tail can begin in the middle of a structured row; do not
-            # count that partial leading line as a real access-log event. Keep
-            # it when the tail starts at byte 0 or exactly after a newline.
-            lines = lines[1:]
-        if chunk and not chunk.endswith(("\n", "\r")) and lines:
-            # A concurrent reader can catch Squid after fields for the next
-            # event have been appended but before the record newline is durable.
-            # Treat that trailing fragment like the leading byte-tail fragment so
-            # a partial row cannot skew hit/byte ratios.
-            lines = lines[:-1]
-        lines = lines[-max_lines:]
-
-        for line in lines:
-            s = (line or "").strip("\r\n")
-            if not s:
+        # Structured diagnostic rows average well under 512 bytes; only complete
+        # rows count, so a byte-tail fragment cannot skew the ratios.
+        for line in read_bounded_complete_lines(
+            path, max_lines=max_lines, max_bytes=max_lines * 512
+        ):
+            row = split_squid_tsv(line)
+            if len(row) < 7:
                 continue
-
-            # New structured TSV format. Squid may emit "\t" literally.
-            has_tab = "	" in s
-            has_escaped_tab = "\\t" in s
-            if has_tab or has_escaped_tab:
-                if has_escaped_tab:
-                    normalized = []
-                    in_quotes = False
-                    i = 0
-                    while i < len(s):
-                        ch = s[i]
-                        if ch == '"':
-                            normalized.append(ch)
-                            if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
-                                normalized.append(s[i + 1])
-                                i += 2
-                                continue
-                            in_quotes = not in_quotes
-                            i += 1
-                            continue
-                        if (
-                            not in_quotes
-                            and ch == "\\"
-                            and i + 1 < len(s)
-                            and s[i + 1] == "t"
-                        ):
-                            normalized.append("	")
-                            i += 2
-                            continue
-                        normalized.append(ch)
-                        i += 1
-                    s = "".join(normalized)
-                if '"' not in s:
-                    row = s.split("	")
-                else:
-                    try:
-                        row = next(
-                            csv.reader(io.StringIO(s), delimiter="	", quotechar='"'),
-                        )
-                    except Exception:
-                        continue
-                if len(row) < 7:
-                    continue
-                result = row[5]
-                bytes_str = row[6]
-            else:
-                parts = s.split()
-                if len(parts) < 5:
-                    continue
-                result = parts[3]  # e.g. TCP_HIT/200
-                bytes_str = parts[4]
-
+            result = row[5]
             total += 1
-
             try:
-                b = int(bytes_str)
+                b = max(int(row[6]), 0)
             except ValueError:
                 b = 0
-            total_bytes += max(b, 0)
-
-            # Treat HIT variants as hit; everything else as miss.
-            # Examples: TCP_HIT, TCP_MEM_HIT, TCP_IMS_HIT, TCP_REFRESH_HIT
+            total_bytes += b
+            # Examples: TCP_HIT, TCP_MEM_HIT, TCP_IMS_HIT, TCP_REFRESH_HIT.
             if "HIT" in result and not result.startswith("TCP_DENIED"):
                 hits += 1
-                hit_bytes += max(b, 0)
+                hit_bytes += b
 
         return {
             "request_hit_ratio": (hits / total * 100.0) if total else None,

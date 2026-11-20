@@ -45,6 +45,33 @@ def _unlink_with_parent_fsync(path: str | os.PathLike[str]) -> None:
     _fsync_parent_dir(path_obj)
 
 
+def _write_fsynced_temp_file(directory: str | os.PathLike[str], data: bytes) -> str:
+    """Write *data* to a new durable temp file in *directory*; return its path."""
+    with tempfile.NamedTemporaryFile("wb", delete=False, dir=directory) as tmp:
+        try:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        except BaseException:
+            with contextlib.suppress(OSError):
+                pathlib.Path(tmp.name).unlink()
+            raise
+        return tmp.name
+
+
+def _atomic_replace_file(path: pathlib.Path, data: bytes) -> None:
+    """Durably replace *path* with *data* via a same-directory rename."""
+    tmp_path = _write_fsynced_temp_file(path.parent, data)
+    try:
+        _fsync_parent_dir(tmp_path)
+        pathlib.Path(tmp_path).replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            _unlink_with_parent_fsync(tmp_path)
+        raise
+    _fsync_parent_dir(path)
+
+
 @dataclass(frozen=True)
 class CertificateBundle:
     cert_pem: str
@@ -98,24 +125,6 @@ _DEFAULT_ADMIN_UI_IP_SANS = ("127.0.0.1", "::1")
 class CertManager:
     def __init__(self, ca_dir: str = "/etc/squid/ssl/certs") -> None:
         self.ca_dir = ca_dir
-
-    @property
-    def uploaded_pfx_path(self) -> str:
-        return os.path.join(self.ca_dir, "uploaded_ca.pfx")
-
-    @property
-    def ca_cert_path(self) -> str:
-        return os.path.join(self.ca_dir, "ca.crt")
-
-    @property
-    def ca_key_path(self) -> str:
-        return os.path.join(self.ca_dir, "ca.key")
-
-    def ca_exists(self) -> bool:
-        return (
-            pathlib.Path(self.ca_cert_path).exists()
-            and pathlib.Path(self.ca_key_path).exists()
-        )
 
     def load_bundle(self) -> CertificateBundle | None:
         return load_local_certificate_bundle(self.ca_dir)
@@ -286,27 +295,7 @@ def _write_certificate_material_marker(
         sort_keys=True,
         separators=(",", ":"),
     )
-    tmp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as marker_file:
-            marker_file.write(payload)
-            marker_file.write("\n")
-            marker_file.flush()
-            os.fsync(marker_file.fileno())
-            tmp_path = marker_file.name
-        _fsync_parent_dir(tmp_path)
-        pathlib.Path(tmp_path).replace(marker_path)
-        _fsync_parent_dir(marker_path)
-        tmp_path = ""
-    finally:
-        if tmp_path:
-            with contextlib.suppress(OSError):
-                _unlink_with_parent_fsync(tmp_path)
+    _atomic_replace_file(marker_path, (payload + "\n").encode("utf-8"))
 
 
 def _ensure_existing_certificate_material_marker(
@@ -484,6 +473,76 @@ def _certificate_validity_detail(cert: x509.Certificate) -> str:
     if now >= cert.not_valid_after_utc:
         return "certificate is expired."
     return ""
+
+
+def ca_certificate_signing_problem(cert: x509.Certificate) -> str:
+    """Return why *cert* cannot issue certificates now, or ``""`` if it can.
+
+    The result is a sentence fragment ("is expired.") for callers to prefix
+    with their own subject. A missing keyUsage extension is tolerated here
+    (RFC 5280 path validation accepts it); ``ca_strict_verification_issues``
+    reports it as a strict-client compatibility problem instead.
+    """
+    validity_detail = _certificate_validity_detail(cert)
+    if validity_detail:
+        return validity_detail.removeprefix("certificate ")
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound:
+        return "must include a CA basic constraints extension."
+    if not basic_constraints.ca:
+        return "is not a CA certificate."
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return ""
+    if not key_usage.key_cert_sign:
+        return "key usage must allow certificate signing."
+    return ""
+
+
+def ca_strict_verification_issues(cert_pem: str) -> tuple[str, ...]:
+    """List RFC 5280 CA-profile gaps that strict X.509 verifiers reject.
+
+    OpenSSL's X509_STRICT mode (enabled by default in Python 3.13+ SSL
+    contexts) refuses every certificate issued by a CA that lacks a keyUsage
+    extension, a critical basicConstraints extension, or a subject key
+    identifier. An empty result means the CA meets those checks; a CA with
+    issues must be regenerated (or replaced by a compliant upload) and
+    redistributed to client trust stores before strict clients can connect.
+    """
+    try:
+        cert = _load_pem_certificate((cert_pem or "").encode("utf-8"))
+    except Exception:
+        return ("CA certificate is not valid PEM material.",)
+    issues: list[str] = []
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        )
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no basicConstraints extension.")
+    else:
+        if not basic_constraints.value.ca:
+            issues.append(
+                "Certificate is not marked as a CA (basicConstraints CA:FALSE)."
+            )
+        elif not basic_constraints.critical:
+            issues.append("CA basicConstraints extension is not marked critical.")
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no keyUsage extension.")
+    else:
+        if not key_usage.key_cert_sign:
+            issues.append("CA keyUsage does not allow keyCertSign.")
+    try:
+        cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no subjectKeyIdentifier extension.")
+    return tuple(issues)
 
 
 def _validate_tls_material_paths_unlocked(
@@ -742,10 +801,6 @@ def _load_bundle_ca_material(
         raise ValueError(msg)
     ca_cert = _load_pem_certificate(cert_pem.encode("utf-8"))
     ca_key = _load_pem_private_key(key_pem.encode("utf-8"))
-    validity_detail = _certificate_validity_detail(ca_cert)
-    if validity_detail:
-        msg = f"Admin UI HTTPS leaf generation CA certificate {validity_detail}"
-        raise ValueError(msg)
     try:
         if _public_key_bytes(ca_cert) != _public_key_bytes(ca_key):
             msg = "Admin UI HTTPS leaf generation CA certificate and private key do not match."
@@ -755,26 +810,10 @@ def _load_bundle_ca_material(
     except Exception as exc:
         msg = "Admin UI HTTPS leaf generation CA certificate and private key could not be compared."
         raise ValueError(msg) from exc
-    try:
-        basic_constraints = ca_cert.extensions.get_extension_for_class(
-            x509.BasicConstraints,
-        ).value
-    except x509.ExtensionNotFound as exc:
-        msg = (
-            "Admin UI HTTPS leaf generation requires a CA basic constraints extension."
-        )
-        raise ValueError(msg) from exc
-    if not basic_constraints.ca:
-        msg = "Admin UI HTTPS leaf generation requires a CA certificate."
+    problem = ca_certificate_signing_problem(ca_cert)
+    if problem:
+        msg = f"Admin UI HTTPS leaf generation issuer certificate {problem}"
         raise ValueError(msg)
-    try:
-        key_usage = ca_cert.extensions.get_extension_for_class(x509.KeyUsage).value
-    except x509.ExtensionNotFound:
-        pass
-    else:
-        if not key_usage.key_cert_sign:
-            msg = "Admin UI HTTPS leaf generation CA key usage must allow certificate signing."
-            raise ValueError(msg)
     return ca_cert, ca_key
 
 
@@ -860,30 +899,18 @@ def materialize_admin_ui_server_certificate(
     tmp_cert_path = ""
     tmp_key_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            delete=False,
-            dir=ca_dir,
-        ) as cert_tmp:
-            cert_tmp.write(cert.public_bytes(serialization.Encoding.PEM))
-            cert_tmp.flush()
-            os.fsync(cert_tmp.fileno())
-            tmp_cert_path = cert_tmp.name
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            delete=False,
-            dir=ca_dir,
-        ) as key_tmp:
-            key_tmp.write(
-                leaf_key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                ),
-            )
-            key_tmp.flush()
-            os.fsync(key_tmp.fileno())
-            tmp_key_path = key_tmp.name
+        tmp_cert_path = _write_fsynced_temp_file(
+            ca_dir,
+            cert.public_bytes(serialization.Encoding.PEM),
+        )
+        tmp_key_path = _write_fsynced_temp_file(
+            ca_dir,
+            leaf_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ),
+        )
         lock_context = (
             contextlib.nullcontext()
             if _transaction_lock_held
@@ -940,22 +967,7 @@ def _restore_material_paths(snapshot: dict[pathlib.Path, bytes | None]) -> None:
             if path.exists():
                 _unlink_with_parent_fsync(path)
             continue
-        tmp_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(
-                "wb", delete=False, dir=path.parent
-            ) as tmp:
-                tmp.write(content)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-                tmp_path = tmp.name
-            pathlib.Path(tmp_path).replace(path)
-            _fsync_parent_dir(path)
-            tmp_path = ""
-        finally:
-            if tmp_path:
-                with contextlib.suppress(OSError):
-                    _unlink_with_parent_fsync(tmp_path)
+        _atomic_replace_file(path, content)
     cert_paths = [path for path in snapshot if path.name == ADMIN_UI_CERT_FILENAME]
     key_paths = [path for path in snapshot if path.name == ADMIN_UI_KEY_FILENAME]
     if cert_paths and key_paths and cert_paths[0].exists() and key_paths[0].exists():
@@ -1011,37 +1023,53 @@ def admin_ui_certificate_material_transaction(ca_dir: str):
         yield
 
 
+_OPENSSL_NAME_SHORT_NAMES = {
+    "1.2.840.113549.1.9.1": "emailAddress",
+    "2.5.4.4": "SN",
+    "2.5.4.5": "serialNumber",
+    "2.5.4.9": "street",
+    "2.5.4.12": "title",
+    "2.5.4.42": "GN",
+}
+
+
+def _openssl_style_name(name: x509.Name) -> str:
+    """Render *name* like ``openssl x509 -subject`` (default nameopt).
+
+    Persisted bundle metadata predates this in-process renderer; matching the
+    OpenSSL CLI format keeps old and new revision rows comparable for display.
+    """
+    rdns: list[str] = []
+    for rdn in name.rdns:
+        parts = []
+        for attribute in rdn:
+            oid = attribute.oid.dotted_string
+            label = (
+                _OPENSSL_NAME_SHORT_NAMES.get(oid) or attribute.rfc4514_attribute_name
+            )
+            value = attribute.value
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            parts.append(f"{label}={value}")
+        rdns.append(" + ".join(parts))
+    return ", ".join(rdns)
+
+
+def _openssl_style_time(value: datetime) -> str:
+    value = value.astimezone(UTC)
+    return f"{value:%b} {value.day:2d} {value:%H:%M:%S %Y} GMT"
+
+
 def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str, str]:
-    subject_dn = ""
-    not_before = ""
-    not_after = ""
-    tmp_cert_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            encoding="utf-8",
-        ) as tmp_cert:
-            tmp_cert.write(_normalize_pem_text(cert_pem))
-            tmp_cert_path = tmp_cert.name
-        proc = _run_checked(
-            ["openssl", "x509", "-in", tmp_cert_path, "-noout", "-subject", "-dates"],
-            timeout=15,
-        )
-        for line in (proc.stdout or "").splitlines():
-            if line.startswith("subject="):
-                subject_dn = line.split("=", 1)[1].strip()
-            elif line.startswith("notBefore="):
-                not_before = line.split("=", 1)[1].strip()
-            elif line.startswith("notAfter="):
-                not_after = line.split("=", 1)[1].strip()
+        cert = _load_pem_certificate(_normalize_pem_text(cert_pem).encode("utf-8"))
     except Exception:
-        pass
-    finally:
-        if tmp_cert_path:
-            with contextlib.suppress(OSError):
-                pathlib.Path(tmp_cert_path).unlink()
-    return subject_dn, not_before, not_after
+        return "", "", ""
+    return (
+        _openssl_style_name(cert.subject),
+        _openssl_style_time(cert.not_valid_before_utc),
+        _openssl_style_time(cert.not_valid_after_utc),
+    )
 
 
 def build_certificate_bundle(
@@ -1141,31 +1169,13 @@ def restore_certificate_material_snapshot(
                 if path_obj.exists():
                     _unlink_with_parent_fsync(path_obj)
                 continue
-            tmp_path = ""
-            try:
-                with tempfile.NamedTemporaryFile(
-                    "wb",
-                    delete=False,
-                    dir=ca_dir,
-                ) as tmp_file:
-                    tmp_file.write(content)
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-                    tmp_path = tmp_file.name
-                _fsync_parent_dir(tmp_path)
-                pathlib.Path(tmp_path).replace(path_obj)
-                _fsync_parent_dir(path_obj)
-                tmp_path = ""
-                if path_obj.name == "ca.crt":
-                    path_obj.chmod(0o644)
-                elif path_obj.name == "ca.key":
-                    path_obj.chmod(0o640)
-                elif path_obj.name in {"uploaded_ca.pfx", ".ca-material.json"}:
-                    path_obj.chmod(0o600)
-            finally:
-                if tmp_path:
-                    with contextlib.suppress(OSError):
-                        _unlink_with_parent_fsync(tmp_path)
+            _atomic_replace_file(path_obj, content)
+            if path_obj.name == "ca.crt":
+                path_obj.chmod(0o644)
+            elif path_obj.name == "ca.key":
+                path_obj.chmod(0o640)
+            elif path_obj.name in {"uploaded_ca.pfx", ".ca-material.json"}:
+                path_obj.chmod(0o600)
 
 
 def materialize_certificate_bundle(
@@ -1183,26 +1193,14 @@ def materialize_certificate_bundle(
     tmp_key_path = ""
     tmp_pfx_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as cert_file:
-            cert_file.write(bundle.fullchain_pem or bundle.cert_pem)
-            cert_file.flush()
-            os.fsync(cert_file.fileno())
-            tmp_cert_path = cert_file.name
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as key_file:
-            key_file.write(bundle.key_pem)
-            key_file.flush()
-            os.fsync(key_file.fileno())
-            tmp_key_path = key_file.name
+        tmp_cert_path = _write_fsynced_temp_file(
+            ca_dir,
+            (bundle.fullchain_pem or bundle.cert_pem).encode("utf-8"),
+        )
+        tmp_key_path = _write_fsynced_temp_file(
+            ca_dir,
+            bundle.key_pem.encode("utf-8"),
+        )
 
         pfx_bytes = (
             bundle.original_pfx_bytes
@@ -1210,15 +1208,7 @@ def materialize_certificate_bundle(
             else original_pfx_bytes
         )
         if pfx_bytes is not None:
-            with tempfile.NamedTemporaryFile(
-                "wb",
-                delete=False,
-                dir=ca_dir,
-            ) as pfx_file:
-                pfx_file.write(pfx_bytes)
-                pfx_file.flush()
-                os.fsync(pfx_file.fileno())
-                tmp_pfx_path = pfx_file.name
+            tmp_pfx_path = _write_fsynced_temp_file(ca_dir, pfx_bytes)
 
         with _certificate_material_install_lock(ca_dir):
             _ensure_existing_certificate_material_marker(

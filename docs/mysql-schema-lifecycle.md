@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 33.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 34.
 
 ## Version ownership
 
@@ -12,7 +12,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 4 | `sslfilter_policy_tables` | `sslfilter_domains`, `sslfilter_src_nets`, `sslfilter_settings`. |
 | 5 | `diagnostic_request_and_icap_tables` | `diagnostic_requests`, `diagnostic_policy_tags`, `diagnostic_icap_events`; response metadata columns and query/reporting indexes. |
 | 6 | `ssl_error_aggregate_tables` | `ssl_errors` aggregate table and proxy/domain/category indexes. |
-| 7 | `live_stats_aggregate_tables` | `live_stats_domains`, `live_stats_clients`, `live_stats_client_domains`, `live_stats_client_domain_nocache`; last-seen/proxy aggregate indexes. |
+| 7 | `live_stats_aggregate_tables` | Historical: created the `live_stats_*` aggregates retired by version 34. Fresh installs create nothing here; the step name is kept so recorded checksums stay valid. |
 | 8 | `timeseries_resolution_tables` | `ts_1s`, `ts_1m`, `ts_1h`, `ts_1d`, `ts_1w`, `ts_1mo`, `ts_1y`. |
 | 9 | `observability_control_tables` | `observability_settings`, `observability_maintenance_runs`, `observability_report_schedules`. |
 | 10 | `policy_request_tables` | `policy_requests`, `policy_exceptions`. |
@@ -29,7 +29,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 21 | `application_ledger_evidence_indexes` | Adds `proxy_config_applications.config_sha256`, backfills it from matching config revisions, and declares proxy/revision/timestamp lookup coverage so config apply ledgers retain deterministic revision evidence after restore. |
 | 22 | `timeseries_metric_count_columns` | Adds the per-metric count columns to `ts_1s`, `ts_1m`, `ts_1h`, `ts_1d`, `ts_1w`, `ts_1mo`, and `ts_1y` so rollup averages can distinguish zero samples from absent samples without runtime DDL repair. |
 | 23 | `application_ledger_evidence_completion` | Forward-repairs application ledger evidence ownership without changing historical checksums: ensures config, certificate, and adblock application evidence columns; backfills them from matching revisions; and declares all proxy/revision/timestamp application-ledger indexes before lazy stores can skip runtime DDL. |
-| 24 | `live_stats_seed_checkpoint` | Adds the proxy-scoped durable access-log checkpoint used to seed only unseen complete lines after process restarts. |
+| 24 | `live_stats_seed_checkpoint` | Historical: added `live_stats_seed_state`, retired by version 34. |
 | 25 | `diagnostic_icap_extended_metadata` | Adds ICAP service, outcome, status, timing, and byte-count metadata columns to `diagnostic_icap_events` for durable extended diagnostic evidence. |
 | 26 | `observability_manual_export_preset_contract` | Canonicalizes `observability_report_schedules` as manual-export presets: `cadence='manual'`, empty recipients, zero next/last runtime timestamps, and `last_status='manual_export_only'`. |
 | 27 | `operation_ledger_hard_retention_cap` | Physically prunes pre-existing terminal `proxy_operations` history until each proxy has at most 128 rows, except while its protected active `pending`/`applying` rows alone require overflow; lifecycle writes maintain and converge the same bound afterward. |
@@ -39,6 +39,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 31 | `adblock_event_policy_attribution` | Adds `adblock_events.list_key`, `rule_id`, `decision_action`, and `decision_reason` so durable adblock events retain the matched policy list/rule and decision outcome/reason; all four columns are non-null with empty-string defaults for existing rows. |
 | 32 | `admin_default_proxy_selection` | `proxy_default_selection` singleton holding the Admin UI default proxy chosen on the Proxies page; absent row means the `DEFAULT_PROXY_ID` environment bootstrap still applies. The column is `default_proxy_id` (not `proxy_id`) so proxy lifecycle discovery never treats it as proxy-scoped data. |
 | 33 | `diagnostic_requests_drop_duplicate_indexes` | Drops `idx_diagnostic_requests_proxy_tx` and `idx_diagnostic_requests_proxy_domain`, each the same physical B-tree (declared columns plus the implicit `id` suffix) as the kept `idx_diagnostic_requests_proxy_tx_ts_id` / `idx_diagnostic_requests_proxy_domain_ts_id`; a duplicate is dropped only while its twin exists, with `ALGORITHM=INPLACE, LOCK=NONE` (metadata-only, online). |
+| 34 | `retire_live_stats_aggregate_tables` | Drops `live_stats_domains`, `live_stats_clients`, `live_stats_client_domains`, `live_stats_client_domain_nocache`, and `live_stats_seed_state` (`DROP TABLE IF EXISTS`). They were written by the proxy but read by nothing since the Observability pages moved to `diagnostic_requests`. A not-yet-upgraded proxy keeps running: its live-stats writes fail with a throttled database warning behind the bounded write backoff until it is upgraded. |
 
 ## Lifecycle model
 

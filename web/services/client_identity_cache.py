@@ -199,10 +199,9 @@ class ClientIdentityCache:
         if len(normalized) > 253:
             return ""
 
-        labels = normalized.split(".")
-        if not labels or any(not label for label in labels):
-            return ""
-        if any(_DNS_LABEL_RE.fullmatch(label) is None for label in labels):
+        if any(
+            _DNS_LABEL_RE.fullmatch(label) is None for label in normalized.split(".")
+        ):
             return ""
         return normalized
 

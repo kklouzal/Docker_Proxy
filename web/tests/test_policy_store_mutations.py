@@ -34,8 +34,6 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
         assert profiles[0].client_cidr == "10.20.30.0/24"
         assert profiles[0].direct_domains == ["example.com", "media.example"]
         assert profiles[0].direct_dst_nets == ["10.77.0.0/24"]
-        assert store.match_profile_for_client_ip("10.20.30.99").id == profile_id
-        assert store.match_profile_for_client_ip("not-an-ip") is None
 
         ok, detail, missing_id = store.upsert_profile(
             profile_id=999999,
@@ -61,7 +59,9 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
         )
         assert ok is True, detail
         assert ipv6_profile_id is not None
-        assert store.match_profile_for_client_ip("2001:db8:1::99").id == ipv6_profile_id
+        assert {p.id: p.client_cidr for p in store.list_profiles()}[
+            ipv6_profile_id
+        ] == ("2001:db8:1::/64")
 
         ok, detail, _ = store.upsert_profile(
             profile_id=None,

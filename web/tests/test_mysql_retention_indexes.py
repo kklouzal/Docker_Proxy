@@ -13,7 +13,6 @@ if str(WEB_DIR) not in sys.path:
 from services.adblock_store import AdblockStore  # ruff: ignore[module-import-not-at-top-of-file]
 from services.blocked_log_runtime import BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
 from services.diagnostic_store import DiagnosticStore  # ruff: ignore[module-import-not-at-top-of-file]
-from services.live_stats import LiveStatsStore  # ruff: ignore[module-import-not-at-top-of-file]
 from services.safe_browsing_v5 import SafeBrowsingStore  # ruff: ignore[module-import-not-at-top-of-file]
 from services.webfilter_store import WebFilterStore  # ruff: ignore[module-import-not-at-top-of-file]
 
@@ -170,39 +169,6 @@ def test_diagnostic_global_retention_indexes_bootstrap(monkeypatch):
     )
 
 
-def test_live_stats_global_last_seen_indexes_bootstrap(monkeypatch):
-    conn = _FakeConn()
-    store = LiveStatsStore()
-    monkeypatch.setattr(store, "_connect", lambda: _fake_connect(conn))
-
-    store.init_db()
-
-    sql = _joined(conn)
-    assert "KEY idx_live_stats_domains_last_seen (last_seen, domain)" in sql
-    assert "KEY idx_live_stats_clients_last_seen (last_seen, ip)" in sql
-    assert "KEY idx_live_stats_client_domains_last_seen (last_seen, ip, domain)" in sql
-    assert (
-        "KEY idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)" in sql
-    )
-    assert "CREATE TABLE IF NOT EXISTS live_stats_seed_state" in sql
-    assert (
-        "ALTER TABLE live_stats_domains ADD INDEX idx_live_stats_domains_last_seen (last_seen, domain)"
-        in sql
-    )
-    assert (
-        "ALTER TABLE live_stats_clients ADD INDEX idx_live_stats_clients_last_seen (last_seen, ip)"
-        in sql
-    )
-    assert (
-        "ALTER TABLE live_stats_client_domains ADD INDEX idx_live_stats_client_domains_last_seen (last_seen, ip, domain)"
-        in sql
-    )
-    assert (
-        "ALTER TABLE live_stats_client_domain_nocache ADD INDEX idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)"
-        in sql
-    )
-
-
 def test_webfilter_blocked_log_retention_index_bootstrap():
     conn = _FakeConn()
     store = WebFilterStore()
@@ -222,24 +188,20 @@ def test_webfilter_blocked_log_retention_index_bootstrap():
     )
 
 
-def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
+def test_webcat_acl_blocked_log_writer_retention_index_bootstrap(monkeypatch):
+    from services import blocked_log_runtime, schema_lifecycle
+
     conn = _FakeConn()
     writer = BlockedLogDb(max_rows=100)
+    monkeypatch.setattr(blocked_log_runtime, "connect", lambda: conn)
+    monkeypatch.setattr(
+        schema_lifecycle, "runtime_schema_ready_for_lazy_store", lambda _conn: False
+    )
 
-    writer._ensure_index(
-        conn,
-        "webfilter_blocked_log",
-        "idx_webfilter_blocked_log_ts_id",
-        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)",
-    )
-    writer._ensure_index(
-        conn,
-        "webfilter_blocked_log",
-        "idx_webfilter_blocked_log_proxy_ts",
-        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)",
-    )
+    assert writer._connect() is conn
 
     sql = _joined(conn)
+    assert "CREATE TABLE IF NOT EXISTS webfilter_blocked_log(" in sql
     assert (
         "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)"
         in sql

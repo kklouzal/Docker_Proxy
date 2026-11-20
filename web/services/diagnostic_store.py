@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import csv
 import hashlib
-import io
 import ipaddress
 import logging
 import os
@@ -12,6 +10,7 @@ import re
 import threading
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from services.bounded_delete import BoundedDeleteResult, delete_older_than_in_chunks
 from services.db import (
@@ -22,6 +21,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.log_follower import LogFollower, run_batched_tail_loop
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
@@ -32,7 +32,7 @@ from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
-from services.runtime_helpers import read_bounded_complete_lines
+from services.runtime_helpers import read_bounded_complete_lines, split_squid_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,16 @@ def _is_internal_diagnostic_row(row: dict[str, Any]) -> bool:
     return False
 
 
+# Column order consumed by _normalize_request_row.
+_REQUEST_SELECT_COLUMNS = (
+    "ts, duration_ms, client_ip, method, url, domain, result_code, http_status, "
+    "bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, "
+    "tls_server_cipher, tls_client_version, tls_client_cipher, host, user_agent, "
+    "referer, exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, "
+    "file_security_policy, response_content_type, response_server, "
+    "response_cf_mitigated, response_alt_svc"
+)
+
 _REQUEST_DIMENSIONS: dict[str, str] = {
     "client_ip": "client_ip",
     "user_agent": "user_agent",
@@ -198,39 +208,23 @@ def _safe_text(value: object, *, max_len: int = 0) -> str:
     return text
 
 
-def _split_tsv(line: str) -> list[str]:
-    s = (line or "").strip("\r\n")
-    if not s:
-        return []
-    if "\\t" in s:
-        normalized = []
-        in_quotes = False
-        i = 0
-        while i < len(s):
-            ch = s[i]
-            if ch == '"':
-                normalized.append(ch)
-                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
-                    normalized.append(s[i + 1])
-                    i += 2
-                    continue
-                in_quotes = not in_quotes
-                i += 1
-                continue
-            if not in_quotes and ch == "\\" and i + 1 < len(s) and s[i + 1] == "t":
-                normalized.append("\t")
-                i += 2
-                continue
-            normalized.append(ch)
-            i += 1
-        s = "".join(normalized)
-    if '"' not in s:
-        return [item.strip() for item in s.split("	")]
-    try:
-        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
-    except Exception:
-        return []
-    return [item.strip() for item in row]
+def _split_squid_fields(line: str) -> list[str]:
+    """Split a Squid log row, mapping Squid's ``-`` absent marker to ``""``.
+
+    Storing the marker would surface ``-`` as a real user agent, bump mode,
+    SNI or transaction id (absent transaction ids would then correlate with
+    each other).
+    """
+    return ["" if value == "-" else value for value in split_squid_tsv(line)]
+
+
+def _header_text(value: str, *, max_len: int) -> str:
+    """Decode a Squid ``%>h``/``%<h`` header field.
+
+    Squid URL-escapes logged header values by default (``%20``, ``%22``, and
+    ``%25`` for a literal percent), so decoding restores the sent value.
+    """
+    return _safe_text(unquote(value, errors="replace"), max_len=max_len)
 
 
 def _parse_status(result_code: str) -> int:
@@ -242,7 +236,10 @@ def _parse_status(result_code: str) -> int:
 
 
 def _event_key(*parts: object) -> str:
-    normalized = "|".join(str(part or "") for part in parts)
+    # Empty text parts hash as Squid's "-" marker, which the parser maps to ""
+    # since the keys were introduced, so replayed lines keep deduplicating
+    # against rows stored before that normalization.
+    normalized = "|".join("-" if part == "" else str(part or "") for part in parts)
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -343,7 +340,7 @@ def _request_tls_summary(row: dict[str, Any]) -> str:
     if client_version:
         cipher_text = f"/{client_cipher}" if client_cipher else ""
         parts.append(f"client={client_version}{cipher_text}")
-    return " Â· ".join(parts)
+    return " · ".join(parts)
 
 
 def _normalize_request_row(row: Any) -> dict[str, Any]:
@@ -862,6 +859,11 @@ class DiagnosticStore:
                 return
             self._threads = []
             self._started = False
+            # Resume tailing where the startup seed window ends, so lines
+            # appended while seeding are not skipped (event keys dedupe the
+            # overlap).
+            request_follower = LogFollower.at_current_end(self.access_log_path)
+            icap_follower = LogFollower.at_current_end(self.icap_log_path)
             try:
                 self.init_db()
                 self.seed_from_recent_logs()
@@ -883,7 +885,7 @@ class DiagnosticStore:
             request_thread = threading.Thread(
                 target=self._tail_file_loop,
                 args=(
-                    self.access_log_path,
+                    request_follower,
                     self._build_request_insert_params,
                     self._flush_request_rows,
                     "diagnostic-requests-tailer",
@@ -896,7 +898,7 @@ class DiagnosticStore:
             icap_thread = threading.Thread(
                 target=self._tail_file_loop,
                 args=(
-                    self.icap_log_path,
+                    icap_follower,
                     self._build_icap_insert_params,
                     self._flush_icap_rows,
                     "diagnostic-icap-tailer",
@@ -960,7 +962,7 @@ class DiagnosticStore:
 
     def _tail_file_loop(
         self,
-        path: str,
+        follower: LogFollower,
         build_row_fn,
         flush_rows_fn,
         loop_name: str,
@@ -989,294 +991,49 @@ class DiagnosticStore:
             minimum=commit_batch,
             maximum=100000,
         )
-        last_inode: int | None = None
-        pending = 0
         pending_rows: list[tuple[Any, ...]] = []
         drop_state: dict[str, Any] = {"dropped": 0, "last_log_mono": None}
-        flush_backoff = DatabaseWriteBackoff.from_env(
-            "DIAGNOSTIC_DB_WRITE",
-            default_base=5.0,
-            default_max=120.0,
+
+        def accept_line(line: str) -> None:
+            row = build_row_fn(line)
+            if row is not None:
+                _append_bounded_pending_row(
+                    pending_rows,
+                    row,
+                    max_pending_rows=max_pending_rows,
+                    loop_name=loop_name,
+                    drop_state=drop_state,
+                )
+
+        def flush() -> None:
+            if not pending_rows:
+                return
+            self.init_db()
+            with self._connect() as conn:
+                flush_rows_fn(conn, pending_rows)
+            pending_rows.clear()
+
+        run_batched_tail_loop(
+            follower=follower,
+            stop_event=self._stop_event,
+            accept_line=accept_line,
+            pending=lambda: len(pending_rows),
+            flush=flush,
+            backoff=DatabaseWriteBackoff.from_env(
+                "DIAGNOSTIC_DB_WRITE",
+                default_base=5.0,
+                default_max=120.0,
+            ),
+            commit_batch=commit_batch,
+            commit_interval=commit_interval,
+            poll_interval=poll_interval,
+            logger=logger,
+            log_key=f"diagnostic_store.{loop_name}",
+            label=f"Diagnostic tailer for {loop_name}",
         )
-        last_commit = time.monotonic()
-        reopen_from_start = False
-
-        while not self._stop_event.is_set():
-            try:
-                if not pathlib.Path(path).exists():
-                    self._stop_event.wait(max(1.0, poll_interval))
-                    continue
-
-                st = os.stat(path)
-                inode = getattr(st, "st_ino", None)
-                if last_inode is None:
-                    last_inode = inode
-
-                def flush_pending() -> None:
-                    nonlocal pending, last_commit
-                    if not pending_rows:
-                        pending = 0
-                        last_commit = time.monotonic()
-                        return
-                    self.init_db()
-                    with self._connect() as conn:
-                        flush_rows_fn(conn, pending_rows)
-                    flush_backoff.record_success()
-                    pending_rows.clear()
-                    pending = 0
-                    last_commit = time.monotonic()
-
-                def record_deferred_flush(now_mono: float | None = None) -> float:
-                    nonlocal last_commit
-                    now_mono = time.monotonic() if now_mono is None else now_mono
-                    delay = flush_backoff.record_failure(now_mono)
-                    last_commit = now_mono
-                    return delay
-
-                with pathlib.Path(path).open(
-                    encoding="utf-8",
-                    errors="replace",
-                ) as handle:
-                    if reopen_from_start:
-                        handle.seek(0, os.SEEK_SET)
-                        reopen_from_start = False
-                    else:
-                        handle.seek(0, os.SEEK_END)
-                    last_complete_line_pos: int | None = None
-                    last_complete_line: str | None = None
-                    cursor_file_version: tuple[int, int, int] | None = None
-                    verify_cursor = False
-
-                    def open_file_version() -> tuple[int, int, int] | None:
-                        try:
-                            open_stat = os.fstat(handle.fileno())
-                            return (
-                                int(open_stat.st_size),
-                                int(open_stat.st_mtime_ns),
-                                int(open_stat.st_ctime_ns),
-                            )
-                        except Exception:
-                            return None
-
-                    while not self._stop_event.is_set():
-                        if verify_cursor:
-                            verify_cursor = False
-                            current_file_version = open_file_version()
-                            if (
-                                current_file_version != cursor_file_version
-                                and last_complete_line_pos is not None
-                                and last_complete_line is not None
-                            ):
-                                resume_pos = handle.tell()
-                                try:
-                                    handle.seek(last_complete_line_pos, os.SEEK_SET)
-                                    cursor_line = handle.readline()
-                                    if cursor_line != last_complete_line:
-                                        # copytruncate can regrow past the old
-                                        # cursor between polls, so size alone
-                                        # does not prove the cursor is valid.
-                                        handle.seek(0, os.SEEK_SET)
-                                        last_complete_line_pos = None
-                                        last_complete_line = None
-                                    else:
-                                        handle.seek(resume_pos, os.SEEK_SET)
-                                except Exception:
-                                    with contextlib.suppress(Exception):
-                                        handle.seek(resume_pos, os.SEEK_SET)
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.cursor.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer cursor validation failed for {loop_name}",
-                                    )
-                        line_pos = handle.tell()
-                        line = handle.readline()
-                        if line:
-                            if not line.endswith("\n"):
-                                handle.seek(line_pos, os.SEEK_SET)
-                                try:
-                                    inode_now = getattr(os.stat(path), "st_ino", None)
-                                except OSError:
-                                    inode_now = None
-                                if (
-                                    inode_now is not None
-                                    and last_inode is not None
-                                    and inode_now != last_inode
-                                ):
-                                    last_inode = inode_now
-                                    if flush_backoff.can_attempt():
-                                        try:
-                                            flush_pending()
-                                        except DATABASE_ERRORS as exc:
-                                            delay = record_deferred_flush()
-                                            log_database_unavailable(
-                                                logger,
-                                                f"diagnostic_store.rotate.{loop_name}.db",
-                                                f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                                exc,
-                                            )
-                                        except Exception:
-                                            log_exception_throttled(
-                                                logger,
-                                                f"diagnostic_store.rotate.{loop_name}",
-                                                interval_seconds=300.0,
-                                                message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                            )
-                                    reopen_from_start = True
-                                    break
-                                self._stop_event.wait(poll_interval)
-                                continue
-                            last_complete_line_pos = line_pos
-                            last_complete_line = line
-                            try:
-                                row = build_row_fn(line)
-                                if row is not None:
-                                    _append_bounded_pending_row(
-                                        pending_rows,
-                                        row,
-                                        max_pending_rows=max_pending_rows,
-                                        loop_name=loop_name,
-                                        drop_state=drop_state,
-                                    )
-                                    pending = len(pending_rows)
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    f"diagnostic_store.ingest.{loop_name}",
-                                    interval_seconds=300.0,
-                                    message=f"Diagnostic tailer failed to parse a log line in {loop_name}",
-                                )
-                            now = time.monotonic()
-                            if (
-                                pending
-                                and flush_backoff.can_attempt(now)
-                                and (
-                                    pending >= commit_batch
-                                    or (now - last_commit) >= commit_interval
-                                )
-                            ):
-                                try:
-                                    flush_pending()
-                                except DATABASE_ERRORS as exc:
-                                    delay = record_deferred_flush(now)
-                                    log_database_unavailable(
-                                        logger,
-                                        f"diagnostic_store.commit.{loop_name}.db",
-                                        f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                        exc,
-                                    )
-                                except Exception:
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.commit.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer batch commit failed in {loop_name}",
-                                    )
-                                    last_commit = now
-                            continue
-
-                        now = time.monotonic()
-                        if (
-                            pending
-                            and flush_backoff.can_attempt(now)
-                            and (now - last_commit) >= commit_interval
-                        ):
-                            try:
-                                flush_pending()
-                            except DATABASE_ERRORS as exc:
-                                delay = record_deferred_flush(now)
-                                log_database_unavailable(
-                                    logger,
-                                    f"diagnostic_store.idle_commit.{loop_name}.db",
-                                    f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    f"diagnostic_store.idle_commit.{loop_name}",
-                                    interval_seconds=300.0,
-                                    message=f"Diagnostic tailer idle commit failed in {loop_name}",
-                                )
-                                last_commit = now
-
-                        try:
-                            if pathlib.Path(path).stat().st_size < handle.tell():
-                                handle.seek(0, os.SEEK_SET)
-                                last_complete_line_pos = None
-                                last_complete_line = None
-                                continue
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                f"diagnostic_store.copytruncate.{loop_name}",
-                                interval_seconds=300.0,
-                                message=f"Diagnostic tailer copytruncate check failed for {loop_name}",
-                            )
-
-                        try:
-                            inode_now = getattr(os.stat(path), "st_ino", None)
-                        except OSError:
-                            inode_now = None
-                        if (
-                            inode_now is not None
-                            and last_inode is not None
-                            and inode_now != last_inode
-                        ):
-                            last_inode = inode_now
-                            if flush_backoff.can_attempt(now):
-                                try:
-                                    flush_pending()
-                                except DATABASE_ERRORS as exc:
-                                    delay = record_deferred_flush(now)
-                                    log_database_unavailable(
-                                        logger,
-                                        f"diagnostic_store.rotate.{loop_name}.db",
-                                        f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                        exc,
-                                    )
-                                except Exception:
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.rotate.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                    )
-                            reopen_from_start = True
-                            break
-
-                        cursor_file_version = open_file_version()
-                        verify_cursor = True
-                        self._stop_event.wait(poll_interval)
-                    if self._stop_event.is_set():
-                        try:
-                            flush_pending()
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "diagnostic_store.shutdown_flush",
-                                interval_seconds=300.0,
-                                message="Background telemetry final flush failed during shutdown",
-                            )
-            except DATABASE_ERRORS as exc:
-                log_database_unavailable(
-                    logger,
-                    f"diagnostic_store.loop.{loop_name}.db",
-                    f"Diagnostic tailer deferred database work for {loop_name} while MySQL is unavailable",
-                    exc,
-                )
-                self._stop_event.wait(max(5.0, poll_interval))
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    f"diagnostic_store.loop.{loop_name}",
-                    interval_seconds=300.0,
-                    message=f"Diagnostic tailer loop failed for {loop_name}",
-                )
-                self._stop_event.wait(max(1.0, poll_interval))
 
     def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
-        row = _split_tsv(line)
+        row = _split_squid_fields(line)
         if len(row) < 18:
             return None
 
@@ -1295,17 +1052,19 @@ class DiagnosticStore:
         tls_server_cipher = _safe_text(row[12], max_len=128)
         tls_client_version = _safe_text(row[13], max_len=64)
         tls_client_cipher = _safe_text(row[14], max_len=128)
-        host = _safe_text(row[15], max_len=255)
-        user_agent = _safe_text(row[16], max_len=512)
-        referer = _safe_text(row[17], max_len=512)
+        host = _header_text(row[15], max_len=255)
+        user_agent = _header_text(row[16], max_len=512)
+        referer = _header_text(row[17], max_len=512)
         policy_fields = _policy_fields_from_row(row, 18)
         file_security_policy = _policy_text(row[22] if len(row) > 22 else "")
-        response_content_type = _safe_text(
+        response_content_type = _header_text(
             row[23] if len(row) > 23 else "", max_len=255
         )
-        response_server = _safe_text(row[24] if len(row) > 24 else "", max_len=255)
-        response_cf_mitigated = _safe_text(row[25] if len(row) > 25 else "", max_len=64)
-        response_alt_svc = _safe_text(row[26] if len(row) > 26 else "", max_len=512)
+        response_server = _header_text(row[24] if len(row) > 24 else "", max_len=255)
+        response_cf_mitigated = _header_text(
+            row[25] if len(row) > 25 else "", max_len=64
+        )
+        response_alt_svc = _header_text(row[26] if len(row) > 26 else "", max_len=512)
         domain = _extract_domain(url, host=host, sni=sni)
         http_status = _parse_status(result_code)
 
@@ -1390,7 +1149,7 @@ class DiagnosticStore:
         )
 
     def _parse_icap_log_line(self, line: str) -> dict[str, Any] | None:
-        row = _split_tsv(line)
+        row = _split_squid_fields(line)
         if len(row) < 11:
             return None
 
@@ -1426,8 +1185,8 @@ class DiagnosticStore:
         icap_time_ms = _safe_int(row[time_index], 0)
         adapt_summary = _safe_text(row[6 + fields_offset], max_len=1024)
         adapt_details = _safe_text(row[7 + fields_offset])
-        host = _safe_text(row[8 + fields_offset], max_len=255)
-        user_agent = _safe_text(row[9 + fields_offset], max_len=512)
+        host = _header_text(row[8 + fields_offset], max_len=255)
+        user_agent = _header_text(row[9 + fields_offset], max_len=512)
         sni = _safe_text(row[10 + fields_offset], max_len=255)
         policy_fields = _policy_fields_from_row(row, 11 + fields_offset)
         extended_start = 15 + fields_offset
@@ -1478,9 +1237,8 @@ class DiagnosticStore:
         if icap_bytes_received:
             icap_metadata_parts.append(f"bytes_received={icap_bytes_received}")
         if icap_metadata_parts:
-            base_details = "" if adapt_details == "-" else adapt_details
             adapt_details = " ".join(
-                part for part in (base_details, ";".join(icap_metadata_parts)) if part
+                part for part in (adapt_details, ";".join(icap_metadata_parts)) if part
             )
 
         domain = _extract_domain(url, host=host, sni=sni)
@@ -1631,82 +1389,37 @@ class DiagnosticStore:
             batch.rows,
         )
 
-    def _ingest_request_line_with_conn(self, conn, line: str) -> bool:
-        params = self._build_request_insert_params(line)
-        if params is None:
-            return False
-        self._flush_request_rows(conn, [params])
-        return True
-
-    def _ingest_icap_line_with_conn(self, conn, line: str) -> bool:
-        params = self._build_icap_insert_params(line)
-        if params is None:
-            return False
-        self._flush_icap_rows(conn, [params])
-        return True
-
-    def list_recent_requests(
+    def batch_find_requests_by_master_xactions(
         self,
-        *,
-        since: int | None = None,
-        search: str = "",
-        client_ip: str = "",
-        domain: str = "",
-        master_xaction: str = "",
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        where = ["proxy_id = %s"]
-        params: list[Any] = [get_proxy_id()]
-        if since is not None:
-            where.append("ts >= %s")
-            params.append(int(since))
-        if client_ip:
-            where.append("client_ip = %s")
-            params.append(client_ip.strip())
-        if domain:
-            where.append("domain = %s")
-            params.append(_normalize_hostish(domain))
-        if master_xaction:
-            where.append("master_xaction = %s")
-            params.append(master_xaction.strip())
-        if search:
-            like = f"%{_escape_like(search.strip().lower())}%"
-            where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            params.extend([like] * 7)
-        where_sql = "WHERE " + " AND ".join(where)
-        lim = max(1, min(200, int(limit)))
-
+        master_xactions: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Return the newest request row per master transaction, in one query."""
+        txs = list(dict.fromkeys(tx.strip() for tx in master_xactions if tx.strip()))
+        if not txs:
+            return {}
+        placeholders = ", ".join(["%s"] * len(txs))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
-                FROM diagnostic_requests
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT %s
+                SELECT {_REQUEST_SELECT_COLUMNS}
+                FROM (
+                    SELECT
+                        {_REQUEST_SELECT_COLUMNS},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY master_xaction ORDER BY ts DESC, id DESC
+                        ) AS tx_rank
+                    FROM diagnostic_requests
+                    WHERE proxy_id = %s AND master_xaction IN ({placeholders})
+                ) ranked
+                WHERE tx_rank = 1
                 """,
-                (*params, lim),
+                (get_proxy_id(), *txs),
             ).fetchall()
-        return [_normalize_request_row(row) for row in rows]
-
-    def find_request_by_master_xaction(
-        self,
-        master_xaction: str,
-    ) -> dict[str, Any] | None:
-        tx = (master_xaction or "").strip()
-        if not tx:
-            return None
-        rows = self.list_recent_requests(master_xaction=tx, limit=1)
-        return rows[0] if rows else None
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            normalized = _normalize_request_row(row)
+            found[normalized["master_xaction"]] = normalized
+        return found
 
     def list_recent_icap(
         self,
@@ -1825,131 +1538,6 @@ class DiagnosticStore:
             bucket.append(normalized)
         return grouped
 
-    def list_recent_transactions(
-        self,
-        *,
-        since: int | None = None,
-        search: str = "",
-        client_ip: str = "",
-        domain: str = "",
-        master_xaction: str = "",
-        service: str = "",
-        limit: int = 50,
-        icap_limit_per_transaction: int = 5,
-    ) -> list[dict[str, Any]]:
-        rows = self.list_recent_requests(
-            since=since,
-            search=search,
-            client_ip=client_ip,
-            domain=domain,
-            master_xaction=master_xaction,
-            limit=limit,
-        )
-        icap_map = self._batch_list_icap_by_master_xactions(
-            [str(row.get("master_xaction") or "") for row in rows],
-            service=service,
-            limit_per_transaction=icap_limit_per_transaction,
-        )
-
-        transactions: list[dict[str, Any]] = []
-        for row in rows:
-            related_icap = icap_map.get(
-                str(row.get("master_xaction") or "").strip(),
-                [],
-            )
-            if (service or "").strip() and not related_icap:
-                continue
-            enriched = dict(row)
-            enriched["related_icap"] = related_icap
-            enriched["service_families"] = sorted(
-                {
-                    str(event.get("service_family") or "")
-                    for event in related_icap
-                    if event.get("service_family")
-                },
-            )
-            enriched["icap_event_count"] = len(related_icap)
-            transactions.append(enriched)
-        return transactions
-
-    def list_request_candidates_for_domain_near_ts(
-        self,
-        *,
-        domain: str,
-        around_ts: int,
-        window_seconds: int = 300,
-        limit: int = 5,
-        service: str = "",
-        icap_limit_per_transaction: int = 5,
-    ) -> list[dict[str, Any]]:
-        normalized_domain = _normalize_hostish(domain)
-        if not normalized_domain:
-            return []
-
-        center = int(around_ts or _now())
-        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
-        lim = max(1, min(20, int(limit)))
-        branch_lim = min(200, max(lim * 4, lim))
-        self.init_db()
-
-        select_sql = """
-                SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc, id
-                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
-                WHERE proxy_id = %s
-                  AND domain = %s
-                  AND {window_predicate}
-                ORDER BY {order_by}
-                LIMIT %s
-                """
-        proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            before_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
-                ),
-                (proxy_id, normalized_domain, center - window_i, center, branch_lim),
-            ).fetchall()
-            after_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id ASC",
-                ),
-                (proxy_id, normalized_domain, center, center + window_i, branch_lim),
-            ).fetchall()
-
-        normalized_rows = [
-            _normalize_request_row(row)
-            for row in _nearest_rows(
-                list(before_rows) + list(after_rows),
-                center=center,
-                limit=lim,
-                id_index=29,
-            )
-        ]
-        icap_map = self._batch_list_icap_by_master_xactions(
-            [str(row.get("master_xaction") or "") for row in normalized_rows],
-            service=service,
-            limit_per_transaction=icap_limit_per_transaction,
-        )
-
-        out: list[dict[str, Any]] = []
-        for row in normalized_rows:
-            enriched = dict(row)
-            enriched["related_icap"] = icap_map.get(
-                str(row.get("master_xaction") or "").strip(),
-                [],
-            )
-            enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
-            enriched["correlation_kind"] = "domain_time"
-            out.append(enriched)
-        return out
-
     def list_request_candidates_for_policy_event(
         self,
         *,
@@ -1994,11 +1582,7 @@ class DiagnosticStore:
         base_where_sql = " AND ".join(base_where)
         select_sql = f"""
                 SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc, id
+                    {_REQUEST_SELECT_COLUMNS}, id
                 FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
                 WHERE {base_where_sql}
                   AND {{window_predicate}}
@@ -2047,77 +1631,6 @@ class DiagnosticStore:
             enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
             enriched["correlation_kind"] = "domain_time"
             out.append(enriched)
-        return out
-
-    def list_icap_candidates_for_domain_near_ts(
-        self,
-        *,
-        domain: str,
-        around_ts: int,
-        window_seconds: int = 300,
-        service: str = "",
-        limit: int = 5,
-    ) -> list[dict[str, Any]]:
-        normalized_domain = _normalize_hostish(domain)
-        if not normalized_domain:
-            return []
-
-        center = int(around_ts or _now())
-        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
-        lim = max(1, min(20, int(limit)))
-        branch_lim = min(200, max(lim * 4, lim))
-        normalized_service = (service or "").strip().lower()
-        self.init_db()
-
-        base_where = ["proxy_id = %s", "domain = %s"]
-        base_params: list[Any] = [get_proxy_id(), normalized_domain]
-        if normalized_service:
-            base_where.append("service_family = %s")
-            base_params.append(normalized_service)
-        base_where_sql = " AND ".join(base_where)
-        select_sql = f"""
-                SELECT
-                    ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
-                    adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
-                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
-                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, id
-                FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
-                WHERE {base_where_sql}
-                  AND {{window_predicate}}
-                ORDER BY {{order_by}}
-                LIMIT %s
-                """
-
-        with self._connect() as conn:
-            before_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
-                ),
-                (*base_params, center - window_i, center, branch_lim),
-            ).fetchall()
-            after_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id ASC",
-                ),
-                (*base_params, center, center + window_i, branch_lim),
-            ).fetchall()
-
-        out: list[dict[str, Any]] = []
-        for row in _nearest_rows(
-            list(before_rows) + list(after_rows),
-            center=center,
-            limit=lim,
-            id_index=24,
-        ):
-            normalized = _normalize_icap_row(row)
-            normalized["time_delta_seconds"] = abs(
-                int(normalized.get("ts") or 0) - center,
-            )
-            normalized["correlation_kind"] = "domain_time"
-            out.append(normalized)
         return out
 
     def activity_summary(self, *, since: int | None = None) -> dict[str, int]:
@@ -2322,11 +1835,7 @@ class DiagnosticStore:
             rows = conn.execute(
                 f"""
                 SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
+                    {_REQUEST_SELECT_COLUMNS}
                 FROM diagnostic_requests
                 {where_sql}
                 ORDER BY duration_ms DESC, ts DESC, id DESC
@@ -2405,17 +1914,6 @@ class DiagnosticStore:
                 (*params, lim),
             ).fetchall()
         return [_normalize_icap_row(row) for row in rows]
-
-    def list_icap_by_master_xaction(
-        self,
-        master_xaction: str,
-        *,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        tx = (master_xaction or "").strip()
-        if not tx:
-            return []
-        return self.list_recent_icap(master_xaction=tx, limit=limit)
 
 
 _store: DiagnosticStore | None = None

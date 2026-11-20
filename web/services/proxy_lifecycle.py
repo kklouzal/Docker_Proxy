@@ -112,16 +112,6 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
     ProxyLifecycleTable(
         "diagnostic_icap_events", order_columns=("proxy_id", "ts", "id")
     ),
-    ProxyLifecycleTable("live_stats_domains", order_columns=("proxy_id", "domain")),
-    ProxyLifecycleTable("live_stats_clients", order_columns=("proxy_id", "ip")),
-    ProxyLifecycleTable(
-        "live_stats_client_domains", order_columns=("proxy_id", "ip", "domain")
-    ),
-    ProxyLifecycleTable(
-        "live_stats_client_domain_nocache",
-        order_columns=("proxy_id", "last_seen", "row_key"),
-    ),
-    ProxyLifecycleTable("live_stats_seed_state", order_columns=("proxy_id",)),
     ProxyLifecycleTable(
         "observability_report_schedules", order_columns=("proxy_id", "updated_ts", "id")
     ),

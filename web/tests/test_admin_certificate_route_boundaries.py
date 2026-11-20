@@ -3010,3 +3010,83 @@ def test_force_reconcile_certificate_proxy_requires_csrf(monkeypatch, tmp_path) 
 
     assert rejected.status_code == 403
     assert loaded.operation_ledger.operations == []
+
+
+def _certs_page_html_for_ca(monkeypatch, tmp_path, cert_pem: str) -> str:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="self_signed",
+        cert_sha256="cert-sha",
+        cert_pem=cert_pem,
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    response = client.get("/certs")
+    assert response.status_code == 200
+    return response.get_data(as_text=True)
+
+
+def test_certs_page_warns_when_active_ca_lacks_strict_profile(
+    monkeypatch, tmp_path
+) -> None:
+    # _valid_tls_material() mirrors the pre-6678228 production CA: critical
+    # basicConstraints but no keyUsage or subject key identifier.
+    cert_pem, _key_pem = _valid_tls_material()
+
+    html = _certs_page_html_for_ca(monkeypatch, tmp_path, cert_pem)
+
+    assert "data-ca-profile-issues" in html
+    assert "CA certificate has no keyUsage extension." in html
+    assert "replace the old CA with the new" in html
+
+
+def test_certs_page_has_no_profile_warning_for_compliant_ca(
+    monkeypatch, tmp_path
+) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Compliant CA")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    html = _certs_page_html_for_ca(
+        monkeypatch,
+        tmp_path,
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+    )
+
+    assert "data-ca-profile-issues" not in html

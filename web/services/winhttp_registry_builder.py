@@ -22,7 +22,7 @@ VALUE_TYPE = "REG_BINARY"
 ACCESS_TYPE_NAMED_PROXY = 0x00000003
 HEADER_MARKER = 0x28
 
-ADVPROXY_SCOPES = ("machine", "user")
+ADVPROXY_SETTINGS_FILE_NAME = "winhttp-proxy-settings.json"
 DOCUMENTED_ADVPROXY_KEYS = ("Proxy", "ProxyBypass", "AutoconfigUrl", "AutoDetect")
 DESTINATION_SCHEMES = ("http", "https", "ftp", "socks")
 TRACING_OUTPUTS = ("file", "debugger", "both")
@@ -63,11 +63,9 @@ class WinHttpContractOutput:
     static_registry_available: bool
     normalized_hex: str
     reg_file: str
-    decoded: DecodedBasicWinHttpSettings | None
     legacy_set_proxy_command: str
     advproxy_json: str
     advproxy_command: str
-    advproxy_settings_file_json: str
     advproxy_settings_file_write_command: str
     advproxy_settings_file_command: str
     reset_proxy_command: str
@@ -352,15 +350,7 @@ def _validate_proxy_host_identity(value: str, field_name: str) -> None:
     if is_ambiguous_ipv4_like_host(host):
         msg = f"{field_name} must not use ambiguous or invalid IPv4 forms."
         raise WinHttpBuilderError(msg)
-    if len(dns_host) > 253 or not all(
-        label
-        and len(label) <= 63
-        and label.isascii()
-        and label[0].isalnum()
-        and label[-1].isalnum()
-        and all(ch.isascii() and (ch.isalnum() or ch == "-") for ch in label)
-        for label in labels
-    ):
+    if len(dns_host) > 253 or not all(_is_valid_dns_label(label) for label in labels):
         msg = f"{field_name} must be a valid IP address or DNS hostname."
         raise WinHttpBuilderError(msg)
 
@@ -867,7 +857,7 @@ def _validate_settings_file_name(filename: str) -> str:
 def build_advproxy_settings_file_write_command(
     settings_json: str,
     *,
-    filename: str = "winhttp-proxy-settings.json",
+    filename: str = ADVPROXY_SETTINGS_FILE_NAME,
 ) -> str:
     safe_filename = _validate_settings_file_name(filename)
     if "\r" in settings_json or "\x00" in settings_json:
@@ -1004,7 +994,6 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
     )
     normalized_hex = ""
     reg_file = ""
-    decoded: DecodedBasicWinHttpSettings | None = None
     if static_registry_available:
         normalized_hex = generate_basic_winhttp_binary(proxy_string, bypass_string)
         decoded = decode_basic_winhttp_settings_hex(normalized_hex)
@@ -1013,12 +1002,6 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
             or decoded.bypass_string != bypass_string
         ):
             msg = "Generated WinHttpSettings failed decode verification."
-            raise WinHttpBuilderError(msg)
-        if (
-            decoded.header_marker != HEADER_MARKER
-            or decoded.access_type != ACCESS_TYPE_NAMED_PROXY
-        ):
-            msg = "Generated WinHttpSettings header failed verification."
             raise WinHttpBuilderError(msg)
         reg_file = generate_reg_file_from_hex(normalized_hex)
     elif not proxy_string:
@@ -1043,7 +1026,6 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
         static_registry_available=static_registry_available,
         normalized_hex=normalized_hex,
         reg_file=reg_file,
-        decoded=decoded,
         legacy_set_proxy_command=build_legacy_set_proxy_command(
             proxy_string,
             bypass_string,
@@ -1055,11 +1037,13 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
             scope=scope,
             settings_json=advproxy_json_compact,
         ),
-        advproxy_settings_file_json=advproxy_json_pretty,
         advproxy_settings_file_write_command=build_advproxy_settings_file_write_command(
             advproxy_json_pretty,
         ),
-        advproxy_settings_file_command=f"netsh winhttp set advproxy setting-scope={scope} settings-file=winhttp-proxy-settings.json",
+        advproxy_settings_file_command=(
+            f"netsh winhttp set advproxy setting-scope={scope} "
+            f"settings-file={ADVPROXY_SETTINGS_FILE_NAME}"
+        ),
         reset_proxy_command="netsh winhttp reset proxy",
         import_ie_command="netsh winhttp import proxy source=ie",
         show_proxy_command="netsh winhttp show proxy",

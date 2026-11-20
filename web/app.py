@@ -50,6 +50,7 @@ from services.certificate_bundles import (
 )
 from services.certificate_core import (
     admin_ui_certificate_material_transaction,
+    ca_strict_verification_issues,
     load_certificate_sans,
     materialize_admin_ui_server_certificate,
     normalize_admin_ui_certificate_san_token,
@@ -3738,7 +3739,7 @@ def _establish_admin_session(
 def auth_saml_metadata():
     profile = _current_saml_profile()
     try:
-        metadata = build_sp_metadata(profile, request)
+        metadata = build_sp_metadata(profile)
     except Exception as exc:
         _record_audit_event(
             "saml_metadata_failed",
@@ -6251,7 +6252,7 @@ def _handle_auth_provider_post():
 def _saml_admin_status() -> dict[str, Any]:
     profile = _saml_auth_store.get_profile()
     try:
-        sp_info = build_sp_info(profile, request)
+        sp_info = build_sp_info(profile)
     except Exception:
         sp_info = {"entity_id": "", "acs_url": "", "sls_url": ""}
     ready = profile_metadata_ready(profile)
@@ -9944,10 +9945,14 @@ def _render_certs_page(
                 **state,
             },
         )
+    active_ca_pem = str(getattr(bundle, "cert_pem", "") or "")
     return render_template(
         "certs.html",
         certificate=certificate,
         bundle=bundle,
+        ca_profile_issues=(
+            ca_strict_verification_issues(active_ca_pem) if active_ca_pem else ()
+        ),
         proxy_cert_statuses=proxy_cert_statuses,
         admin_ui_https=admin_ui_https,
         admin_ui_https_env_lines=_admin_ui_https_env_lines(

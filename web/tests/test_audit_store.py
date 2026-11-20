@@ -343,3 +343,44 @@ def test_record_does_not_report_committed_event_failed_when_prune_fails(
     assert executed[0][1][0] == "edge-a"
     assert "event was recorded" in caplog.text
     assert "prune unavailable" in caplog.text
+
+
+def test_latest_config_apply_binds_like_pattern_for_pymysql_formatting(
+    monkeypatch,
+) -> None:
+    executed: list[tuple[str, tuple[object, ...]]] = []
+    expected_row = (1_700_000_000, "config_apply_manual", 1, "198.51.100.1", "", "")
+    mapping_row = dict(
+        zip(
+            ("ts", "kind", "ok", "remote_addr", "user_agent", "detail"),
+            expected_row,
+            strict=True,
+        )
+    )
+
+    class _Result:
+        def fetchone(self) -> object:
+            # Pooled MySQL connections return mapping rows.
+            return mapping_row
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()) -> _Result:
+            # PyMySQL interpolates bound parameters with ``query % args``; a
+            # literal LIKE wildcard in the SQL text breaks that formatting.
+            str(sql) % tuple("'x'" for _ in params)
+            executed.append((str(sql), tuple(params)))
+            return _Result()
+
+    store = AuditStore.__new__(AuditStore)
+    store._schema_ready = True
+    store._connect = _Conn  # type: ignore[method-assign]
+    monkeypatch.setattr(audit_store, "get_proxy_id", lambda: "edge-1")
+
+    assert store.latest_config_apply() == expected_row
+    assert executed[0][1] == ("edge-1", "config_apply%")
