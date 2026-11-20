@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -560,8 +561,10 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "admin_default_proxy_selection",
         "diagnostic_requests_drop_duplicate_indexes",
         "retire_live_stats_aggregate_tables",
+        "drop_redundant_audit_and_diagnostic_indexes",
+        "retire_adblock_cache_stats",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 34
+    assert schema_lifecycle.latest_schema_version() == 36
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -697,6 +700,18 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert retire_spec.version == 34
     assert retire_spec.name == "retire_live_stats_aggregate_tables"
     assert [step.name for step in retire_spec.data_steps] == ["drop_live_stats_tables"]
+    redundant_index_spec = every_spec[34]
+    assert redundant_index_spec.version == 35
+    assert redundant_index_spec.name == "drop_redundant_audit_and_diagnostic_indexes"
+    assert [step.name for step in redundant_index_spec.data_steps] == [
+        "drop_redundant_indexes"
+    ]
+    cache_stats_spec = every_spec[35]
+    assert cache_stats_spec.version == 36
+    assert cache_stats_spec.name == "retire_adblock_cache_stats"
+    assert [step.name for step in cache_stats_spec.data_steps] == [
+        "drop_adblock_cache_stats"
+    ]
 
 
 def test_retired_live_stats_migrations_keep_recorded_checksums() -> None:
@@ -730,8 +745,13 @@ def test_retired_live_stats_schema_creates_nothing_and_drop_is_idempotent() -> N
 
 
 class _DuplicateIndexConn:
-    def __init__(self, indexes: set[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        indexes: set[tuple[str, str]],
+        tables: frozenset[str] = frozenset({"diagnostic_requests"}),
+    ) -> None:
         self.indexes = set(indexes)
+        self.tables = tables
         self.ddl: list[str] = []
 
     def execute(self, sql, params=()):
@@ -746,7 +766,7 @@ class _DuplicateIndexConn:
                 return self._row
 
         if "FROM information_schema.tables" in text:
-            return _Result({"1": 1} if params[0] == "diagnostic_requests" else None)
+            return _Result({"1": 1} if params[0] in self.tables else None)
         if "FROM information_schema.statistics" in text:
             return _Result({"1": 1} if (params[0], params[1]) in self.indexes else None)
         if text.startswith("ALTER TABLE"):
@@ -784,6 +804,74 @@ def test_duplicate_diagnostic_index_drop_is_online_and_requires_twin() -> None:
     )
     schema_lifecycle._drop_duplicate_diagnostic_indexes(already_clean)
     assert already_clean.ddl == []
+
+
+def test_redundant_index_drop_requires_covering_index_and_is_online() -> None:
+    tables = frozenset({"audit_events", "diagnostic_requests"})
+    conn = _DuplicateIndexConn(
+        {
+            ("audit_events", "idx_audit_ts"),
+            ("audit_events", "idx_audit_ts_id"),
+            ("diagnostic_requests", "idx_diagnostic_requests_proxy_client"),
+            ("diagnostic_requests", "idx_diagnostic_requests_proxy_client_bytes"),
+        },
+        tables,
+    )
+
+    schema_lifecycle._drop_redundant_indexes(conn)
+
+    assert conn.ddl == [
+        (
+            "ALTER TABLE `audit_events` DROP INDEX `idx_audit_ts`, "
+            "ALGORITHM=INPLACE, LOCK=NONE"
+        ),
+        (
+            "ALTER TABLE `diagnostic_requests` DROP INDEX "
+            "`idx_diagnostic_requests_proxy_client`, ALGORITHM=INPLACE, LOCK=NONE"
+        ),
+    ]
+
+    # Without the covering index the prefix index is the only client index left.
+    uncovered = _DuplicateIndexConn(
+        {("diagnostic_requests", "idx_diagnostic_requests_proxy_client")}, tables
+    )
+    schema_lifecycle._drop_redundant_indexes(uncovered)
+    assert uncovered.ddl == []
+
+
+def test_fresh_schema_no_longer_creates_redundant_indexes() -> None:
+    from services import audit_store, diagnostic_store  # type: ignore
+
+    sources = (
+        inspect.getsource(schema_lifecycle._init_audit_schema)
+        + inspect.getsource(audit_store.AuditStore.init_db)
+        + inspect.getsource(diagnostic_store.DiagnosticStore)
+    )
+    assert "idx_audit_ts (ts)" not in sources
+    assert "idx_diagnostic_requests_proxy_client (" not in sources
+
+
+def test_retire_adblock_cache_stats_drops_table_and_write_only_meta() -> None:
+    executed: list[tuple[str, tuple]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            text = " ".join(str(sql).split())
+            executed.append((text, tuple(params or ())))
+
+            class _Result:
+                def fetchone(self):
+                    return {"1": 1}
+
+            return _Result()
+
+    schema_lifecycle._retire_adblock_cache_stats(Conn())
+    statements = [sql for sql, _params in executed]
+    assert statements[0] == "DROP TABLE IF EXISTS adblock_cache_stats"
+    assert statements[-1] == (
+        "DELETE FROM adblock_proxy_meta "
+        "WHERE k IN ('cache_last_flush', 'cache_current_size')"
+    )
 
 
 class _ApplicationLedgerEvidenceBackfillConn:

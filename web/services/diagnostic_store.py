@@ -576,7 +576,6 @@ class DiagnosticStore:
                                 KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
                                 KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id),
                                 KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id),
-                                KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
                                 KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
                                 KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
                                 KEY idx_diagnostic_requests_proxy_result_ts (proxy_id, result_code, ts)

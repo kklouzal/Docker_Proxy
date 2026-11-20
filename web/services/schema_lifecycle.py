@@ -34,7 +34,7 @@ from services.sql_identifiers import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 34
+_SCHEMA_VERSION = 36
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _CONTROL_PLANE_ID_RE = re.compile(
@@ -618,11 +618,28 @@ _DUPLICATE_DIAGNOSTIC_INDEXES: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+# Migration 35. idx_audit_ts (ts) is stored as (ts, id), the same B-tree as
+# idx_audit_ts_id. idx_diagnostic_requests_proxy_client (proxy_id, client_ip,
+# ts) is a column prefix of the kept (proxy_id, client_ip, ts, bytes) index,
+# which serves every client_ip lookup and aggregate; the only client-filtered
+# ts/id-ordered query is pinned to idx_diagnostic_requests_proxy_ts.
+_REDUNDANT_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("audit_events", "idx_audit_ts", "idx_audit_ts_id"),
+    (
+        "diagnostic_requests",
+        "idx_diagnostic_requests_proxy_client",
+        "idx_diagnostic_requests_proxy_client_bytes",
+    ),
+)
 
-def _drop_duplicate_diagnostic_indexes(conn: Any) -> None:
-    """Drop exact physical duplicates; DROP INDEX is online and in-place."""
+
+def _drop_covered_indexes(conn: Any, entries: tuple[tuple[str, str, str], ...]) -> None:
+    """Drop (table, index, covering) entries whose covering index exists.
+
+    DROP INDEX is online and in-place; one ALTER per table.
+    """
     by_table: dict[str, list[str]] = {}
-    for table, duplicate, twin in _DUPLICATE_DIAGNOSTIC_INDEXES:
+    for table, duplicate, twin in entries:
         if (
             table_exists(conn, table)
             and index_exists(conn, table, duplicate)
@@ -636,6 +653,24 @@ def _drop_duplicate_diagnostic_indexes(conn: Any) -> None:
         conn.execute(
             f"ALTER TABLE {quote_mysql_identifier(table)} {drops}, "
             "ALGORITHM=INPLACE, LOCK=NONE"
+        )
+
+
+def _drop_duplicate_diagnostic_indexes(conn: Any) -> None:
+    _drop_covered_indexes(conn, _DUPLICATE_DIAGNOSTIC_INDEXES)
+
+
+def _drop_redundant_indexes(conn: Any) -> None:
+    _drop_covered_indexes(conn, _REDUNDANT_INDEXES)
+
+
+def _retire_adblock_cache_stats(conn: Any) -> None:
+    """Drop the never-read adblock cache counters and write-only cache meta."""
+    conn.execute("DROP TABLE IF EXISTS adblock_cache_stats")
+    if table_exists(conn, "adblock_proxy_meta"):
+        conn.execute(
+            "DELETE FROM adblock_proxy_meta "
+            "WHERE k IN ('cache_last_flush', 'cache_current_size')"
         )
 
 
@@ -672,7 +707,6 @@ def _init_audit_schema(conn: Any) -> None:
                         detail TEXT,
                         config_sha256 CHAR(64),
                         config_text LONGTEXT,
-                        KEY idx_audit_ts (ts),
                         KEY idx_audit_ts_id (ts, id),
                         KEY idx_audit_kind (kind),
                         KEY idx_audit_proxy_ts (proxy_id, ts)
@@ -1768,6 +1802,20 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "drop_live_stats_tables",
                     _drop_retired_live_stats_tables,
                 ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=35,
+            name="drop_redundant_audit_and_diagnostic_indexes",
+            data_steps=(
+                SchemaDataStep("drop_redundant_indexes", _drop_redundant_indexes),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=36,
+            name="retire_adblock_cache_stats",
+            data_steps=(
+                SchemaDataStep("drop_adblock_cache_stats", _retire_adblock_cache_stats),
             ),
         ),
     )

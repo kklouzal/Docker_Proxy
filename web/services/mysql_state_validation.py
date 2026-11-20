@@ -33,7 +33,6 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "audit_events",
     "adblock_lists",
     "adblock_meta",
-    "adblock_cache_stats",
     "adblock_settings",
     "adblock_counts",
     "adblock_events",

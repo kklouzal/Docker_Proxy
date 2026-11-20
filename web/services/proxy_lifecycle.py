@@ -98,7 +98,6 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
         child_fk="profile_id",
         note="owned through pac_profiles.id",
     ),
-    ProxyLifecycleTable("adblock_cache_stats", order_columns=("proxy_id", "k")),
     ProxyLifecycleTable(
         "adblock_counts", order_columns=("proxy_id", "day", "list_key")
     ),

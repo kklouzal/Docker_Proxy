@@ -112,12 +112,14 @@ def test_adblock_retention_indexes_bootstrap():
     )
     for key in (
         "cache_flush_requested",
-        "cache_last_flush",
-        "cache_current_size",
         "cicap_access_pos",
         "cicap_access_inode",
     ):
         assert ("default", key) in conn.params
+    # Migration 36 retired the never-read cache counters and write-only meta.
+    assert "adblock_cache_stats" not in sql
+    for key in ("cache_last_flush", "cache_current_size"):
+        assert ("default", key) not in conn.params
 
 
 def test_diagnostic_global_retention_indexes_bootstrap(monkeypatch):

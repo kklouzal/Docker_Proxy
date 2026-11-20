@@ -816,9 +816,7 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
             cache_max=int(original_settings.get("cache_max") or 0),
         )
         store.clear_refresh_requested()
-        _with_proxy_id(
-            LIVE_CONFIG.primary_proxy_id, lambda: store.mark_cache_flushed(size=0)
-        )
+        _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.mark_cache_flushed)
 
 
 def test_live_proxy_sync_materializes_adblock_artifact_revision(

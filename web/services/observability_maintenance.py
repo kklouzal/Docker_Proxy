@@ -39,7 +39,6 @@ OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
     "ssl_errors",
     "adblock_events",
     "adblock_counts",
-    "adblock_cache_stats",
     "webfilter_blocked_log",
     "ts_1s",
     "ts_1m",

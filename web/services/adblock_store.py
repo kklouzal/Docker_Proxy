@@ -183,16 +183,6 @@ class AdblockStore:
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS adblock_cache_stats (
-                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                k VARCHAR(64) NOT NULL,
-                v BIGINT NOT NULL
-                , PRIMARY KEY(proxy_id, k)
-            )
-            """,
-        )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS adblock_settings (
                 k VARCHAR(64) PRIMARY KEY,
                 v TEXT NOT NULL
@@ -304,11 +294,6 @@ class AdblockStore:
                 conn, table_name="adblock_events", column_name=column_name, ddl=ddl
             )
         proxy_id = get_proxy_id()
-        for k in ("hits", "misses", "evictions"):
-            conn.execute(
-                "INSERT IGNORE INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s,%s,0)",
-                (proxy_id, k),
-            )
 
         legacy_enabled = _DEFAULT_SETTINGS["enabled"]
         row = conn.execute(
@@ -319,8 +304,6 @@ class AdblockStore:
 
         for key in (
             "cache_flush_requested",
-            "cache_last_flush",
-            "cache_current_size",
             "cicap_access_pos",
             "cicap_access_inode",
         ):
@@ -909,16 +892,10 @@ class AdblockStore:
 
         self._with_db_write_retry(write)
 
-    def mark_cache_flushed(self, *, size: int | None = None) -> None:
+    def mark_cache_flushed(self) -> None:
         def write() -> None:
             with self._connect() as conn:
-                values = {
-                    "cache_flush_requested": "0",
-                    "cache_last_flush": str(_now()),
-                }
-                if size is not None:
-                    values["cache_current_size"] = str(max(0, int(size)))
-                self._set_proxy_meta_values(conn, values)
+                self._set_proxy_meta(conn, "cache_flush_requested", "0")
 
         self._with_db_write_retry(write)
 
