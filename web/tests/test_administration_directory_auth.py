@@ -1212,3 +1212,74 @@ def test_directory_session_profile_db_outage_keeps_session(
     assert response.status_code == 503
     with client.session_transaction() as sess:
         assert sess["user"] == "ldap-user"
+
+
+def _directory_outage_session(monkeypatch, tmp_path):
+    loaded, client, store, audit = _directory_session(monkeypatch, tmp_path)
+    store.unreachable = True
+    _age_directory_check(client, loaded.module._directory_revalidate_seconds)
+    return loaded, client, store, audit
+
+
+def test_directory_outage_keeps_local_break_glass_login_reachable(
+    monkeypatch, tmp_path
+) -> None:
+    _loaded, client, store, _audit = _directory_outage_session(monkeypatch, tmp_path)
+    # Protected pages still answer 503 and keep the directory session.
+    assert client.get("/", follow_redirects=False).status_code == 503
+
+    page = client.get("/login", follow_redirects=False)
+    body = page.get_data(as_text=True)
+
+    assert page.status_code == 200
+    assert 'action="/login"' in body
+    # Rendered as signed out: no navigation into protected pages.
+    assert 'id="primary-nav"' not in body
+    with client.session_transaction() as sess:
+        assert sess["user"] == "ldap-user"
+        token = sess["_csrf_token"]
+
+    response = client.post(
+        "/login",
+        data={"username": "admin", "password": "admin", "csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    # The directory session is replaced, nothing of it carries over.
+    with client.session_transaction() as sess:
+        assert sess["user"] == "admin"
+        assert sess["auth_provider"] == "local"
+        for key in ("directory_lookup", "directory_checked_ts", "auth_policy"):
+            assert key not in sess
+    revalidations = len(store.revalidations)
+    assert client.get("/", follow_redirects=False).status_code == 200
+    assert len(store.revalidations) == revalidations
+
+
+def test_directory_outage_page_offers_working_logout(monkeypatch, tmp_path) -> None:
+    _loaded, client, _store, _audit = _directory_outage_session(monkeypatch, tmp_path)
+
+    response = client.get("/", follow_redirects=False)
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 503
+    assert response.mimetype == "text/html"
+    assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert "<script" not in body
+    assert "directory service is temporarily unavailable" in body
+    assert '<form method="post" action="/logout">' in body
+    assert 'href="/login"' in body
+    form_token = body.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+    with client.session_transaction() as sess:
+        assert sess["user"] == "ldap-user"
+
+    response = client.post(
+        "/logout", data={"csrf_token": form_token}, follow_redirects=False
+    )
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/login")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+    assert client.get("/login").status_code == 200

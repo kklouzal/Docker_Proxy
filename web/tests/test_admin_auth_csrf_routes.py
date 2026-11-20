@@ -631,3 +631,41 @@ def test_authenticated_form_posts_keep_the_global_body_limit(
     )
 
     assert response.status_code in {302, 303}
+
+
+def test_login_stays_reachable_during_mysql_outage(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    def unreachable(*_args: object) -> object:
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    loaded.auth_store.get_user_session_version = unreachable
+    loaded.auth_store.any_users = unreachable
+    loaded.auth_store.authenticate_user = unreachable
+
+    protected = client.get("/", follow_redirects=False)
+    protected_body = protected.get_data(as_text=True)
+    assert protected.status_code == 503
+    assert '<form method="post" action="/logout">' in protected_body
+
+    page = client.get("/login", follow_redirects=False)
+    body = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "database is temporarily unavailable" in body
+    assert 'action="/login"' in body
+
+    with client.session_transaction() as sess:
+        token = sess["_csrf_token"]
+    response = client.post(
+        "/login",
+        data={"username": "admin", "password": "admin", "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+    assert "database is temporarily unavailable" in response.get_data(as_text=True)
+    # The failed attempt neither signs in nor drops the existing session.
+    with client.session_transaction() as sess:
+        assert sess.get("user") == "admin"

@@ -15,15 +15,15 @@
 
     <header class="site-header" id="site-header">
         <div class="container header-inner">
-            <a class="brand" href="{{ url_for('index') if session.get('user') else url_for('login') }}" aria-label="Docker Proxy home">
+            <a class="brand" href="{{ url_for('index') if admin_signed_in else url_for('login') }}" aria-label="Docker Proxy home">
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
                     <strong>Docker Proxy</strong>
-                    <span>Admin control plane{% if session.get('user') and active_proxy %} · {{ active_proxy.display_name }}{% endif %}</span>
+                    <span>Admin control plane{% if admin_signed_in and active_proxy %} · {{ active_proxy.display_name }}{% endif %}</span>
                 </div>
             </a>
 
-            {% if session.get('user') %}
+            {% if admin_signed_in %}
             <div class="version-status" id="version-status" data-version-status-url="{{ url_for('api_version_status') }}" aria-label="Version status">
                 <span class="version-chip state-{{ version_header_status.admin.state }}" data-version-component="admin" title="{{ version_header_status.admin.detail }}">
                     <span class="version-label">Admin</span>
@@ -85,7 +85,7 @@
     </header>
 
     <div id="context-strip-slot">
-        {% if session.get('user') and active_proxy %}
+        {% if admin_signed_in and active_proxy %}
         <div class="context-strip">
             <div class="container context-strip-inner">
                 <div class="context-strip-copy">
