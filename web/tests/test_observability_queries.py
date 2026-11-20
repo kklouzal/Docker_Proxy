@@ -1549,12 +1549,6 @@ def test_observability_queries_surface_ssl_security_and_performance(
     monkeypatch.setattr(
         observability_queries, "get_ssl_errors_store", lambda: ssl_store
     )
-    monkeypatch.setattr(
-        observability_queries, "get_adblock_store", lambda: adblock_store
-    )
-    monkeypatch.setattr(
-        observability_queries, "get_webfilter_store", lambda: webfilter_store
-    )
 
     ssl_payload = queries.ssl_overview(since=2800, limit=10)
     assert ssl_payload["summary"]["bucket_count"] == 1
@@ -1600,8 +1594,15 @@ def test_observability_queries_surface_ssl_security_and_performance(
     assert overview["security"]["summary"]["combined_blocks"] == 5
 
 
+def _no_init_store():
+    msg = "read path must not initialize policy stores"
+    raise AssertionError(msg)
+
+
 def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> None:
+    from services import adblock_store as adblock_store_module  # type: ignore
     from services import observability_queries  # type: ignore
+    from services import webfilter_store as webfilter_store_module  # type: ignore
 
     class Store:
         def init_db(self) -> None:
@@ -1673,8 +1674,9 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
 
     store = Store()
     monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: store)
-    monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: store)
-    monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: store)
+    # The read path must not run store schema/mkdir initialization.
+    monkeypatch.setattr(adblock_store_module, "get_adblock_store", _no_init_store)
+    monkeypatch.setattr(webfilter_store_module, "get_webfilter_store", _no_init_store)
     monkeypatch.setattr(
         observability_queries, "_correlate_policy_events_with_requests", correlate
     )
@@ -2187,12 +2189,6 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
     )
     monkeypatch.setattr(
         observability_queries, "get_ssl_errors_store", lambda: ssl_store
-    )
-    monkeypatch.setattr(
-        observability_queries, "get_adblock_store", lambda: adblock_store
-    )
-    monkeypatch.setattr(
-        observability_queries, "get_webfilter_store", lambda: webfilter_store
     )
 
     queries = observability_queries.ObservabilityQueries()
