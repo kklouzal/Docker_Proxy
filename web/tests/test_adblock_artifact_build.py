@@ -973,6 +973,8 @@ def test_build_active_artifact_reports_no_effective_lists_when_none_selected(
     env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
     try:
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
+        lookup_module = importlib.import_module("services.adblock_lookup")
+        compile_module = importlib.import_module("tools.adblock_compile")
 
         store = store_module.get_adblock_store()
         _enable_first_default_list(store, tmp_path, enabled=False)
@@ -1009,12 +1011,7 @@ def test_build_active_artifact_reports_no_effective_lists_when_none_selected(
                 lookup_strategy = lookup_conn.execute(
                     "SELECT value FROM metadata WHERE key='lookup_strategy'"
                 ).fetchone()[0]
-                idx_resource_type_rule_present = lookup_conn.execute(
-                    """
-                    SELECT 1 FROM sqlite_master
-                    WHERE type='index' AND name='idx_resource_type_rule'
-                    """
-                ).fetchone()
+                schema_error = lookup_module.lookup_schema_error(lookup_conn)
             finally:
                 lookup_conn.close()
 
@@ -1025,10 +1022,10 @@ def test_build_active_artifact_reports_no_effective_lists_when_none_selected(
         assert report["enabled_lists"] == []
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
         assert empty_rule_count == 0
-        assert schema_version == "4"
-        assert idx_resource_type_rule_present == (1,)
-        assert "host-pattern/regex token prefilters" in lookup_strategy
-        assert "generic literal-key prefilter" in lookup_strategy
+        # The empty artifact is one the current reader accepts.
+        assert schema_version == lookup_module.LOOKUP_SCHEMA_VERSION
+        assert schema_error == ""
+        assert lookup_strategy == compile_module.LOOKUP_STRATEGY
     finally:
         for key, value in env_backup.items():
             if value is None:
