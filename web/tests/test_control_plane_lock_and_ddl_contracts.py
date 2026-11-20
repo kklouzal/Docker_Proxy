@@ -72,7 +72,7 @@ def fresh_guard() -> Any:
 
 def test_write_guard_issues_no_ddl_when_tombstone_table_exists(fresh_guard) -> None:
     # CREATE TABLE IF NOT EXISTS implicitly commits the caller's transaction
-    # even when the table exists, so the guard must only probe for it.
+    # even when the table exists, so the guard only reads lifecycle state.
     conn = _GuardConn(tombstone_table=True)
 
     with guard.guarded_proxy_write(conn, "edge-a") as decision:
@@ -81,15 +81,28 @@ def test_write_guard_issues_no_ddl_when_tombstone_table_exists(fresh_guard) -> N
     assert not any(sql.startswith("CREATE") for sql in conn.statements)
 
 
-def test_write_guard_creates_missing_tombstone_table_once(fresh_guard) -> None:
+def test_write_guard_never_creates_missing_tombstone_table(fresh_guard) -> None:
+    # The guard runs inside callers' transactions; any DDL would implicitly
+    # commit them, so a missing lifecycle table fails the write closed instead.
     conn = _GuardConn(tombstone_table=False)
+    missing = RuntimeError("Table 'proxy_lifecycle_tombstones' doesn't exist")
+    original = conn.execute
 
-    with guard.guarded_proxy_write(conn, "edge-a"):
-        pass
-    with guard.guarded_proxy_write(conn, "edge-a"):
-        pass
+    def execute(sql: str, params: Any = None) -> _Result:
+        if " ".join(str(sql).split()).startswith(
+            "SELECT (SELECT action FROM proxy_lifecycle_tombstones"
+        ):
+            conn.statements.append(str(sql))
+            raise missing
+        return original(sql, params)
 
-    assert sum(sql.startswith("CREATE TABLE") for sql in conn.statements) == 1
+    conn.execute = execute
+
+    with pytest.raises(guard.ProxyLifecycleWriteError, match="unavailable"):
+        with guard.guarded_proxy_write(conn, "edge-a"):
+            pytest.fail("write must not run without lifecycle metadata")
+
+    assert not any(sql.startswith(("CREATE", "ALTER")) for sql in conn.statements)
 
 
 def test_write_guard_discards_session_when_lock_release_fails(fresh_guard) -> None:
