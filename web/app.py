@@ -3335,7 +3335,10 @@ def _bound_pre_auth_request_body() -> None:
     # max_content_length (no longer MAX_FORM_MEMORY_SIZE), so cap requests
     # from sessions that are not logged in at the form-memory size; larger
     # bodies get 413 from the Content-Length check before anything is read.
-    if _is_logged_in():
+    # Only mutating requests reach a pre-auth body parser; skipping the rest
+    # keeps the session-version lookup off GET/static/health requests (and
+    # their DB-outage behaviour unchanged).
+    if request.method not in _MUTATING_HTTP_METHODS or _is_logged_in():
         return
     pre_auth_limit = int(app.config["MAX_FORM_MEMORY_SIZE"])
     current_limit = request.max_content_length
