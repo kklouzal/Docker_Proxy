@@ -526,18 +526,18 @@ def test_capture_budget_matches_successful_canonical_bundle_size(
         now_ts=987654321,
         max_bundle_bytes=16_384,
     )
-    bundle = proxy_recovery.create_recovery_bundle(
+    bundle = proxy_recovery.write_recovery_bundle(
         captured.proxy_id,
         captured.tables,
         source_control_plane_id=captured.source_control_plane_id,
         created_ts=captured.created_ts,
         recovery_dir=tmp_path,
         max_bundle_bytes=16_384,
-    )
+    ).read_bytes()
 
-    assert len(proxy_recovery.serialize_recovery_bundle(bundle)) <= 16_384
+    assert len(bundle) <= 16_384
     restored = proxy_recovery.parse_recovery_bundle(
-        proxy_recovery.serialize_recovery_bundle(bundle),
+        bundle,
         expected_proxy_id="edge-01",
         expected_source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
         key=proxy_recovery.read_signing_key("edge-01", tmp_path),

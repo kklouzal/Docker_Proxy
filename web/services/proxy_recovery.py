@@ -359,31 +359,6 @@ def validate_max_bundle_bytes(
     return parsed
 
 
-def create_recovery_bundle(
-    proxy_id: str,
-    tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],
-    *,
-    source_control_plane_id: str,
-    schema_version: int = DATA_SCHEMA_VERSION,
-    created_ts: str | None = None,
-    recovery_dir: Path | str | None = None,
-    max_bundle_bytes: int | None = None,
-) -> RecoveryBundle:
-    unsigned = _unsigned_payload(
-        proxy_id,
-        tables,
-        source_control_plane_id=source_control_plane_id,
-        schema_version=schema_version,
-        created_ts=created_ts,
-    )
-    sealed = _seal_unsigned_payload(
-        unsigned,
-        get_or_create_signing_key(unsigned["proxy_id"], recovery_dir),
-        max_bundle_bytes=resolve_max_bundle_bytes(max_bundle_bytes),
-    )
-    return _bundle_from_envelope(sealed)
-
-
 def write_recovery_bundle(
     proxy_id: str,
     tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],

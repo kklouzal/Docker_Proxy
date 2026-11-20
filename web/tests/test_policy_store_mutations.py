@@ -183,7 +183,6 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         assert current.inspection_enabled is False
 
         store.set_inspection_enabled(True)
-        assert store.get_inspection_enabled() is True
         assert store.list_all().inspection_enabled is True
 
         store.remove_domain("nobump", "*.example.com")

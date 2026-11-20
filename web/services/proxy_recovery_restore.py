@@ -11,7 +11,6 @@ from services import adblock_artifacts, proxy_recovery
 from services.certificate_digest import certificate_bundle_sha256
 from services.db import (
     acquire_mysql_named_lock,
-    connect,
     release_mysql_named_lock,
     staged_blob_parameter,
 )
@@ -273,7 +272,6 @@ _SAML_DEFAULT_ROW: Final = MappingProxyType(
     },
 )
 
-_ADOPTION_MARKER_TABLE: Final = "proxy_recovery_adoptions"
 _ADOPTION_MARKER_PAIR_SELECT_SQL: Final = (
     "SELECT source_control_plane_id, target_control_plane_id, bundle_content_sha256, status, detail "
     "FROM proxy_recovery_adoptions "
@@ -503,28 +501,6 @@ def restore_recovery_bundle(
         restored_identity,
         adopted_ts=plan.now_ts,
     )
-
-
-def read_validate_and_restore(
-    target_proxy_id: str,
-    *,
-    connect_factory=connect,
-    expected_source_control_plane_id: str | None = None,
-    recovery_dir: str | None = None,
-    now_ts: int | None = None,
-    max_bundle_bytes: int | None = None,
-) -> RestoreResult:
-    resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
-        max_bundle_bytes
-    )
-    bundle = proxy_recovery.read_recovery_bundle(
-        target_proxy_id,
-        expected_source_control_plane_id=expected_source_control_plane_id,
-        recovery_dir=recovery_dir,
-        max_bundle_bytes=resolved_max_bundle_bytes,
-    )
-    with connect_factory() as conn:
-        return restore_recovery_bundle(conn, bundle, target_proxy_id, now_ts=now_ts)
 
 
 def validate_restore_contract() -> None:
