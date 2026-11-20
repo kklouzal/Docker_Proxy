@@ -187,3 +187,18 @@ def test_squid_logrotate_truncation_failure_is_reported_without_success(
     ) == "active evidence\n"
     assert "failed to truncate" in result.stderr
     assert f"truncated {log_path}" not in result.stdout
+
+
+def test_squid_logrotate_bounds_cache_log_by_default() -> None:
+    script = SCRIPT_PATH.read_text(encoding="utf-8")
+    default_logfiles = script.split('LOGFILES="${SQUID_LOG_ROTATE_LOGFILES:-', 1)[1]
+    default_logfiles = default_logfiles.split("}", 1)[0].split()
+
+    # Runtime `squid -k rotate` is never invoked, so cache.log (which
+    # ssl_errors_store tails with copytruncate detection) must be rotated here.
+    assert default_logfiles == [
+        "/var/log/squid/access-observe.log",
+        "/var/log/squid/icap.log",
+        "/var/log/squid/cache.log",
+        "/var/log/cicap-access.log",
+    ]

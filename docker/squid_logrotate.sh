@@ -6,7 +6,9 @@ INTERVAL_SECONDS="${SQUID_LOG_ROTATE_INTERVAL_SECONDS:-86400}"
 INITIAL_DELAY_SECONDS="${SQUID_LOG_ROTATE_INITIAL_DELAY_SECONDS:-15}"
 SQUID_CONF_PATH="${SQUID_CONF_PATH:-/etc/squid/squid.conf}"
 DEFAULT_LOGFILE_ROTATE_COUNT=10
-LOGFILES="${SQUID_LOG_ROTATE_LOGFILES:-/var/log/squid/access-observe.log /var/log/squid/icap.log /var/log/cicap-access.log}"
+# cache.log is included: without `squid -k rotate` nothing else bounds it.
+# Squid opens every one of these in append mode, so copytruncate is safe.
+LOGFILES="${SQUID_LOG_ROTATE_LOGFILES:-/var/log/squid/access-observe.log /var/log/squid/icap.log /var/log/squid/cache.log /var/log/cicap-access.log}"
 
 is_nonnegative_integer() {
   case "$1" in
