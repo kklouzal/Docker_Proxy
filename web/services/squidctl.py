@@ -17,6 +17,7 @@ from services.squid_config_forms import (
     max_squid_workers,
 )
 from services.squid_core import SquidController as _CoreSquidController
+from services.squid_core import migrate_legacy_cookie_cache_deny
 from services.squid_host_overrides import (
     default_https_intercept_port,
     default_intercept_port,
@@ -1827,6 +1828,13 @@ class SquidController(_CoreSquidController):
                 return None
             return "\n".join(lines)
 
+        def find_cache_policy_rules() -> str | None:
+            # Show the rules the proxy actually runs: revisions saved before
+            # cookie-bearing static assets became cacheable are migrated by
+            # normalize_config_text, so the form must not offer the old deny.
+            rules = find_block_or_lines("CACHE_POLICY")
+            return None if rules is None else migrate_legacy_cookie_cache_deny(rules)
+
         cache_dir_settings = find_cache_dir_settings()
         http_listener_settings = self._http_port_listener_settings(text)
         sslcrtd_settings = find_sslcrtd_children_settings()
@@ -2130,7 +2138,7 @@ class SquidController(_CoreSquidController):
                 prefixes=("stats_collection ",),
             ),
             "tls_key_log_path": find_str("tls_key_log"),
-            "cache_policy_rules_text": find_block_or_lines("CACHE_POLICY"),
+            "cache_policy_rules_text": find_cache_policy_rules(),
             "refresh_patterns_text": find_block_or_lines(
                 "REFRESH_PATTERNS",
                 prefixes=("refresh_pattern ",),

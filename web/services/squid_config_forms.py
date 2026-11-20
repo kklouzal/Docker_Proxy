@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from services.squid_core import COOKIE_STATIC_CACHE_RULES
 from services.squid_host_overrides import (
     default_https_intercept_port,
     default_intercept_port,
@@ -18,13 +19,13 @@ OptionResolver = Callable[[TunableMap, int], Any]
 FieldReader = Callable[[FormMap, Any, int], tuple[bool, Any]]
 
 
-DEFAULT_CACHE_POLICY_RULES = """# Never cache authenticated or cookie-bearing traffic.
+DEFAULT_CACHE_POLICY_RULES = f"""# Never cache Authorization-bearing traffic.
 acl has_auth req_header Authorization .
 acl has_cookie req_header Cookie .
 note cache_bypass auth has_auth
-note cache_bypass cookie has_cookie
 cache deny has_auth
-cache deny has_cookie
+
+{COOKIE_STATIC_CACHE_RULES}
 
 # Prevent caching responses with complex Vary headers.
 acl has_vary rep_header Vary .

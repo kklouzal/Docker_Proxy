@@ -72,13 +72,24 @@ minimum_expiry_time 60 seconds
 max_stale 604800 seconds
 refresh_all_ims off
 # BEGIN SQUID-UI BLOCK: CACHE_POLICY
-# Never cache authenticated or cookie-bearing traffic.
+# Never cache Authorization-bearing traffic.
 acl has_auth req_header Authorization .
 acl has_cookie req_header Cookie .
 note cache_bypass auth has_auth
-note cache_bypass cookie has_cookie
 cache deny has_auth
-cache deny has_cookie
+
+# Cache cookie-bearing requests only for static assets the origin marked shareable.
+acl cookie_static_url urlpath_regex -i \.(woff2?|ttf|otf|eot|css|js|mjs|map|wasm|avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?|mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm|mp3|m4a|wav|ogg|oga|opus|flac|aac|iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run|rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$
+acl cookie_reply_sets_cookie rep_header Set-Cookie .
+acl cookie_reply_private rep_header Cache-Control -i (^|[,[:space:]])(private|no-store|no-cache)([=,[:space:]]|$)
+acl cookie_reply_shared rep_header Cache-Control -i (^|[,[:space:]])(public|immutable|s-maxage=0*[1-9][0-9]*)([,[:space:]]|$)
+acl cookie_reply_document rep_mime_type -i ^(text/html|application/xhtml\+xml|text/json|application/json|application/[^;]*\+json|text/xml|application/xml)([;[:space:]]|$)
+acl cookie_reply_unshareable any-of cookie_reply_sets_cookie cookie_reply_private cookie_reply_document !cookie_reply_shared
+acl cookie_cache_hit rep_header Cache-Status ;hit(;[^,]*)?$
+note cache_bypass cookie has_cookie !cookie_static_url
+note cache_bypass cookie-reply has_cookie !cookie_cache_hit cookie_reply_unshareable
+cache deny has_cookie !cookie_static_url
+store_miss deny has_cookie cookie_reply_unshareable
 
 # Prevent caching responses with complex Vary headers.
 acl has_vary rep_header Vary .

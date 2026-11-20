@@ -53,6 +53,62 @@ _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 
 
+# Cookie-bearing requests may use the shared cache only for static asset URLs,
+# and their replies are stored only when the origin marked them shareable.
+# Requires `acl has_cookie` to be defined first. Squid checks `cache` before the
+# reply exists, so the reply conditions go to `store_miss` (fast ACLs with the
+# reply). A denied reply also becomes unshareable for collapsed requests, which
+# then forward on their own. Squid itself strips Set-Cookie from every hit, but
+# a reply that sets a cookie is per-user, so it is never stored for a cookie
+# request. `store_miss` does not consult refresh_pattern overrides, so private,
+# no-store and no-cache stay binding here even with ignore-private or
+# ignore-no-store. "cookie" logs a request-level bypass; "cookie-reply" logs a
+# static miss whose reply was refused (not hits from the existing cache).
+COOKIE_STATIC_CACHE_RULES = r"""# Cache cookie-bearing requests only for static assets the origin marked shareable.
+acl cookie_static_url urlpath_regex -i \.(woff2?|ttf|otf|eot|css|js|mjs|map|wasm|avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?|mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm|mp3|m4a|wav|ogg|oga|opus|flac|aac|iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run|rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$
+acl cookie_reply_sets_cookie rep_header Set-Cookie .
+acl cookie_reply_private rep_header Cache-Control -i (^|[,[:space:]])(private|no-store|no-cache)([=,[:space:]]|$)
+acl cookie_reply_shared rep_header Cache-Control -i (^|[,[:space:]])(public|immutable|s-maxage=0*[1-9][0-9]*)([,[:space:]]|$)
+acl cookie_reply_document rep_mime_type -i ^(text/html|application/xhtml\+xml|text/json|application/json|application/[^;]*\+json|text/xml|application/xml)([;[:space:]]|$)
+acl cookie_reply_unshareable any-of cookie_reply_sets_cookie cookie_reply_private cookie_reply_document !cookie_reply_shared
+acl cookie_cache_hit rep_header Cache-Status ;hit(;[^,]*)?$
+note cache_bypass cookie has_cookie !cookie_static_url
+note cache_bypass cookie-reply has_cookie !cookie_cache_hit cookie_reply_unshareable
+cache deny has_cookie !cookie_static_url
+store_miss deny has_cookie cookie_reply_unshareable"""
+
+_LEGACY_COOKIE_CACHE_DENY_RE = re.compile(
+    r"^[ \t]*cache[ \t]+deny[ \t]+has_cookie[ \t]*$", re.MULTILINE
+)
+_LEGACY_COOKIE_NOTE_RE = re.compile(
+    r"^[ \t]*note[ \t]+cache_bypass[ \t]+cookie[ \t]+has_cookie[ \t]*$\n?",
+    re.MULTILINE,
+)
+_COOKIE_CACHE_ACL_DEFINED_RE = re.compile(r"^[ \t]*acl[ \t]+has_cookie\b", re.MULTILINE)
+_COOKIE_STATIC_RULES_PRESENT_RE = re.compile(
+    r"^[ \t]*acl[ \t]+cookie_static_url\b", re.MULTILINE
+)
+
+
+def migrate_legacy_cookie_cache_deny(text: str) -> str:
+    """Replace the old blanket `cache deny has_cookie` with the static-asset rules.
+
+    Revisions saved before cookie-bearing static assets became cacheable carry
+    the blanket deny and its note. Rewriting them here, rather than in the
+    stored revision, lets the new policy reach every proxy on deploy. The output
+    no longer matches the legacy line, so normalization stays idempotent.
+    Operator configs that already define the static rules are left alone.
+    """
+    match = _LEGACY_COOKIE_CACHE_DENY_RE.search(text)
+    if match is None or _COOKIE_STATIC_RULES_PRESENT_RE.search(text):
+        return text
+    acl_match = _COOKIE_CACHE_ACL_DEFINED_RE.search(text)
+    if acl_match is None or acl_match.start() > match.start():
+        return text
+    text = text[: match.start()] + COOKIE_STATIC_CACHE_RULES + text[match.end() :]
+    return _LEGACY_COOKIE_NOTE_RE.sub("", text)
+
+
 def _clamav_required_from_env() -> bool:
     return security_env_bool("CLAMAV_REQUIRED", default=False) or security_env_bool(
         "FILE_SECURITY_AV_REQUIRED", default=False
@@ -874,6 +930,7 @@ class SquidController:
             "include /etc/squid/conf.d/30-webfilter.conf",
         )
         text = self._ensure_forwarding_canary_access_block(text)
+        text = migrate_legacy_cookie_cache_deny(text)
 
         note_requirements = (
             (r"^\s*acl\s+steam_sites\b", "note ssl_exception steam steam_sites"),
