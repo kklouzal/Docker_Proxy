@@ -32,7 +32,10 @@ from services.logutil import log_exception_throttled
 from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
 from services.squid_host_overrides import active_overrides as active_host_overrides
 from services.squid_host_overrides import apply_host_overrides
-from services.squid_listeners import parse_squid_listeners
+from services.squid_listeners import (
+    has_static_tls_server_certificate,
+    parse_squid_listeners,
+)
 from services.squid_transaction import (
     SquidTransactionJournal,
     SquidTransactionRecoveryRequiredError,
@@ -50,6 +53,10 @@ _CACHE_CLEAR_OPERATIONS = frozenset({"clear_disk_cache", "recover_clear_disk_cac
 _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
+_TLS_SESSION_CACHE_SIZE_RE = re.compile(
+    r"^[ \t]*sslproxy_session_cache_size\b.*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 
 
@@ -789,6 +796,19 @@ class SquidController:
             return regex.sub(lambda _match: replacement, text, count=1)
         return text.rstrip() + "\n" + replacement + "\n"
 
+    def _drop_unused_tls_session_cache(self, text: str) -> str:
+        """Release the shared TLS session cache when no listener can use it.
+
+        Squid attaches ``sslproxy_session_cache_size`` only to listeners that
+        serve a static certificate. Bumped clients get per-connection generated
+        contexts, so with only certificate-generating ``ssl-bump`` listeners the
+        cache is never consulted (no client resumes through it) while Squid
+        still commits the whole shared-memory segment at startup.
+        """
+        if has_static_tls_server_certificate(text):
+            return text
+        return _TLS_SESSION_CACHE_SIZE_RE.sub("sslproxy_session_cache_size 0 MB", text)
+
     def _ensure_line_before_first_http_access(self, text: str, line: str) -> str:
         wanted = line.strip()
         if not wanted:
@@ -944,6 +964,8 @@ class SquidController:
         # Host sizing and listener ports from this proxy's environment are
         # authoritative over the saved config revision for what they own.
         text = apply_host_overrides(text, active_host_overrides())
+        # After the overlay: it can add the managed listeners.
+        text = self._drop_unused_tls_session_cache(text)
         return text if text.endswith("\n") else text + "\n"
 
     def _icap_include_path(self) -> Path:

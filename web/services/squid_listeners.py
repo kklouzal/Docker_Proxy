@@ -16,6 +16,31 @@ def logical_lines(text: str):
         yield " ".join(line.rstrip().rstrip("\\").strip() for line in pending).strip()
 
 
+def has_static_tls_server_certificate(text: str) -> bool:
+    """Whether a listener serves TLS clients from its configured certificate.
+
+    Squid's shared TLS session cache (``sslproxy_session_cache_size``) is
+    attached only to such static listener contexts. ``ssl-bump`` listeners that
+    generate host certificates (Squid's default) serve every bumped client from a
+    per-connection generated context instead, so they never use that cache.
+    """
+    for logical in logical_lines(text):
+        parts = logical.split()
+        if not parts or parts[0].lower() not in {"http_port", "https_port"}:
+            continue
+        options = [part.lower() for part in parts[2:]]
+        if not any(option.startswith(("cert=", "tls-cert=")) for option in options):
+            continue
+        generating = all(
+            option in {"generate-host-certificates", "generate-host-certificates=on"}
+            for option in options
+            if option.startswith("generate-host-certificates")
+        )
+        if "ssl-bump" not in options or not generating:
+            return True
+    return False
+
+
 def parse_squid_listeners(
     text: str, *, fallback_port: int = 3128
 ) -> tuple[dict[str, object], ...]:

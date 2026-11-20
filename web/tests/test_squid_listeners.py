@@ -31,3 +31,24 @@ def test_malformed_config_falls_back_consistently():
     assert parse_squid_listeners("http_port nope", fallback_port=4128) == (
         {"host": None, "port": 4128, "mode": "explicit", "response": True},
     )
+
+
+def test_static_tls_certificate_listener_detection():
+    from services.squid_listeners import has_static_tls_server_certificate
+
+    generating = """
+http_port 0.0.0.0:3128 ssl-bump \\
+\tcert=/etc/squid/ssl/certs/ca.crt \\
+\tgenerate-host-certificates=on
+https_port 0.0.0.0:3130 intercept ssl-bump name=https_intercept cert=/c.crt
+https_port 3131 intercept ssl-bump tls-cert=/c.crt generate-host-certificates
+http_port 3129 intercept
+# https_port 443 tls-cert=/static.crt
+"""
+    assert has_static_tls_server_certificate(generating) is False
+    assert has_static_tls_server_certificate(
+        generating + "https_port 443 tls-cert=/static.crt\n"
+    )
+    assert has_static_tls_server_certificate(
+        "http_port 3128 ssl-bump cert=/c.crt generate-host-certificates=off\n"
+    )
