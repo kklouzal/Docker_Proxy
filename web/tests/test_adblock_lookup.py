@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -18,46 +17,6 @@ def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
     out = tmp_path / "compiled"
     out.mkdir()
 
-    class Writers:
-        pass
-
-    paths = {
-        "network_jsonl": out / "network_rules.jsonl",
-        "cosmetic_jsonl": out / "cosmetic_rules.jsonl",
-        "network_no_options_jsonl": out / "network_no_options.jsonl",
-        "network_with_options_jsonl": out / "network_with_options.jsonl",
-        "network_option_domain_jsonl": out / "network_option_domain.jsonl",
-        "network_option_third_party_jsonl": out / "network_option_third_party.jsonl",
-        "network_option_type_jsonl": out / "network_option_type.jsonl",
-        "network_option_misc_jsonl": out / "network_option_misc.jsonl",
-        "network_kind_domain_only_jsonl": out / "network_kind_domain_only.jsonl",
-        "network_kind_host_anchored_jsonl": out / "network_kind_host_anchored.jsonl",
-        "network_kind_left_anchored_jsonl": out / "network_kind_left_anchored.jsonl",
-        "network_kind_substring_jsonl": out / "network_kind_substring.jsonl",
-        "network_kind_wildcard_jsonl": out / "network_kind_wildcard.jsonl",
-        "network_kind_regex_jsonl": out / "network_kind_regex.jsonl",
-        "network_block_jsonl": out / "network_block.jsonl",
-        "network_exception_jsonl": out / "network_exception.jsonl",
-        "request_index_domain_jsonl": out / "request_index_domain.jsonl",
-        "request_index_host_jsonl": out / "request_index_host.jsonl",
-        "request_index_regex_jsonl": out / "request_index_regex.jsonl",
-        "request_index_generic_jsonl": out / "request_index_generic.jsonl",
-        "cosmetic_elemhide_jsonl": out / "cosmetic_elemhide.jsonl",
-        "cosmetic_elemhide_exception_jsonl": out / "cosmetic_elemhide_exception.jsonl",
-        "cosmetic_extended_css_jsonl": out / "cosmetic_extended_css.jsonl",
-        "cosmetic_extended_css_exception_jsonl": out
-        / "cosmetic_extended_css_exception.jsonl",
-        "cosmetic_html_filter_jsonl": out / "cosmetic_html_filter.jsonl",
-        "cosmetic_html_filter_exception_jsonl": out
-        / "cosmetic_html_filter_exception.jsonl",
-        "cosmetic_scriptlet_jsonl": out / "cosmetic_scriptlet.jsonl",
-        "cosmetic_scriptlet_exception_jsonl": out
-        / "cosmetic_scriptlet_exception.jsonl",
-        "cosmetic_scoped_jsonl": out / "cosmetic_scoped.jsonl",
-        "cosmetic_global_jsonl": out / "cosmetic_global.jsonl",
-        "cosmetic_exception_jsonl": out / "cosmetic_exception.jsonl",
-        "cosmetic_non_exception_jsonl": out / "cosmetic_non_exception.jsonl",
-    }
     agg = ac._Aggregate(
         network_rules_total=0,
         network_rules_by_kind={},
@@ -68,39 +27,14 @@ def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
         option_key_counts={},
         option_group_counts={},
     )
-    with ExitStack() as stack:
-        writers = Writers()
-        for name, path in paths.items():
-            setattr(
-                writers,
-                name,
-                stack.enter_context(path.open("w", encoding="utf-8", newline="\n")),
-            )
-        writers.network_type_pos_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
-        writers.network_type_neg_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_not_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
+    with (out / "network_rules.jsonl").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as network_jsonl:
         ac._compile_and_extract_all(
             lines=lines,
             list_key="sample",
             agg=agg,
-            writers=writers,
+            network_jsonl=network_jsonl,
         )
 
     db_path = out / "request_lookup.sqlite"
