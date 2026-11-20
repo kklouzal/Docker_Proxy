@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# The sans-IO ICAP readers return their result through StopIteration.
+# ruff: file-ignore[return-in-generator]
 from __future__ import annotations
 
 import argparse
@@ -8,10 +10,13 @@ import html
 import io
 import os
 import re
+import selectors
 import socket
 import socketserver
 import sys
+import threading
 import time
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -403,22 +408,31 @@ def _preview_body_parse(rest: bytes, body_offset: int) -> tuple[int | None, bool
         cursor += len(_CRLF)
 
 
+# The ICAP message readers below are sans-IO generators: each ``yield n`` asks
+# the driver for up to n more bytes and receives them (b"" at end of stream,
+# None when the read timed out or failed). The server's event loop drives them
+# from non-blocking sockets, so one slow client never blocks the others.
+_ReadRequest = Generator[int, bytes | None, Any]
+
+
 def _drain_chunked_body(
-    sock: Any,
     body: bytes,
     *,
     max_drain_bytes: int,
-) -> bool:
+) -> Generator[int, bytes | None, bool]:
+    """Consume one chunked body; return whether it ended cleanly in bounds.
+
+    Yields:
+        The most bytes wanted next from the connection.
+
+    """
     max_drain_bytes = max(0, int(max_drain_bytes or 0))
     data = bytearray(body)
     cursor = 0
 
-    def ensure(size: int) -> bool:
+    def ensure(size: int) -> Generator[int, bytes | None, bool]:
         while len(data) < size and len(data) < max_drain_bytes:
-            try:
-                chunk = sock.recv(min(8192, max_drain_bytes - len(data)))
-            except TimeoutError, OSError:
-                return False
+            chunk = yield min(8192, max_drain_bytes - len(data))
             if not chunk:
                 return False
             data.extend(chunk)
@@ -427,7 +441,7 @@ def _drain_chunked_body(
     while len(data) <= max_drain_bytes:
         line_end = data.find(_CRLF, cursor)
         while line_end < 0:
-            if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
+            if len(data) >= max_drain_bytes or not (yield from ensure(len(data) + 1)):
                 return False
             line_end = data.find(_CRLF, cursor)
         chunk_size = _parse_chunk_size_line(bytes(data[cursor:line_end]))
@@ -441,9 +455,11 @@ def _drain_chunked_body(
                     return True
                 if invalid_trailers:
                     return False
-                if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
+                if len(data) >= max_drain_bytes or not (
+                    yield from ensure(len(data) + 1)
+                ):
                     return False
-        if not ensure(cursor + chunk_size + len(_CRLF)):
+        if not (yield from ensure(cursor + chunk_size + len(_CRLF))):
             return False
         cursor += chunk_size
         if data[cursor : cursor + len(_CRLF)] != _CRLF:
@@ -453,20 +469,22 @@ def _drain_chunked_body(
 
 
 def _read_icap_message(
-    sock: Any,
     *,
     max_bytes: int,
     max_body_drain_bytes: int,
-    timeout_seconds: float,
     pending: bytes = b"",
-) -> tuple[bytes, bytes, bool]:
-    sock.settimeout(max(0.1, float(timeout_seconds or 0)))
+) -> Generator[int, bytes | None, tuple[bytes, bytes, bool]]:
+    """Read one ICAP message; return (message, bytes after it, force close).
+
+    Yields:
+        The most bytes wanted next from the connection.
+
+    """
     data = bytearray(pending)
     force_close = False
     while b"\r\n\r\n" not in data and len(data) < max_bytes:
-        try:
-            chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except TimeoutError, OSError:
+        chunk = yield min(8192, max_bytes - len(data))
+        if chunk is None:
             return bytes(data), b"", True
         if not chunk:
             break
@@ -500,9 +518,8 @@ def _read_icap_message(
     required_rest_bytes = min(end_candidates) if end_candidates else len(rest)
 
     while len(rest) < required_rest_bytes and len(data) < max_bytes:
-        try:
-            chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except TimeoutError, OSError:
+        chunk = yield min(8192, max_bytes - len(data))
+        if chunk is None:
             force_close = True
             break
         if not chunk:
@@ -510,9 +527,8 @@ def _read_icap_message(
         data.extend(chunk)
         rest += chunk
     while not end_candidates and b"\r\n\r\n" not in rest and len(data) < max_bytes:
-        try:
-            chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except TimeoutError, OSError:
+        chunk = yield min(8192, max_bytes - len(data))
+        if chunk is None:
             force_close = True
             break
         if not chunk:
@@ -524,9 +540,8 @@ def _read_icap_message(
         body_offset = int(offsets.get("req-body", 0) or 0)
         body_end, invalid_preview = _preview_body_parse(rest, body_offset)
         while body_end is None and not invalid_preview and len(data) < max_bytes:
-            try:
-                chunk = sock.recv(min(8192, max_bytes - len(data)))
-            except TimeoutError, OSError:
+            chunk = yield min(8192, max_bytes - len(data))
+            if chunk is None:
                 force_close = True
                 break
             if not chunk:
@@ -543,12 +558,12 @@ def _read_icap_message(
         body_offset = int(offsets.get("req-body", 0) or 0)
         if body_offset < 0 or len(rest) < body_offset:
             return bytes(data), b"", True
-        if not _drain_chunked_body(
-            sock,
+        # An unpreviewed body is drained (bounded) so closing afterwards does
+        # not reset the connection under the response.
+        yield from _drain_chunked_body(
             rest[body_offset:],
             max_drain_bytes=max_body_drain_bytes,
-        ):
-            force_close = True
+        )
         force_close = True
 
     message_end = len(header_blob) + len(b"\r\n\r\n") + required_rest_bytes
@@ -565,151 +580,99 @@ def _connection_close_requested(header_blob: bytes) -> bool:
     return any("close" in tokens for tokens in token_sets) or len(token_sets) > 1
 
 
-def _send_icap_response(sock: socket.socket, response: bytes) -> bool:
-    try:
-        sock.sendall(response)
-        return True
-    except BrokenPipeError, ConnectionResetError, TimeoutError:
-        return False
-    except OSError as exc:
-        if exc.errno in {errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT}:
-            return False
-        raise
+_QUIET_SEND_ERRNOS = frozenset({errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT})
 
 
-class _AdblockIcapHandler(socketserver.BaseRequestHandler):
-    server: _AdblockIcapServer
+class _AppendLog:
+    """Append-mode log file kept open between blocked requests.
 
-    def setup(self) -> None:
-        super().setup()
+    Each append re-checks the path, so a log removed or replaced on disk is
+    reopened (with its directory recreated) rather than written to a stale
+    file; copytruncate rotation keeps the same file and needs no reopen.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self._fd = -1
+        self._identity: tuple[int, int] | None = None
+
+    def append(self, data: bytes) -> None:
         try:
-            self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            current = os.stat(self.path)
+            identity: tuple[int, int] | None = (current.st_dev, current.st_ino)
+        except FileNotFoundError:
+            identity = None
+        if self._fd < 0 or identity is None or identity != self._identity:
+            self._reopen()
+        view = memoryview(data)
+        try:
+            while view:
+                view = view[os.write(self._fd, view) :]
         except OSError:
-            pass
+            self.close()
+            raise
 
-    def handle(self) -> None:
-        max_request_bytes = int(getattr(self.server, "max_request_bytes", 262144))
-        max_body_drain_bytes = int(
-            getattr(self.server, "max_body_drain_bytes", 8388608),
-        )
-        timeout_seconds = float(getattr(self.server, "request_timeout_seconds", 5.0))
-        max_keepalive_requests = max(
-            1,
-            int(getattr(self.server, "max_keepalive_requests", 1000)),
-        )
-        request_count = 0
-        pending = b""
-        while request_count < max_keepalive_requests:
-            data, pending, read_close = _read_icap_message(
-                self.request,
-                max_bytes=max_request_bytes,
-                max_body_drain_bytes=max_body_drain_bytes,
-                timeout_seconds=timeout_seconds,
-                pending=pending,
-            )
-            if not data:
-                return
-            request_count += 1
-            header_blob, _, _rest = data.partition(b"\r\n\r\n")
-            close = (
-                read_close
-                or _connection_close_requested(header_blob)
-                or (request_count >= max_keepalive_requests)
-            )
-            lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()
-            request_line = lines[0] if lines else ""
-            parts = request_line.split()
-            method = parts[0].upper() if parts else ""
-            if method == "OPTIONS":
-                self.server.increment_stat("options")
-                if not _send_icap_response(
-                    self.request, _options_response(close=close)
-                ):
-                    return
-                if close:
-                    return
-                continue
-            if method != "REQMOD":
-                self.server.increment_stat("method_not_allowed")
-                if not _send_icap_response(
-                    self.request,
-                    _icap_response(
-                        "405 Method Not Allowed",
-                        {"Encapsulated": "null-body=0"},
-                        close=close,
-                    ),
-                ):
-                    return
-                if close:
-                    return
-                continue
+    def _reopen(self) -> None:
+        self.close()
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666)
+        stat = os.fstat(fd)
+        self._fd = fd
+        self._identity = (stat.st_dev, stat.st_ino)
 
-            http_method, url, http_headers = _parse_http_request(
-                _encapsulated_http_request(data),
-            )
-            if not url:
-                self.server.increment_stat("parse_miss")
-                if not _send_icap_response(self.request, _allow_response(close=close)):
-                    return
-                if close:
-                    return
-                continue
-
-            # Current Squid routing sends only this method set to adblock. Fail
-            # open, with distinct attribution, if a legacy/custom config sends
-            # CONNECT or another unsupported method rather than applying a
-            # generic URL rule under semantics the engine does not support.
-            if http_method not in SUPPORTED_REQUEST_METHODS:
-                self.server.increment_stat("unsupported_http_method")
-                self.server.increment_stat("allowed")
-                if not _send_icap_response(self.request, _allow_response(close=close)):
-                    return
-                if close:
-                    return
-                continue
-
-            self.server.increment_stat("reqmod")
-            decision = self.server.engine.decide(
-                url,
-                method=http_method,
-                headers=http_headers,
-            )
-            if decision.blocked:
-                self.server.increment_stat("blocked")
-                list_key = _decision_list_key(decision)
-                self.server.log_access(
-                    client_ip=self.client_address[0],
-                    method=http_method,
-                    url=url,
-                    icap_status=200,
-                    http_status=403,
-                    http_resp_line="HTTP/1.1 403 Forbidden",
-                    list_key=list_key,
-                    rule_id=decision.rule_id,
-                    decision_action=decision.action,
-                    decision_reason=decision.reason,
-                )
-                if not _send_icap_response(
-                    self.request,
-                    _block_response(url, decision.raw, close=close),
-                ):
-                    return
-            else:
-                self.server.increment_stat("allowed")
-                if not _send_icap_response(self.request, _allow_response(close=close)):
-                    return
-            if close:
-                return
+    def close(self) -> None:
+        fd, self._fd = self._fd, -1
+        self._identity = None
+        if fd >= 0:
+            os.close(fd)
 
 
-class _AdblockIcapServer(socketserver.ThreadingTCPServer):
+class _Connection:
+    """One Squid ICAP connection owned by the server's event loop."""
+
+    __slots__ = (
+        "client_ip",
+        "close_after_send",
+        "deadline",
+        "outgoing",
+        "pending",
+        "reader",
+        "request_count",
+        "sock",
+        "wanted",
+        "writing",
+    )
+
+    def __init__(self, sock: socket.socket, client_ip: str) -> None:
+        self.sock = sock
+        self.client_ip = client_ip
+        self.reader: _ReadRequest | None = None
+        self.wanted = 0
+        self.outgoing = b""
+        self.pending = b""
+        self.close_after_send = False
+        self.request_count = 0
+        self.deadline = 0.0
+        self.writing = False
+
+
+class _AdblockIcapServer(socketserver.TCPServer):
+    """Single-threaded, event-driven adblock REQMOD service.
+
+    Decisions are CPU-bound Python work, so connection threads only add GIL
+    hand-offs: one event loop serves every persistent Squid connection with
+    one SQLite connection and no per-connection thread or cache.
+    """
+
     allow_reuse_address = True
-    daemon_threads = False
     # Squid opens one ICAP connection per concurrent transaction, so a page
     # load burst connects dozens at once. socketserver's default backlog of 5
     # overflows and the dropped handshakes retry only after the 1 s TCP
     # retransmission timeout.
     request_queue_size = 128
+    # How often idle and stalled connections are checked against their
+    # read/write timeout.
+    _deadline_sweep_seconds = 0.1
 
     def __init__(
         self,
@@ -724,29 +687,267 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         stats: HelperStats | None = None,
     ) -> None:
         self.engine = engine
-        super().__init__(server_address, _AdblockIcapHandler)
-        self.access_log_path = access_log_path
+        # Set before binding: a bind failure calls server_close().
+        self._selector = selectors.DefaultSelector()
+        self._access_log = _AppendLog(access_log_path)
+        super().__init__(server_address, socketserver.BaseRequestHandler)
         self.max_request_bytes = max_request_bytes
         self.max_body_drain_bytes = max(8192, int(max_body_drain_bytes or 8192))
         self.request_timeout_seconds = max(0.1, float(request_timeout_seconds or 0))
         self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
         self.stats = stats
+        self._connections: dict[int, _Connection] = {}
+        self._shutdown_requested = False
+        self._stopped = threading.Event()
+        self._stopped.set()
 
-    def process_request_thread(
-        self,
-        request: socket.socket,
-        client_address: tuple[str, int],
-    ) -> None:
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self._stopped.clear()
+        self._shutdown_requested = False
+        self.socket.setblocking(False)
+        selector = self._selector
+        selector.register(self.socket, selectors.EVENT_READ, None)
+        next_sweep = time.monotonic() + self._deadline_sweep_seconds
         try:
-            super().process_request_thread(request, client_address)
+            while not self._shutdown_requested:
+                timeout = min(poll_interval, self._deadline_sweep_seconds)
+                for key, _mask in selector.select(timeout):
+                    conn = key.data
+                    if conn is None:
+                        self._accept_ready()
+                    elif conn.sock.fileno() >= 0:
+                        self._guarded(self._ready, conn)
+                now = time.monotonic()
+                if now >= next_sweep:
+                    next_sweep = now + self._deadline_sweep_seconds
+                    self._expire(now)
         finally:
-            self.engine.close_thread_connection()
+            for conn in list(self._connections.values()):
+                self._close(conn)
+            selector.unregister(self.socket)
+            self._stopped.set()
+
+    def shutdown(self) -> None:
+        self._shutdown_requested = True
+        self._stopped.wait()
 
     def server_close(self) -> None:
         try:
             super().server_close()
         finally:
-            self.engine.close()
+            try:
+                self._selector.close()
+                self._access_log.close()
+            finally:
+                self.engine.close()
+
+    def _accept_ready(self) -> None:
+        while True:
+            try:
+                sock, address = self.socket.accept()
+            except BlockingIOError, InterruptedError:
+                return
+            except OSError:
+                # Out of descriptors or the peer vanished during the
+                # handshake: keep serving the established connections.
+                self.increment_stat("accept_failed")
+                return
+            sock.setblocking(False)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            conn = _Connection(sock, str(address[0]))
+            self._connections[sock.fileno()] = conn
+            self._selector.register(sock, selectors.EVENT_READ, conn)
+            self._guarded(self._serve, conn, b"", start=True)
+
+    def _guarded(self, step: Any, conn: _Connection, *args: Any, **kwargs: Any) -> None:
+        try:
+            step(conn, *args, **kwargs)
+        except Exception:
+            # Same outcome as an unhandled error in a per-connection handler:
+            # report it and drop this connection (Squid then applies the
+            # service failure policy) while the others keep being served.
+            self.handle_error(conn.sock, (conn.client_ip, 0))
+            self._close(conn)
+
+    def _ready(self, conn: _Connection) -> None:
+        if conn.outgoing:
+            if self._flush(conn):
+                self._serve(conn, b"", start=True)
+            return
+        try:
+            chunk: bytes | None = conn.sock.recv(conn.wanted)
+        except BlockingIOError, InterruptedError:
+            return
+        except OSError:
+            chunk = None
+        self._serve(conn, chunk)
+
+    def _serve(
+        self,
+        conn: _Connection,
+        chunk: bytes | None,
+        *,
+        start: bool = False,
+    ) -> None:
+        """Feed ``chunk`` to the connection's reader and answer what completes.
+
+        Pipelined messages already buffered are answered in turn; the loop
+        stops when the reader needs more bytes, a response is waiting for the
+        socket, or the connection closed.
+        """
+        while True:
+            reader = conn.reader
+            if start or reader is None:
+                start = True
+                reader = conn.reader = _read_icap_message(
+                    max_bytes=self.max_request_bytes,
+                    max_body_drain_bytes=self.max_body_drain_bytes,
+                    pending=conn.pending,
+                )
+                conn.pending = b""
+            try:
+                conn.wanted = next(reader) if start else reader.send(chunk)
+            except StopIteration as done:
+                conn.reader = None
+                data, conn.pending, read_close = done.value
+            else:
+                conn.deadline = time.monotonic() + self.request_timeout_seconds
+                return
+            if not data:
+                self._close(conn)
+                return
+            conn.request_count += 1
+            header_blob, _, _rest = data.partition(b"\r\n\r\n")
+            conn.close_after_send = (
+                read_close
+                or _connection_close_requested(header_blob)
+                or (conn.request_count >= self.max_keepalive_requests)
+            )
+            conn.outgoing = self._response(
+                data,
+                header_blob,
+                conn.client_ip,
+                close=conn.close_after_send,
+            )
+            if not self._flush(conn):
+                return
+            start = True
+
+    def _response(
+        self,
+        data: bytes,
+        header_blob: bytes,
+        client_ip: str,
+        *,
+        close: bool,
+    ) -> bytes:
+        lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()
+        request_line = lines[0] if lines else ""
+        parts = request_line.split()
+        method = parts[0].upper() if parts else ""
+        if method == "OPTIONS":
+            self.increment_stat("options")
+            return _options_response(close=close)
+        if method != "REQMOD":
+            self.increment_stat("method_not_allowed")
+            return _icap_response(
+                "405 Method Not Allowed",
+                {"Encapsulated": "null-body=0"},
+                close=close,
+            )
+
+        http_method, url, http_headers = _parse_http_request(
+            _encapsulated_http_request(data),
+        )
+        if not url:
+            self.increment_stat("parse_miss")
+            return _allow_response(close=close)
+
+        # Current Squid routing sends only this method set to adblock. Fail
+        # open, with distinct attribution, if a legacy/custom config sends
+        # CONNECT or another unsupported method rather than applying a
+        # generic URL rule under semantics the engine does not support.
+        if http_method not in SUPPORTED_REQUEST_METHODS:
+            self.increment_stat("unsupported_http_method")
+            self.increment_stat("allowed")
+            return _allow_response(close=close)
+
+        self.increment_stat("reqmod")
+        decision = self.engine.decide(
+            url,
+            method=http_method,
+            headers=http_headers,
+        )
+        if not decision.blocked:
+            self.increment_stat("allowed")
+            return _allow_response(close=close)
+        self.increment_stat("blocked")
+        self.log_access(
+            client_ip=client_ip,
+            method=http_method,
+            url=url,
+            icap_status=200,
+            http_status=403,
+            http_resp_line="HTTP/1.1 403 Forbidden",
+            list_key=_decision_list_key(decision),
+            rule_id=decision.rule_id,
+            decision_action=decision.action,
+            decision_reason=decision.reason,
+        )
+        return _block_response(url, decision.raw, close=close)
+
+    def _flush(self, conn: _Connection) -> bool:
+        """Send the pending response; True when the next message may be read."""
+        while conn.outgoing:
+            try:
+                sent = conn.sock.send(conn.outgoing)
+            except BlockingIOError, InterruptedError:
+                break
+            except BrokenPipeError, ConnectionResetError, TimeoutError:
+                self._close(conn)
+                return False
+            except OSError as exc:
+                if exc.errno in _QUIET_SEND_ERRNOS:
+                    self._close(conn)
+                    return False
+                raise
+            conn.outgoing = conn.outgoing[sent:]
+        selector = self._selector
+        if conn.outgoing:
+            # Wait for the peer to drain its receive window; like a read, a
+            # stalled write times out.
+            conn.deadline = time.monotonic() + self.request_timeout_seconds
+            if not conn.writing:
+                selector.modify(conn.sock, selectors.EVENT_WRITE, conn)
+                conn.writing = True
+            return False
+        if conn.close_after_send:
+            self._close(conn)
+            return False
+        if conn.writing:
+            selector.modify(conn.sock, selectors.EVENT_READ, conn)
+            conn.writing = False
+        return True
+
+    def _expire(self, now: float) -> None:
+        for conn in [c for c in self._connections.values() if c.deadline <= now]:
+            if conn.outgoing:
+                self._close(conn)
+            elif conn.reader is not None:
+                # The read timed out: the reader decides what is left to do.
+                self._guarded(self._serve, conn, None)
+
+    def _close(self, conn: _Connection) -> None:
+        if self._connections.pop(conn.sock.fileno(), None) is None:
+            return
+        self._selector.unregister(conn.sock)
+        if conn.reader is not None:
+            conn.reader.close()
+            conn.reader = None
+        conn.sock.close()
 
     def increment_stat(self, key: str, amount: int = 1) -> None:
         if self.stats is None:
@@ -787,9 +988,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
             ],
         )
         try:
-            Path(self.access_log_path).parent.mkdir(parents=True, exist_ok=True)
-            with Path(self.access_log_path).open("a", encoding="utf-8") as handle:
-                handle.write(output.getvalue())
+            self._access_log.append(output.getvalue().encode("utf-8"))
         except Exception:
             self.increment_stat("access_log_write_failed")
 
