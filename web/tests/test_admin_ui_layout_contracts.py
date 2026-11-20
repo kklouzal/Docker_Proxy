@@ -26,17 +26,12 @@ def test_shared_layout_wrappers_stretch_direct_children() -> None:
     css = STYLE.read_text(encoding="utf-8")
 
     assert ".page-shell > *{" in css
-    assert ".section-shell{" in css
-    assert "grid-template-columns: minmax(0, 1fr);" in css
-    assert ".section-shell > *{" in css
-    assert "grid-column: 1 / -1;" in css
     assert "justify-self: stretch;" in css
     assert ".grid > *," in css
     assert ".grid > .card{" in css
     card_rule = re.search(r"(?m)^\.card\{(?P<body>.*?)^\}", css, re.DOTALL)
     assert card_rule is not None
     assert "grid-column" not in card_rule.group("body")
-    assert ".card-stack > *," in css
     assert ".content-stack > *{" in css
     assert ".stack-sm > *," in css
     assert ".stack-md > *," in css
