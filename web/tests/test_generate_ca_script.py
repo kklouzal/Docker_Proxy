@@ -217,3 +217,21 @@ def test_admin_generated_ca_bundle_emits_rfc5280_ca_key_usage() -> None:
     bundle = generate_self_signed_ca_bundle(days_valid=30)
 
     _assert_strict_ca_key_usage(bundle.cert_pem.encode("utf-8"))
+
+
+def test_generate_ca_script_profile_does_not_depend_on_host_openssl_config(
+    tmp_path,
+) -> None:
+    # Without an openssl.cnf v3_ca section `req -x509` emits no
+    # basicConstraints, producing a CA that no verifier accepts.
+    ca_dir = tmp_path / "certs"
+    env = _install_command_shims(tmp_path / "bin")
+    env["OPENSSL_CONF"] = "/dev/null"
+    result = _run_ca_script(ca_dir, env)
+
+    assert result.returncode == 0, result.stderr
+    cert_pem = (ca_dir / "ca.crt").read_bytes()
+    _assert_strict_ca_key_usage(cert_pem)
+    x509.load_pem_x509_certificate(cert_pem).extensions.get_extension_for_class(
+        x509.SubjectKeyIdentifier
+    )
