@@ -377,6 +377,69 @@
    ]
   ]
  },
+ "bad_host_empty_label": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "bad_host_leading_dot": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "bad_host_long_label": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
  "cache_clear_bad_payload": {
   "response": {
    "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
@@ -3093,6 +3156,151 @@
   },
   "runtime_calls": []
  },
+ "method_lowercase": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "method_unknown": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_health": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_static": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_supervisor": {
+  "response": {
+   "body": "{\"action\":\"b\",\"ok\":false,\"program\":\"a\\n\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "42"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "b",
+     "program_name": "a\n"
+    }
+   ]
+  ]
+ },
+ "path_trailing_newline_static": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
  "payload_array": {
   "response": {
    "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
@@ -3928,6 +4136,48 @@
    ]
   ]
  },
+ "query_non_utf8_health": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\",\"services\":{},\"state_errors\":[\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "493"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "query_non_utf8_logs": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": []
+ },
  "redirect_encoded_args": {
   "response": {
    "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F\">http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F</a>. If not, click the link.\n",
@@ -3943,6 +4193,31 @@
     [
      "Location",
      "http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_escaped_chars": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/test/supervisor/a%22%3C&#39;&amp;%25/b%3Fc\">http://proxy.example:5000/api/manage/test/supervisor/a%22%3C&#39;&amp;%25/b%3Fc</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "345"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/test/supervisor/a%22%3C'&%25/b%3Fc"
     ],
     [
      "Cache-Control",
@@ -3979,6 +4254,31 @@
   "runtime_calls": []
  },
  "redirect_host_bad_port": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_empty": {
   "response": {
    "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
    "headers": [
@@ -4053,6 +4353,31 @@
   },
   "runtime_calls": []
  },
+ "redirect_host_ipv6_invalid": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
  "redirect_host_port80": {
   "response": {
    "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example/api/manage/health\">http://proxy.example/api/manage/health</a>. If not, click the link.\n",
@@ -4068,6 +4393,56 @@
     [
      "Location",
      "http://proxy.example/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_port_leading_zero": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_trailing_dot": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://example./api/manage/health\">http://example./api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "253"
+    ],
+    [
+     "Location",
+     "http://example./api/manage/health"
     ],
     [
      "Cache-Control",
@@ -4168,6 +4543,81 @@
     [
      "Location",
      "http://proxy.example:5000/api/manage/logs?log=acc%65ss&x=%zz&caf%EF%BF%BD"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_script_name": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/pre/api/manage/health\">http://proxy.example:5000/pre/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "281"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/pre/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_server_name_ipv6": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://[::1]:5000/api/manage/health\">http://[::1]:5000/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "257"
+    ],
+    [
+     "Location",
+     "http://[::1]:5000/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_server_port_invalid": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
     ],
     [
      "Cache-Control",
