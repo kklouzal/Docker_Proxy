@@ -68,7 +68,5 @@ def abp_host_anchored_to_regex(host_pattern: str, suffix: str) -> str:
     if not host_regex:
         return suffix_regex
     return (
-        r"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#]*\.)?"
-        + host_regex
-        + suffix_regex
+        r"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#]*\.)?" + host_regex + suffix_regex
     )

@@ -1601,8 +1601,13 @@ def test_remote_clamd_av_health_checks_upload_and_download_icap_ports(
 
 @pytest.mark.parametrize(
     ("raw_workers", "upload_port", "download_port"),
-    [(" ", 24001, 24002), ("malformed", 24001, 24002), ("0", 24001, 24002),
-     ("2", 24002, 24004), ("99", 24004, 24008)],
+    [
+        (" ", 24001, 24002),
+        ("malformed", 24001, 24002),
+        ("0", 24001, 24002),
+        ("2", 24002, 24004),
+        ("99", 24004, 24008),
+    ],
 )
 def test_remote_clamd_health_selection_uses_shared_worker_normalization(
     monkeypatch, raw_workers: str, upload_port: int, download_port: int

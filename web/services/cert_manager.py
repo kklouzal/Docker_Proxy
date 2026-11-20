@@ -427,7 +427,9 @@ def _validated_ordered_chain_certificates(
             chosen = candidate
             break
         if chosen is None:
-            raise PfxInstallError(first_error or "PFX issuer chain certificate is invalid.")
+            raise PfxInstallError(
+                first_error or "PFX issuer chain certificate is invalid."
+            )
 
         ordered.append(chosen)
         ordered_children.append(chosen[1])
@@ -601,7 +603,9 @@ def parse_pfx_bundle(
             if not private_keys:
                 msg = "PFX does not contain a private key."
                 raise PfxInstallError(msg)
-            if any("ENCRYPTED PRIVATE KEY" in private_key for private_key in private_keys):
+            if any(
+                "ENCRYPTED PRIVATE KEY" in private_key for private_key in private_keys
+            ):
                 msg = "Private key is encrypted; Squid needs an unencrypted key."
                 raise PfxInstallError(msg)
 

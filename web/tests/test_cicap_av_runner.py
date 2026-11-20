@@ -68,7 +68,9 @@ def test_conf_listen_address_falls_back_to_default_when_config_is_missing(
     )
 
 
-def test_conf_listen_address_preserves_valid_env_fallback(tmp_path, monkeypatch) -> None:
+def test_conf_listen_address_preserves_valid_env_fallback(
+    tmp_path, monkeypatch
+) -> None:
     runner = _load_runner()
     conf = tmp_path / "c-icap-av.conf"
     conf.write_text("# no port directive\n", encoding="utf-8")
@@ -326,14 +328,11 @@ def _placeholder_exchange(runner, *, fail_open: bool, method: str) -> bytes:
         if method == "RESPMOD":
             http_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
             request = (
-                (
-                    f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-                    "Host: 127.0.0.1\r\n"
-                    "Allow: 204\r\n"
-                    f"Encapsulated: res-hdr=0, null-body={len(http_header)}\r\n\r\n"
-                ).encode("ascii")
-                + http_header
-            )
+                f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                f"Encapsulated: res-hdr=0, null-body={len(http_header)}\r\n\r\n"
+            ).encode("ascii") + http_header
         else:
             request = (
                 f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
@@ -674,7 +673,9 @@ def test_read_failures_after_partial_encapsulated_headers_are_protocol_errors() 
             except runner.IcapProtocolError as protocol_exc:
                 assert expected in str(protocol_exc), (name, exc_name)
             else:  # pragma: no cover - regression guard should always raise
-                message = f"{name} partial encapsulated header read failure was accepted"
+                message = (
+                    f"{name} partial encapsulated header read failure was accepted"
+                )
                 raise AssertionError(message)
 
 
@@ -1042,7 +1043,9 @@ def test_drain_chunked_body_preserves_valid_token_ows_and_unknown_trailers() -> 
     assert remainder == b"NEXT"
 
 
-def test_drain_chunked_body_preserves_valid_trailers_remainder_and_preview_continue() -> None:
+def test_drain_chunked_body_preserves_valid_trailers_remainder_and_preview_continue() -> (
+    None
+):
     runner = _load_runner()
     continuation = b"5\r\n-rest\r\n0; done=yes\r\nX-Trailer: ok\r\n\r\nNEXT"
     sock = _MemorySocket(continuation)
@@ -1105,7 +1108,7 @@ def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
 def test_parse_chunk_size_preserves_valid_extensions_and_ieof_case() -> None:
     runner = _load_runner()
 
-    assert runner._parse_chunk_size(b"a; foo=bar; flag; quoted=\"a b;c\"") == 10
+    assert runner._parse_chunk_size(b'a; foo=bar; flag; quoted="a b;c"') == 10
     assert runner._parse_chunk_size(b"0;IEOF") == 0
     size, extensions = runner._parse_chunk_line(b"0;IEOF")
     assert size == 0
@@ -1167,8 +1170,7 @@ def test_parse_icap_preview_header_rejects_non_decimal_and_unbounded_values() ->
 def test_parse_icap_preview_header_preserves_decimal_zero_and_edge_ows() -> None:
     runner = _load_runner()
     _start_line, headers = runner._split_headers(
-        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
-        b"Preview: \t00042 \t"
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\nPreview: \t00042 \t"
     )
 
     assert runner._parse_icap_preview_header(None, max_bytes=1024) is None
@@ -1238,7 +1240,15 @@ def test_read_chunked_body_enforces_preview_declared_size_relation() -> None:
         ),
     )
 
-    for name, preview_size, initial, incoming, expected_body, expected_remainder, sent in cases:
+    for (
+        name,
+        preview_size,
+        initial,
+        incoming,
+        expected_body,
+        expected_remainder,
+        sent,
+    ) in cases:
         sock = _MemorySocket(incoming)
 
         body, remainder = runner._read_chunked_body(
@@ -1281,7 +1291,9 @@ def test_read_chunked_body_rejects_preview_count_mismatches_without_continue() -
         assert sock.sent == b"", name
 
 
-def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_items() -> None:
+def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_items() -> (
+    None
+):
     runner = _load_runner()
     enormous_offset = "9" * (runner.MAX_ENCAPSULATED_OFFSET_DIGITS + 1)
     cases = (
@@ -1293,7 +1305,11 @@ def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_item
             "req-hdr=\N{ARABIC-INDIC DIGIT ZERO}, req-body=42",
             "invalid Encapsulated offset",
         ),
-        ("internal whitespace", "req-hdr=0, req-body=4 2", "invalid Encapsulated offset"),
+        (
+            "internal whitespace",
+            "req-hdr=0, req-body=4 2",
+            "invalid Encapsulated offset",
+        ),
         ("empty offset", "req-hdr=, req-body=42", "invalid Encapsulated offset"),
         ("scientific", "req-hdr=0, req-body=1e2", "invalid Encapsulated offset"),
         ("hex", "req-hdr=0, req-body=0x2a", "invalid Encapsulated offset"),
@@ -1316,7 +1332,9 @@ def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_item
             raise AssertionError(message)
 
 
-def test_parse_encapsulated_preserves_ascii_decimals_leading_zeros_and_edge_whitespace() -> None:
+def test_parse_encapsulated_preserves_ascii_decimals_leading_zeros_and_edge_whitespace() -> (
+    None
+):
     runner = _load_runner()
 
     offsets = runner._parse_encapsulated(
@@ -1345,7 +1363,9 @@ def test_drain_encapsulated_body_rejects_truncated_reqmod_null_body_boundary() -
         raise AssertionError(message)
 
 
-def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body() -> None:
+def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body() -> (
+    None
+):
     runner = _load_runner()
     request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
     body = b"5\r\nhello\r\n0\r\n\r\n"
@@ -1354,14 +1374,12 @@ def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body()
     req_body_header = (
         b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
-        b"Encapsulated: req-hdr=0, req-body="
-        + str(body_offset).encode("ascii")
+        b"Encapsulated: req-hdr=0, req-body=" + str(body_offset).encode("ascii")
     )
     null_body_header = (
         b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
-        b"Encapsulated: req-hdr=0, null-body="
-        + str(body_offset).encode("ascii")
+        b"Encapsulated: req-hdr=0, null-body=" + str(body_offset).encode("ascii")
     )
 
     for header, remainder in (
@@ -1375,7 +1393,9 @@ def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body()
         assert sock.sent == b""
 
 
-def test_fail_open_placeholder_rejects_surplus_bytes_inside_reqmod_header_section() -> None:
+def test_fail_open_placeholder_rejects_surplus_bytes_inside_reqmod_header_section() -> (
+    None
+):
     runner = _load_runner()
     request_header = (
         b"POST /upload HTTP/1.1\r\n"
@@ -1387,9 +1407,7 @@ def test_fail_open_placeholder_rejects_surplus_bytes_inside_reqmod_header_sectio
         b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
         b"Allow: 204\r\n"
-        + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
-            "ascii"
-        )
+        + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode("ascii")
         + b"\r\n\r\n"
         + request_header
         + b"5\r\nhello\r\n0\r\n\r\n"
@@ -1403,16 +1421,16 @@ def test_fail_open_placeholder_rejects_surplus_bytes_inside_reqmod_header_sectio
     assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
-def test_fail_open_placeholder_rejects_surplus_bytes_inside_respmod_header_section() -> None:
+def test_fail_open_placeholder_rejects_surplus_bytes_inside_respmod_header_section() -> (
+    None
+):
     runner = _load_runner()
     response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nSMUGGLED\r\n\r\n"
     request = (
         b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
         b"Allow: 204\r\n"
-        + f"Encapsulated: res-hdr=0, res-body={len(response_header)}".encode(
-            "ascii"
-        )
+        + f"Encapsulated: res-hdr=0, res-body={len(response_header)}".encode("ascii")
         + b"\r\n\r\n"
         + response_header
         + b"5\r\nhello\r\n0\r\n\r\n"
@@ -1670,7 +1688,9 @@ def test_fail_open_placeholder_drains_large_reqmod_body_before_204() -> None:
     assert elapsed < 1
 
 
-def test_fail_open_placeholder_rejects_malformed_reqmod_chunked_body_before_204() -> None:
+def test_fail_open_placeholder_rejects_malformed_reqmod_chunked_body_before_204() -> (
+    None
+):
     runner = _load_runner()
     request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
     body = b"G\r\nhello\r\n0\r\n\r\n"
@@ -1772,15 +1792,12 @@ def test_fail_open_placeholder_preview_not_ieof_substring_continues() -> None:
         port = server.server_address[1]
         http_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
         request_prefix = (
-            (
-                f"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-                "Host: 127.0.0.1\r\n"
-                "Allow: 204\r\n"
-                "Preview: 4\r\n"
-                f"Encapsulated: req-hdr=0, req-body={len(http_header)}\r\n\r\n"
-            ).encode("ascii")
-            + http_header
-        )
+            f"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            "Preview: 4\r\n"
+            f"Encapsulated: req-hdr=0, req-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii") + http_header
         preview = b"4\r\ntest\r\n0;not-ieof=1\r\n\r\n"
         remainder = b"0;IEOF\r\n\r\n"
         with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
@@ -1796,7 +1813,9 @@ def test_fail_open_placeholder_preview_not_ieof_substring_continues() -> None:
     assert final.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
-def test_fail_open_placeholder_rejects_invalid_offset_instead_of_reinterpreting_layout() -> None:
+def test_fail_open_placeholder_rejects_invalid_offset_instead_of_reinterpreting_layout() -> (
+    None
+):
     runner = _load_runner()
     request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
     request = (
@@ -1855,16 +1874,16 @@ def _reqmod_request_for_request(
         b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
         b"Allow: 204\r\n"
-        + f"Encapsulated: req-hdr=0, {terminal_name}={len(http_header)}".encode(
-            "ascii"
-        )
+        + f"Encapsulated: req-hdr=0, {terminal_name}={len(http_header)}".encode("ascii")
         + b"\r\n\r\n"
         + http_header
         + body_section
     )
 
 
-def test_fail_open_placeholder_rejects_malformed_reqmod_http_start_line_before_204() -> None:
+def test_fail_open_placeholder_rejects_malformed_reqmod_http_start_line_before_204() -> (
+    None
+):
     runner = _load_runner()
     cases = (
         (
@@ -1925,7 +1944,9 @@ def test_fail_open_placeholder_rejects_malformed_reqmod_http_start_line_before_2
         assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
 
 
-def test_fail_open_placeholder_rejects_malformed_reqmod_http_fields_before_204() -> None:
+def test_fail_open_placeholder_rejects_malformed_reqmod_http_fields_before_204() -> (
+    None
+):
     runner = _load_runner()
     cases = (
         (
@@ -1933,7 +1954,11 @@ def test_fail_open_placeholder_rejects_malformed_reqmod_http_fields_before_204()
             b"Missing-Colon",
             b"malformed REQMOD encapsulated HTTP header field line",
         ),
-        ("empty name", b": value", b"invalid REQMOD encapsulated HTTP header field name"),
+        (
+            "empty name",
+            b": value",
+            b"invalid REQMOD encapsulated HTTP header field name",
+        ),
         (
             "whitespace before colon",
             b"Bad : value",
@@ -1988,7 +2013,9 @@ def test_fail_open_placeholder_rejects_malformed_reqmod_http_fields_before_204()
         assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
 
 
-def test_fail_open_placeholder_rejects_ambiguous_reqmod_http_framing_before_204() -> None:
+def test_fail_open_placeholder_rejects_ambiguous_reqmod_http_framing_before_204() -> (
+    None
+):
     runner = _load_runner()
     long_content_length = b"9" * (runner.MAX_HTTP_CONTENT_LENGTH_DIGITS + 1)
     cases = (
@@ -2073,7 +2100,9 @@ def test_fail_open_placeholder_rejects_ambiguous_reqmod_http_framing_before_204(
         assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
 
 
-def test_fail_open_placeholder_preserves_valid_reqmod_http_metadata_before_204() -> None:
+def test_fail_open_placeholder_preserves_valid_reqmod_http_metadata_before_204() -> (
+    None
+):
     runner = _load_runner()
     cases = (
         (
@@ -2150,9 +2179,7 @@ def _respmod_request_for_response(
         b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
         + allow_header
-        + f"Encapsulated: res-hdr=0, {terminal_name}={len(http_header)}".encode(
-            "ascii"
-        )
+        + f"Encapsulated: res-hdr=0, {terminal_name}={len(http_header)}".encode("ascii")
         + b"\r\n\r\n"
         + http_header
         + body_section
@@ -2230,7 +2257,9 @@ def _respmod_request_with_req_hdr(
     )
 
 
-def test_fail_open_placeholder_rejects_malformed_respmod_req_hdr_before_204_or_replay() -> None:
+def test_fail_open_placeholder_rejects_malformed_respmod_req_hdr_before_204_or_replay() -> (
+    None
+):
     runner = _load_runner()
     response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
     null_response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
@@ -2431,29 +2460,17 @@ def test_fail_open_placeholder_respmod_null_body_method_matrix() -> None:
     head_request = b"HEAD /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
     get_request = b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
     post_request = (
-        b"POST /submit HTTP/1.1\r\n"
-        b"Host: example.test\r\n"
-        b"Content-Length: 0\r\n\r\n"
+        b"POST /submit HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n"
     )
     put_request = (
-        b"PUT /resource HTTP/1.1\r\n"
-        b"Host: example.test\r\n"
-        b"Content-Length: 0\r\n\r\n"
+        b"PUT /resource HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n"
     )
     head_response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Length: 12345\r\n"
-        b"ETag: \"head-meta\"\r\n\r\n"
+        b'HTTP/1.1 200 OK\r\nContent-Length: 12345\r\nETag: "head-meta"\r\n\r\n'
     )
-    cl0_response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Length: 0\r\n"
-        b"ETag: \"empty\"\r\n\r\n"
-    )
+    cl0_response = b'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nETag: "empty"\r\n\r\n'
     not_modified_response = (
-        b"HTTP/1.1 304 Not Modified\r\n"
-        b"Content-Length: 12345\r\n"
-        b"ETag: \"cached\"\r\n\r\n"
+        b'HTTP/1.1 304 Not Modified\r\nContent-Length: 12345\r\nETag: "cached"\r\n\r\n'
     )
     cases = (
         (
@@ -2463,7 +2480,7 @@ def test_fail_open_placeholder_respmod_null_body_method_matrix() -> None:
                 head_response,
                 allow_204=False,
             ),
-            (b"HTTP/1.1 200 OK", b"Content-Length: 12345", b"ETag: \"head-meta\""),
+            (b"HTTP/1.1 200 OK", b"Content-Length: 12345", b'ETag: "head-meta"'),
             (),
         ),
         (
@@ -2512,7 +2529,7 @@ def test_fail_open_placeholder_respmod_null_body_method_matrix() -> None:
                 cl0_response,
                 allow_204=False,
             ),
-            (b"HTTP/1.1 200 OK", b"Content-Length: 0", b"ETag: \"empty\""),
+            (b"HTTP/1.1 200 OK", b"Content-Length: 0", b'ETag: "empty"'),
             (b"HTTP/1.1 502 Bad Gateway",),
         ),
         (
@@ -2525,7 +2542,7 @@ def test_fail_open_placeholder_respmod_null_body_method_matrix() -> None:
             (
                 b"HTTP/1.1 304 Not Modified",
                 b"Content-Length: 12345",
-                b"ETag: \"cached\"",
+                b'ETag: "cached"',
             ),
             (b"HTTP/1.1 502 Bad Gateway",),
         ),
@@ -2650,7 +2667,9 @@ def test_fail_open_placeholder_preserves_valid_respmod_req_hdr_metadata() -> Non
         assert b"POST /submit HTTP/1.1" not in response, name
 
 
-def test_fail_open_placeholder_rejects_malformed_respmod_status_line_before_204_or_replay() -> None:
+def test_fail_open_placeholder_rejects_malformed_respmod_status_line_before_204_or_replay() -> (
+    None
+):
     runner = _load_runner()
     cases = (
         (
@@ -2793,19 +2812,61 @@ def test_fail_open_placeholder_preserves_valid_respmod_status_line_matrix() -> N
             assert b"5\r\nhello\r\n0\r\n\r\n" in response, name
 
 
-def test_fail_open_placeholder_rejects_malformed_respmod_http_field_lines_before_204_or_replay() -> None:
+def test_fail_open_placeholder_rejects_malformed_respmod_http_field_lines_before_204_or_replay() -> (
+    None
+):
     runner = _load_runner()
     cases = (
-        ("missing colon", b"Missing-Colon", b"malformed RESPMOD encapsulated HTTP header field line"),
-        ("empty name", b": value", b"invalid RESPMOD encapsulated HTTP header field name"),
-        ("whitespace before colon", b"Bad : value", b"invalid RESPMOD encapsulated HTTP header field name"),
-        ("tab before colon", b"Bad\t: value", b"invalid RESPMOD encapsulated HTTP header field name"),
-        ("invalid token", b"Bad/Name: value", b"invalid RESPMOD encapsulated HTTP header field name"),
-        ("non-ASCII name", b"Bad-\xff: value", b"invalid RESPMOD encapsulated HTTP header field name"),
-        ("obs-fold", b" folded: value", b"obsolete folded RESPMOD encapsulated HTTP header line"),
-        ("NUL value", b"X-Value: ok\x00bad", b"invalid RESPMOD encapsulated HTTP header field value"),
-        ("control value", b"X-Value: ok\x1fbad", b"invalid RESPMOD encapsulated HTTP header field value"),
-        ("DEL value", b"X-Value: ok\x7fbad", b"invalid RESPMOD encapsulated HTTP header field value"),
+        (
+            "missing colon",
+            b"Missing-Colon",
+            b"malformed RESPMOD encapsulated HTTP header field line",
+        ),
+        (
+            "empty name",
+            b": value",
+            b"invalid RESPMOD encapsulated HTTP header field name",
+        ),
+        (
+            "whitespace before colon",
+            b"Bad : value",
+            b"invalid RESPMOD encapsulated HTTP header field name",
+        ),
+        (
+            "tab before colon",
+            b"Bad\t: value",
+            b"invalid RESPMOD encapsulated HTTP header field name",
+        ),
+        (
+            "invalid token",
+            b"Bad/Name: value",
+            b"invalid RESPMOD encapsulated HTTP header field name",
+        ),
+        (
+            "non-ASCII name",
+            b"Bad-\xff: value",
+            b"invalid RESPMOD encapsulated HTTP header field name",
+        ),
+        (
+            "obs-fold",
+            b" folded: value",
+            b"obsolete folded RESPMOD encapsulated HTTP header line",
+        ),
+        (
+            "NUL value",
+            b"X-Value: ok\x00bad",
+            b"invalid RESPMOD encapsulated HTTP header field value",
+        ),
+        (
+            "control value",
+            b"X-Value: ok\x1fbad",
+            b"invalid RESPMOD encapsulated HTTP header field value",
+        ),
+        (
+            "DEL value",
+            b"X-Value: ok\x7fbad",
+            b"invalid RESPMOD encapsulated HTTP header field value",
+        ),
     )
 
     for name, field_line, expected_error in cases:
@@ -2831,7 +2892,9 @@ def test_fail_open_placeholder_rejects_malformed_respmod_http_field_lines_before
             assert b"5\r\nhello\r\n0\r\n\r\n" not in response, label
 
 
-def test_fail_open_placeholder_rejects_ambiguous_respmod_http_framing_before_replay() -> None:
+def test_fail_open_placeholder_rejects_ambiguous_respmod_http_framing_before_replay() -> (
+    None
+):
     runner = _load_runner()
     long_content_length = b"9" * (runner.MAX_HTTP_CONTENT_LENGTH_DIGITS + 1)
     cases = (
@@ -2900,7 +2963,9 @@ def test_fail_open_placeholder_rejects_ambiguous_respmod_http_framing_before_rep
         assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
 
 
-def test_fail_open_placeholder_preserves_valid_respmod_http_fields_and_framing() -> None:
+def test_fail_open_placeholder_preserves_valid_respmod_http_fields_and_framing() -> (
+    None
+):
     runner = _load_runner()
     cases = (
         (
@@ -2934,10 +2999,10 @@ def test_fail_open_placeholder_preserves_valid_respmod_http_fields_and_framing()
         ),
         (
             "304 content-length metadata is preserved without body inference",
-            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 12345\r\nETag: \"abc\"\r\n\r\n",
+            b'HTTP/1.1 304 Not Modified\r\nContent-Length: 12345\r\nETag: "abc"\r\n\r\n',
             False,
             None,
-            (b"HTTP/1.1 304 Not Modified", b"Content-Length: 12345", b"ETag: \"abc\""),
+            (b"HTTP/1.1 304 Not Modified", b"Content-Length: 12345", b'ETag: "abc"'),
         ),
         (
             "null-body 200 content-length may be HEAD without request metadata",
@@ -2972,9 +3037,7 @@ def test_fail_open_placeholder_rejects_duplicate_outer_encapsulated_header() -> 
         b"Host: 127.0.0.1\r\n"
         b"Allow: 204\r\n"
         b"Encapsulated: res-hdr=999, null-body=999\r\n"
-        + f"eNcApSuLaTeD: res-hdr=0, res-body={len(response_header)}".encode(
-            "ascii"
-        )
+        + f"eNcApSuLaTeD: res-hdr=0, res-body={len(response_header)}".encode("ascii")
         + b"\r\n\r\n"
         + response_header
         + b"5\r\nhello\r\n0\r\n\r\n"
@@ -2995,9 +3058,7 @@ def test_fail_open_placeholder_rejects_duplicate_outer_allow_header() -> None:
         b"Host: 127.0.0.1\r\n"
         b"Allow: 206\r\n"
         b"aLlOw: 204\r\n"
-        + f"Encapsulated: res-hdr=0, null-body={len(response_header)}".encode(
-            "ascii"
-        )
+        + f"Encapsulated: res-hdr=0, null-body={len(response_header)}".encode("ascii")
         + b"\r\n\r\n"
         + response_header
     )
@@ -3083,9 +3144,7 @@ def test_fail_open_placeholder_rejects_malformed_outer_header_metadata() -> None
             b"Host: 127.0.0.1\r\n"
             b"Allow: 204\r\n"
             b"Preview : 4\r\n"
-            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
-                "ascii"
-            )
+            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode("ascii")
             + b"\r\n\r\n"
             + request_header
             + b"4\r\ntest\r\n0\r\n\r\n",
@@ -3098,9 +3157,7 @@ def test_fail_open_placeholder_rejects_malformed_outer_header_metadata() -> None
             b"Host: 127.0.0.1\r\n"
             b"Allow: 204\r\n"
             b"Preview: 4, 5\r\n"
-            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
-                "ascii"
-            )
+            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode("ascii")
             + b"\r\n\r\n"
             + request_header
             + b"4\r\ntest\r\n0\r\n\r\n",
@@ -3119,9 +3176,7 @@ def test_fail_open_placeholder_rejects_malformed_outer_header_metadata() -> None
             assert forbidden_bytes not in response, name
 
 
-def _placeholder_preview_exchange(
-    runner, *, method: str
-) -> tuple[bytes, bytes, bytes]:
+def _placeholder_preview_exchange(runner, *, method: str) -> tuple[bytes, bytes, bytes]:
     with runner._FailOpenAvServer(
         ("127.0.0.1", 0), runner._FailOpenAvHandler
     ) as server:
@@ -3146,16 +3201,13 @@ def _placeholder_preview_exchange(
         header_section = "req-hdr" if method == "REQMOD" else "res-hdr"
         encapsulated = "req-body" if method == "REQMOD" else "res-body"
         request_prefix = (
-            (
-                f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-                "Host: 127.0.0.1\r\n"
-                "Allow: 204\r\n"
-                "Preview: 4\r\n"
-                f"Encapsulated: {header_section}=0, "
-                f"{encapsulated}={len(http_header)}\r\n\r\n"
-            ).encode("ascii")
-            + http_header
-        )
+            f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            "Preview: 4\r\n"
+            f"Encapsulated: {header_section}=0, "
+            f"{encapsulated}={len(http_header)}\r\n\r\n"
+        ).encode("ascii") + http_header
         preview = b"4\r\ntest\r\n0\r\n\r\n"
         remainder = b"5\r\n-rest\r\n0\r\n\r\n"
         with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
@@ -3237,7 +3289,9 @@ def test_fail_open_placeholder_rejects_preview_on_null_body() -> None:
             assert forbidden_bytes not in response, name
 
 
-def test_fail_open_placeholder_rejects_preview_body_relation_errors_before_continue() -> None:
+def test_fail_open_placeholder_rejects_preview_body_relation_errors_before_continue() -> (
+    None
+):
     runner = _load_runner()
     http_header = (
         b"POST /upload HTTP/1.1\r\n"
@@ -3266,9 +3320,7 @@ def test_fail_open_placeholder_rejects_preview_body_relation_errors_before_conti
             b"Host: 127.0.0.1\r\n"
             b"Allow: 204\r\n"
             + preview_header
-            + f"Encapsulated: req-hdr=0, req-body={len(http_header)}".encode(
-                "ascii"
-            )
+            + f"Encapsulated: req-hdr=0, req-body={len(http_header)}".encode("ascii")
             + b"\r\n\r\n"
             + http_header
             + body
@@ -3385,16 +3437,12 @@ def test_fail_open_placeholder_rejects_invalid_respmod_encapsulated_matrix() -> 
         ),
         (
             "overlapping response body",
-            b"Encapsulated: res-hdr=0, res-body=5\r\n\r\n"
-            + response_header
-            + body,
+            b"Encapsulated: res-hdr=0, res-body=5\r\n\r\n" + response_header + body,
             False,
         ),
         (
             "equal response/body offsets",
-            b"Encapsulated: res-hdr=0, res-body=0\r\n\r\n"
-            + response_header
-            + body,
+            b"Encapsulated: res-hdr=0, res-body=0\r\n\r\n" + response_header + body,
             False,
         ),
         (
@@ -3464,8 +3512,7 @@ def test_fail_open_placeholder_rejects_invalid_respmod_encapsulated_matrix() -> 
         request = (
             b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
             b"Host: 127.0.0.1\r\n"
-            b"Allow: 204\r\n"
-            + encapsulated_payload
+            b"Allow: 204\r\n" + encapsulated_payload
         )
 
         response = _placeholder_raw_exchange(
@@ -3504,16 +3551,12 @@ def test_fail_open_placeholder_rejects_invalid_reqmod_encapsulated_matrix() -> N
         ),
         (
             "decreasing req-body",
-            b"Encapsulated: req-hdr=0, req-body=1\r\n\r\n"
-            + request_header
-            + body,
+            b"Encapsulated: req-hdr=0, req-body=1\r\n\r\n" + request_header + body,
             False,
         ),
         (
             "equal req offsets",
-            b"Encapsulated: req-hdr=0, req-body=0\r\n\r\n"
-            + request_header
-            + body,
+            b"Encapsulated: req-hdr=0, req-body=0\r\n\r\n" + request_header + body,
             False,
         ),
         (
@@ -3584,8 +3627,7 @@ def test_fail_open_placeholder_rejects_invalid_reqmod_encapsulated_matrix() -> N
         request = (
             b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
             b"Host: 127.0.0.1\r\n"
-            b"Allow: 204\r\n"
-            + encapsulated_payload
+            b"Allow: 204\r\n" + encapsulated_payload
         )
 
         response = _placeholder_raw_exchange(

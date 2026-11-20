@@ -99,7 +99,9 @@ def test_get_directory_size_falls_back_when_du_is_unavailable(monkeypatch) -> No
         lambda *args, **kwargs: pytest.fail("unavailable du must not be executed"),
     )
     monkeypatch.setattr(stats.os, "walk", lambda path: [(path, [], ["one", "two"])])
-    monkeypatch.setattr(stats.pathlib.Path, "stat", lambda path: type("S", (), {"st_size": 7})())
+    monkeypatch.setattr(
+        stats.pathlib.Path, "stat", lambda path: type("S", (), {"st_size": 7})()
+    )
 
     assert stats.get_directory_size_bytes("/cache") == 14
 
@@ -614,27 +616,32 @@ def test_get_stats_ttl_env_values_are_clamped_to_existing_minimums(monkeypatch) 
     monkeypatch.setattr(
         stats,
         "get_disk_usage",
-        lambda path: calls.__setitem__("disk", calls["disk"] + 1)
-        or stats.DiskUsage(total_bytes=100, used_bytes=40, free_bytes=60),
+        lambda path: (
+            calls.__setitem__("disk", calls["disk"] + 1)
+            or stats.DiskUsage(total_bytes=100, used_bytes=40, free_bytes=60)
+        ),
     )
     monkeypatch.setattr(
         stats,
         "parse_access_log_hit_rate",
-        lambda: calls.__setitem__("hit", calls["hit"] + 1)
-        or {"request_hit_ratio": 10.0, "byte_hit_ratio": 20.0},
+        lambda: (
+            calls.__setitem__("hit", calls["hit"] + 1)
+            or {"request_hit_ratio": 10.0, "byte_hit_ratio": 20.0}
+        ),
     )
     monkeypatch.setattr(stats, "get_squid_mgr_text", lambda section: None)
     monkeypatch.setattr(
         stats,
         "get_cpu_utilization_percent",
-        lambda sample_seconds=0.15: calls.__setitem__("cpu", calls["cpu"] + 1)
-        or 12.34,
+        lambda sample_seconds=0.15: calls.__setitem__("cpu", calls["cpu"] + 1) or 12.34,
     )
     monkeypatch.setattr(
         stats,
         "get_loadavg",
-        lambda: calls.__setitem__("load", calls["load"] + 1)
-        or {"1m": 1.0, "5m": 0.5, "15m": 0.25},
+        lambda: (
+            calls.__setitem__("load", calls["load"] + 1)
+            or {"1m": 1.0, "5m": 0.5, "15m": 0.25}
+        ),
     )
 
     stats.get_stats()
@@ -643,7 +650,9 @@ def test_get_stats_ttl_env_values_are_clamped_to_existing_minimums(monkeypatch) 
     assert calls == {"dir": 1, "disk": 1, "hit": 1, "cpu": 1, "load": 1}
 
 
-def test_get_stats_cached_access_log_hit_rate_keeps_mgr_unavailable(monkeypatch) -> None:
+def test_get_stats_cached_access_log_hit_rate_keeps_mgr_unavailable(
+    monkeypatch,
+) -> None:
     _reset_stats_caches()
     monkeypatch.setenv("STATS_CACHE_HIT_RATE_TTL_SECONDS", "60")
 

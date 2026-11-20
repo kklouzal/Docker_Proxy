@@ -44,7 +44,9 @@ def test_parse_access_log_hit_rate_fast_path_accepts_escaped_tab_rows(tmp_path) 
     assert result == {"request_hit_ratio": 0.0, "byte_hit_ratio": 0.0}
 
 
-def test_parse_access_log_hit_rate_escaped_tabs_preserve_quoted_fields(tmp_path) -> None:
+def test_parse_access_log_hit_rate_escaped_tabs_preserve_quoted_fields(
+    tmp_path,
+) -> None:
     log = _write_log(
         tmp_path,
         r'1710000002\t0.0\t10.0.0.7\tGET\t"http://example.net/a\tliteral"\tTCP_HIT/200\t40',

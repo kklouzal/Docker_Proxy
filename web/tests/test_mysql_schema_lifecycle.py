@@ -39,13 +39,17 @@ def test_mysql_schema_lifecycle_serializes_concurrent_migrators(tmp_path: Path) 
     schema_lifecycle, connect = _schema_module(tmp_path)
 
     def step(conn):
-        conn.execute("CREATE TABLE IF NOT EXISTS lifecycle_counter(id INT PRIMARY KEY, n INT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS lifecycle_counter(id INT PRIMARY KEY, n INT NOT NULL)"
+        )
         conn.execute("INSERT IGNORE INTO lifecycle_counter(id, n) VALUES(1, 1)")
 
     spec = _spec(schema_lifecycle, 801, "concurrent", step)
 
     def migrate_once() -> str:
-        return schema_lifecycle.apply_schema_migration(spec, require_privileges=False)[0].status
+        return schema_lifecycle.apply_schema_migration(spec, require_privileges=False)[
+            0
+        ].status
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         statuses = list(executor.map(lambda _i: migrate_once(), range(12)))
@@ -59,7 +63,9 @@ def test_mysql_schema_lifecycle_serializes_concurrent_migrators(tmp_path: Path) 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_schema_lifecycle_failed_migration_retries_idempotently(tmp_path: Path) -> None:
+def test_mysql_schema_lifecycle_failed_migration_retries_idempotently(
+    tmp_path: Path,
+) -> None:
     schema_lifecycle, connect = _schema_module(tmp_path)
     fail = {"value": True}
 
@@ -74,7 +80,9 @@ def test_mysql_schema_lifecycle_failed_migration_retries_idempotently(tmp_path: 
     with pytest.raises(RuntimeError, match="simulated interruption"):
         schema_lifecycle.apply_schema_migration(spec, require_privileges=False)
     with connect() as conn:
-        row = conn.execute("SELECT status, error FROM schema_migrations WHERE version=802").fetchone()
+        row = conn.execute(
+            "SELECT status, error FROM schema_migrations WHERE version=802"
+        ).fetchone()
         assert row["status"] == "failed"
         assert "simulated interruption" in row["error"]
 
@@ -86,7 +94,9 @@ def test_mysql_schema_lifecycle_failed_migration_retries_idempotently(tmp_path: 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_schema_lifecycle_legacy_revision_repair_before_unique(tmp_path: Path) -> None:
+def test_mysql_schema_lifecycle_legacy_revision_repair_before_unique(
+    tmp_path: Path,
+) -> None:
     schema_lifecycle, connect = _schema_module(tmp_path)
     with connect() as conn:
         conn.execute(
@@ -118,13 +128,19 @@ def test_mysql_schema_lifecycle_legacy_revision_repair_before_unique(tmp_path: P
             "SELECT SUM(is_active) AS n FROM proxy_config_revisions WHERE proxy_id='edge-a'",
         ).fetchone()
         assert int(active_count["n"] or 0) == 1
-        assert schema_lifecycle.column_exists(conn, "proxy_config_revisions", "active_proxy_id")
-        assert schema_lifecycle.index_exists(conn, "proxy_config_revisions", "uniq_proxy_config_revisions_active_proxy")
+        assert schema_lifecycle.column_exists(
+            conn, "proxy_config_revisions", "active_proxy_id"
+        )
+        assert schema_lifecycle.index_exists(
+            conn, "proxy_config_revisions", "uniq_proxy_config_revisions_active_proxy"
+        )
 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_schema_lifecycle_upgrades_stale_adblock_attribution_before_query(tmp_path: Path) -> None:
+def test_mysql_schema_lifecycle_upgrades_stale_adblock_attribution_before_query(
+    tmp_path: Path,
+) -> None:
     schema_lifecycle, connect = _schema_module(tmp_path)
     schema_lifecycle.migrate_schema(require_privileges=False)
 
@@ -149,7 +165,9 @@ def test_mysql_schema_lifecycle_upgrades_stale_adblock_attribution_before_query(
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_schema_lifecycle_checksum_drift_reports_expected_and_actual(tmp_path: Path) -> None:
+def test_mysql_schema_lifecycle_checksum_drift_reports_expected_and_actual(
+    tmp_path: Path,
+) -> None:
     schema_lifecycle, _connect = _schema_module(tmp_path)
     spec = _spec(schema_lifecycle, 803, "original", lambda _conn: None)
     schema_lifecycle.apply_schema_migration(spec, require_privileges=False)
@@ -161,16 +179,23 @@ def test_mysql_schema_lifecycle_checksum_drift_reports_expected_and_actual(tmp_p
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_schema_lifecycle_lock_timeout_is_clear(tmp_path: Path, monkeypatch) -> None:
+def test_mysql_schema_lifecycle_lock_timeout_is_clear(
+    tmp_path: Path, monkeypatch
+) -> None:
     schema_lifecycle, connect = _schema_module(tmp_path)
     monkeypatch.setenv("MYSQL_SCHEMA_LOCK_TIMEOUT_SECONDS", "1")
     with connect() as holder:
-        row = holder.execute("SELECT GET_LOCK(%s, %s) AS acquired", ("docker_proxy:schema_lifecycle:migrate", 1)).fetchone()
+        row = holder.execute(
+            "SELECT GET_LOCK(%s, %s) AS acquired",
+            ("docker_proxy:schema_lifecycle:migrate", 1),
+        ).fetchone()
         assert int(row["acquired"] or 0) == 1
         spec = _spec(schema_lifecycle, 804, "locked", lambda _conn: None)
         with pytest.raises(TimeoutError, match="schema_lifecycle"):
             schema_lifecycle.apply_schema_migration(spec, require_privileges=False)
-        holder.execute("DO RELEASE_LOCK(%s)", ("docker_proxy:schema_lifecycle:migrate",))
+        holder.execute(
+            "DO RELEASE_LOCK(%s)", ("docker_proxy:schema_lifecycle:migrate",)
+        )
 
 
 @pytest.mark.integration

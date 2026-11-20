@@ -14,7 +14,9 @@ def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:
     assert proxy_context.normalize_proxy_id(None) == "default"
     assert proxy_context.normalize_proxy_id("  edge-2  ") == "edge-2"
     assert proxy_context.normalize_proxy_id("Proxy-PR") == "Proxy-PR"
-    assert proxy_context.normalize_proxy_id("proxy.name:blue_01") == "proxy.name:blue_01"
+    assert (
+        proxy_context.normalize_proxy_id("proxy.name:blue_01") == "proxy.name:blue_01"
+    )
     assert proxy_context.normalize_proxy_id(" bad value!* ") == "bad-value"
     assert proxy_context.normalize_proxy_id("bad//evil") == "bad-evil"
     assert proxy_context.normalize_proxy_id("***") == "default"

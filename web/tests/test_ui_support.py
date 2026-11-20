@@ -168,4 +168,7 @@ def test_present_transaction_rows_preserves_summary_when_result_code_exists() ->
 
     presented = present_transaction_rows(rows)
 
-    assert presented[0]["result_summary"] == "TCP_MISS · HTTP 200 · HIER_DIRECT/203.0.113.10"
+    assert (
+        presented[0]["result_summary"]
+        == "TCP_MISS · HTTP 200 · HIER_DIRECT/203.0.113.10"
+    )

@@ -47,7 +47,9 @@ def _rows() -> dict[str, list[dict[str, object]]]:
     }
 
 
-def test_max_bundle_bytes_defaults_and_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_max_bundle_bytes_defaults_and_operator_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, raising=False)
 
     assert recovery.DEFAULT_MAX_BUNDLE_BYTES == 128 * 1024 * 1024
@@ -57,7 +59,9 @@ def test_max_bundle_bytes_defaults_and_operator_env(monkeypatch: pytest.MonkeyPa
     configured = 96 * 1024 * 1024
     monkeypatch.setenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, str(configured))
 
-    assert recovery.recovery_bundle_size_config_from_env().max_bundle_bytes == configured
+    assert (
+        recovery.recovery_bundle_size_config_from_env().max_bundle_bytes == configured
+    )
     assert recovery.resolve_max_bundle_bytes() == configured
     assert recovery.resolve_max_bundle_bytes(2 * 1024 * 1024) == 2 * 1024 * 1024
     assert recovery.resolve_max_bundle_bytes(64) == 64
@@ -332,14 +336,7 @@ def test_unauthenticated_wide_rows_are_not_decoded_before_integrity(
     key = recovery.get_or_create_signing_key("edge-01", tmp_path)
     bundle = _create_recovery_bundle(
         "edge-01",
-        {
-            "adblock_settings": [
-                {
-                    f"blob_{index}": b"x" * 1024
-                    for index in range(512)
-                }
-            ]
-        },
+        {"adblock_settings": [{f"blob_{index}": b"x" * 1024 for index in range(512)}]},
         created_ts="2026-07-28T19:27:00Z",
         recovery_dir=tmp_path,
     )

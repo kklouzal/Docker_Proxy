@@ -557,12 +557,10 @@ def test_parse_pfx_prefers_aki_ski_matching_same_subject_issuer() -> None:
     issuer_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     bad_ski = b"\x01" * 20
     good_ski = b"\x02" * 20
-    bad_issuer_pem, _bad_key_pem, _bad_issuer_cert, _bad_issuer_key = (
-        _new_ca_material(
-            common_name="Docker Proxy Same Subject AKI Root",
-            key=issuer_key,
-            subject_key_identifier=bad_ski,
-        )
+    bad_issuer_pem, _bad_key_pem, _bad_issuer_cert, _bad_issuer_key = _new_ca_material(
+        common_name="Docker Proxy Same Subject AKI Root",
+        key=issuer_key,
+        subject_key_identifier=bad_ski,
     )
     good_issuer_pem, _good_key_pem, good_issuer_cert, good_issuer_key = (
         _new_ca_material(

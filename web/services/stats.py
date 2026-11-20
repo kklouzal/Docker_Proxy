@@ -553,8 +553,7 @@ def get_stats() -> dict[str, Any]:
             return cached, cached_source, cached_mgr_available
         if inflight:
             return (
-                cached
-                or {"request_hit_ratio": None, "byte_hit_ratio": None},
+                cached or {"request_hit_ratio": None, "byte_hit_ratio": None},
                 cached_source,
                 cached_mgr_available,
             )

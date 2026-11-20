@@ -99,36 +99,72 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
         note="owned through pac_profiles.id",
     ),
     ProxyLifecycleTable("adblock_cache_stats", order_columns=("proxy_id", "k")),
-    ProxyLifecycleTable("adblock_counts", order_columns=("proxy_id", "day", "list_key")),
+    ProxyLifecycleTable(
+        "adblock_counts", order_columns=("proxy_id", "day", "list_key")
+    ),
     ProxyLifecycleTable("adblock_events", order_columns=("proxy_id", "ts", "id")),
     ProxyLifecycleTable("adblock_proxy_meta", order_columns=("proxy_id", "k")),
     ProxyLifecycleTable("audit_events", order_columns=("proxy_id", "ts", "id")),
     ProxyLifecycleTable("diagnostic_requests", order_columns=("proxy_id", "ts", "id")),
-    ProxyLifecycleTable("diagnostic_policy_tags", order_columns=("proxy_id", "request_id", "tag")),
-    ProxyLifecycleTable("diagnostic_icap_events", order_columns=("proxy_id", "ts", "id")),
+    ProxyLifecycleTable(
+        "diagnostic_policy_tags", order_columns=("proxy_id", "request_id", "tag")
+    ),
+    ProxyLifecycleTable(
+        "diagnostic_icap_events", order_columns=("proxy_id", "ts", "id")
+    ),
     ProxyLifecycleTable("live_stats_domains", order_columns=("proxy_id", "domain")),
     ProxyLifecycleTable("live_stats_clients", order_columns=("proxy_id", "ip")),
-    ProxyLifecycleTable("live_stats_client_domains", order_columns=("proxy_id", "ip", "domain")),
-    ProxyLifecycleTable("live_stats_client_domain_nocache", order_columns=("proxy_id", "last_seen", "row_key")),
+    ProxyLifecycleTable(
+        "live_stats_client_domains", order_columns=("proxy_id", "ip", "domain")
+    ),
+    ProxyLifecycleTable(
+        "live_stats_client_domain_nocache",
+        order_columns=("proxy_id", "last_seen", "row_key"),
+    ),
     ProxyLifecycleTable("live_stats_seed_state", order_columns=("proxy_id",)),
-    ProxyLifecycleTable("observability_report_schedules", order_columns=("proxy_id", "updated_ts", "id")),
-    ProxyLifecycleTable("pac_backup_proxies", order_columns=("proxy_id", "position", "id")),
+    ProxyLifecycleTable(
+        "observability_report_schedules", order_columns=("proxy_id", "updated_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "pac_backup_proxies", order_columns=("proxy_id", "position", "id")
+    ),
     ProxyLifecycleTable("pac_proxy_chain_settings", order_columns=("proxy_id",)),
     ProxyLifecycleTable("pac_profiles", order_columns=("proxy_id", "id")),
-    ProxyLifecycleTable("policy_requests", order_columns=("proxy_id", "updated_ts", "id")),
-    ProxyLifecycleTable("policy_exceptions", order_columns=("proxy_id", "updated_ts", "id")),
-    ProxyLifecycleTable("proxy_adblock_artifact_applications", order_columns=("proxy_id", "applied_ts", "id")),
-    ProxyLifecycleTable("proxy_certificate_applications", order_columns=("proxy_id", "applied_ts", "id")),
-    ProxyLifecycleTable("proxy_config_applications", order_columns=("proxy_id", "applied_ts", "id")),
-    ProxyLifecycleTable("proxy_config_revisions", order_columns=("proxy_id", "created_ts", "id")),
-    ProxyLifecycleTable("proxy_operations", order_columns=("proxy_id", "updated_ts", "id")),
+    ProxyLifecycleTable(
+        "policy_requests", order_columns=("proxy_id", "updated_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "policy_exceptions", order_columns=("proxy_id", "updated_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "proxy_adblock_artifact_applications",
+        order_columns=("proxy_id", "applied_ts", "id"),
+    ),
+    ProxyLifecycleTable(
+        "proxy_certificate_applications", order_columns=("proxy_id", "applied_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "proxy_config_applications", order_columns=("proxy_id", "applied_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "proxy_config_revisions", order_columns=("proxy_id", "created_ts", "id")
+    ),
+    ProxyLifecycleTable(
+        "proxy_operations", order_columns=("proxy_id", "updated_ts", "id")
+    ),
     ProxyLifecycleTable(
         "proxy_recovery_adoptions",
         order_columns=("proxy_id", "adopted_ts", "target_control_plane_id"),
     ),
-    ProxyLifecycleTable("ssl_errors", order_columns=("proxy_id", "last_seen", "row_key")),
-    ProxyLifecycleTable("sslfilter_domains", order_columns=("proxy_id", "policy", "domain")),
-    ProxyLifecycleTable("sslfilter_src_nets", order_columns=("proxy_id", "policy", "cidr")),
+    ProxyLifecycleTable(
+        "ssl_errors", order_columns=("proxy_id", "last_seen", "row_key")
+    ),
+    ProxyLifecycleTable(
+        "sslfilter_domains", order_columns=("proxy_id", "policy", "domain")
+    ),
+    ProxyLifecycleTable(
+        "sslfilter_src_nets", order_columns=("proxy_id", "policy", "cidr")
+    ),
     ProxyLifecycleTable("sslfilter_settings", order_columns=("proxy_id", "key")),
     ProxyLifecycleTable("ts_1s", order_columns=("proxy_id", "ts")),
     ProxyLifecycleTable("ts_1m", order_columns=("proxy_id", "ts")),
@@ -137,7 +173,9 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
     ProxyLifecycleTable("ts_1w", order_columns=("proxy_id", "ts")),
     ProxyLifecycleTable("ts_1mo", order_columns=("proxy_id", "ts")),
     ProxyLifecycleTable("ts_1y", order_columns=("proxy_id", "ts")),
-    ProxyLifecycleTable("webfilter_blocked_log", order_columns=("proxy_id", "ts", "id")),
+    ProxyLifecycleTable(
+        "webfilter_blocked_log", order_columns=("proxy_id", "ts", "id")
+    ),
     ProxyLifecycleTable("webfilter_settings", order_columns=("proxy_id", "k")),
     ProxyLifecycleTable("webfilter_whitelist", order_columns=("proxy_id", "pattern")),
 )
@@ -197,7 +235,9 @@ def _table_exists(conn: Any, table_name: str) -> bool:
     return table_exists(conn, table_name)
 
 
-def _index_with_leftmost_column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+def _index_with_leftmost_column_exists(
+    conn: Any, table_name: str, column_name: str
+) -> bool:
     row = conn.execute(
         """
         SELECT 1
@@ -379,7 +419,9 @@ def _bounded_update_proxy_id(
     if not table.rename or table.is_indirect_child:
         return ProxyLifecycleStepResult(table.table, "rename", skipped=True)
     if not _table_exists(conn, table.table):
-        return ProxyLifecycleStepResult(table.table, "rename", skipped=True, detail="missing")
+        return ProxyLifecycleStepResult(
+            table.table, "rename", skipped=True, detail="missing"
+        )
     if ensure_indexes:
         ensure_proxy_lifecycle_index(conn, table)
     elif not _index_with_leftmost_column_exists(conn, table.table, table.proxy_column):
@@ -393,7 +435,9 @@ def _bounded_update_proxy_id(
     per_chunk = lifecycle_chunk_size()
     per_table = lifecycle_max_rows_per_table()
     if per_table <= 0:
-        return ProxyLifecycleStepResult(table.table, "rename", truncated=True, detail="max_rows=0")
+        return ProxyLifecycleStepResult(
+            table.table, "rename", truncated=True, detail="max_rows=0"
+        )
     safe_table = quote_mysql_identifier(table.table)
     proxy_col = quote_mysql_identifier(table.proxy_column)
     order_sql = _order_sql(conn, table)
@@ -433,17 +477,23 @@ def _bounded_delete_proxy_id(
     if not table.remove:
         return ProxyLifecycleStepResult(table.table, "remove", skipped=True)
     if not _table_exists(conn, table.table):
-        return ProxyLifecycleStepResult(table.table, "remove", skipped=True, detail="missing")
+        return ProxyLifecycleStepResult(
+            table.table, "remove", skipped=True, detail="missing"
+        )
     per_chunk = lifecycle_chunk_size()
     per_table = lifecycle_max_rows_per_table()
     if per_table <= 0:
-        return ProxyLifecycleStepResult(table.table, "remove", truncated=True, detail="max_rows=0")
+        return ProxyLifecycleStepResult(
+            table.table, "remove", truncated=True, detail="max_rows=0"
+        )
     total = 0
     iterations = 0
 
     if table.is_indirect_child:
         if not _table_exists(conn, table.owner_table):
-            return ProxyLifecycleStepResult(table.table, "remove", skipped=True, detail="owner_missing")
+            return ProxyLifecycleStepResult(
+                table.table, "remove", skipped=True, detail="owner_missing"
+            )
         if ensure_indexes:
             ensure_proxy_lifecycle_index(conn, table)
             ensure_proxy_lifecycle_index(
@@ -534,8 +584,7 @@ def _bounded_delete_proxy_id(
         affected_rows=total,
         iterations=iterations,
         truncated=(
-            total >= per_table
-            and _proxy_rows_remain(conn, table, proxy_id=proxy_id)
+            total >= per_table and _proxy_rows_remain(conn, table, proxy_id=proxy_id)
         ),
         discovered=table.note.startswith("discovered"),
     )

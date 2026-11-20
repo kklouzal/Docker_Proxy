@@ -133,7 +133,9 @@ def _proxied_request(proxy_url: str, url: str, *, timeout_seconds: float = 15.0)
     )
     try:
         with opener.open(request, timeout=timeout_seconds) as response:
-            return int(response.status), response.read().decode("utf-8", errors="replace")
+            return int(response.status), response.read().decode(
+                "utf-8", errors="replace"
+            )
     except urllib.error.HTTPError as exc:
         return int(exc.code), exc.read().decode("utf-8", errors="replace")
 

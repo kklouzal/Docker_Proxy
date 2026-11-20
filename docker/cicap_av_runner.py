@@ -703,7 +703,9 @@ def _drain_encapsulated_body(
     preview_size = _parse_icap_preview_header(
         headers.get("preview"), max_bytes=1024 * 1024 * 1024
     )
-    terminal_offset = body_offset if body_offset is not None else offsets.get("null-body")
+    terminal_offset = (
+        body_offset if body_offset is not None else offsets.get("null-body")
+    )
     if terminal_offset is None:  # pragma: no cover - offset validation guards this
         message = "REQMOD request missing req-body/null-body"
         raise IcapProtocolError(message)
@@ -728,9 +730,7 @@ def _drain_encapsulated_body(
             )
         return
     body = data[body_offset:]
-    decoded_body, _unused = _read_chunked_body(
-        sock, body, preview_size=preview_size
-    )
+    decoded_body, _unused = _read_chunked_body(sock, body, preview_size=preview_size)
     if offsets.get("req-hdr") is not None:
         _validate_reqmod_http_request_for_204(
             request_header, body_length=len(decoded_body), body_present=True
@@ -847,9 +847,7 @@ def _reqmod_http_transfer_codings(value: bytes) -> list[bytes]:
     for raw_coding in value.split(b","):
         coding = raw_coding.strip(b" \t").lower()
         if not coding or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in coding):
-            message = (
-                "unsupported REQMOD encapsulated HTTP Transfer-Encoding header"
-            )
+            message = "unsupported REQMOD encapsulated HTTP Transfer-Encoding header"
             raise IcapProtocolError(message)
         codings.append(coding)
     return codings
@@ -964,8 +962,7 @@ def _respmod_http_request_transfer_codings(value: bytes) -> list[bytes]:
         coding = raw_coding.strip(b" \t").lower()
         if not coding or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in coding):
             message = (
-                "invalid RESPMOD encapsulated HTTP request "
-                "Transfer-Encoding header"
+                "invalid RESPMOD encapsulated HTTP request Transfer-Encoding header"
             )
             raise IcapProtocolError(message)
         codings.append(coding)
@@ -1014,8 +1011,7 @@ def _validate_respmod_http_request_fields(lines: list[bytes]) -> None:
             raise IcapProtocolError(message)
         if b"chunked" not in transfer_codings or transfer_codings[-1] != b"chunked":
             message = (
-                "invalid RESPMOD encapsulated HTTP request "
-                "Transfer-Encoding header"
+                "invalid RESPMOD encapsulated HTTP request Transfer-Encoding header"
             )
             raise IcapProtocolError(message)
 
@@ -1082,9 +1078,7 @@ def _validate_respmod_http_response_fields_for_replay(
             if content_length is None:
                 content_length = parsed_length
             elif content_length != parsed_length:
-                message = (
-                    "conflicting RESPMOD encapsulated HTTP Content-Length headers"
-                )
+                message = "conflicting RESPMOD encapsulated HTTP Content-Length headers"
                 raise IcapProtocolError(message)
         elif name == b"transfer-encoding":
             if transfer_encoding_seen:
@@ -1146,8 +1140,10 @@ def _validate_respmod_http_response_for_replay(
         message = "RESPMOD encapsulated HTTP response status forbids a body"
         raise IcapProtocolError(message)
 
-    content_length, transfer_codings = _validate_respmod_http_response_fields_for_replay(
-        lines, body_length=body_length, body_present=body_present
+    content_length, transfer_codings = (
+        _validate_respmod_http_response_fields_for_replay(
+            lines, body_length=body_length, body_present=body_present
+        )
     )
     return status, content_length, transfer_codings
 
@@ -1155,8 +1151,10 @@ def _validate_respmod_http_response_for_replay(
 def _validate_respmod_null_body_framing_for_replay(
     http_header: bytes, *, request_method: bytes | None
 ) -> None:
-    status, content_length, transfer_codings = _validate_respmod_http_response_for_replay(
-        http_header, body_length=0, body_present=False
+    status, content_length, transfer_codings = (
+        _validate_respmod_http_response_for_replay(
+            http_header, body_length=0, body_present=False
+        )
     )
     if request_method is None or request_method == b"HEAD":
         return
@@ -1192,10 +1190,14 @@ def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> byte
         http_header, body_length=len(body), body_present=True
     )
     http_header = _http_header_for_body_replay(http_header, len(body))
-    return _icap_response(
-        "200 OK",
-        {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
-    ) + http_header + _encode_icap_body_chunk(body)
+    return (
+        _icap_response(
+            "200 OK",
+            {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+        )
+        + http_header
+        + _encode_icap_body_chunk(body)
+    )
 
 
 def _clean_respmod_no_body_response(
@@ -1208,10 +1210,16 @@ def _clean_respmod_no_body_response(
         return _icap_response("204 No Content", {"ISTag": istag})
     if http_header and not http_header.endswith(HEADER_END):
         http_header += HEADER_END
-    return _icap_response(
-        "200 OK",
-        {"ISTag": istag, "Encapsulated": f"res-hdr=0, null-body={len(http_header)}"},
-    ) + http_header
+    return (
+        _icap_response(
+            "200 OK",
+            {
+                "ISTag": istag,
+                "Encapsulated": f"res-hdr=0, null-body={len(http_header)}",
+            },
+        )
+        + http_header
+    )
 
 
 def _error_response(message: str, istag: str) -> bytes:
@@ -1224,10 +1232,14 @@ def _error_response(message: str, istag: str) -> bytes:
         + f"Content-Length: {len(payload)}\r\n".encode("ascii")
         + b"Connection: close\r\n\r\n"
     )
-    return _icap_response(
-        "200 OK",
-        {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
-    ) + http_header + _encode_icap_body_chunk(payload)
+    return (
+        _icap_response(
+            "200 OK",
+            {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+        )
+        + http_header
+        + _encode_icap_body_chunk(payload)
+    )
 
 
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
@@ -1355,9 +1367,7 @@ def main(argv: list[str]) -> int:
     port = _parse_port(os.environ.get("CLAMD_PORT"), default=DEFAULT_CLAMD_PORT)
     required = env_enabled(
         os.environ.get("CLAMAV_REQUIRED"), invalid_default=True
-    ) or env_enabled(
-        os.environ.get("FILE_SECURITY_AV_REQUIRED"), invalid_default=True
-    )
+    ) or env_enabled(os.environ.get("FILE_SECURITY_AV_REQUIRED"), invalid_default=True)
 
     if clamd_ready(host, port):
         try:

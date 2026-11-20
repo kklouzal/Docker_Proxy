@@ -91,8 +91,7 @@ def adblock_host_suffix_candidates(host: str) -> list[str]:
 def adblock_host_matches(host: str, rule_host: str) -> bool:
     normalized_rule = normalize_adblock_host(rule_host)
     return bool(
-        normalized_rule
-        and normalized_rule in adblock_host_suffix_candidates(host)
+        normalized_rule and normalized_rule in adblock_host_suffix_candidates(host)
     )
 
 

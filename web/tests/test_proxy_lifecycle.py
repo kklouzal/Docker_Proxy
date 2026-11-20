@@ -155,13 +155,15 @@ def test_rename_proxy_scoped_rows_processes_proxy_recovery_adoptions(
     monkeypatch.setattr(
         lifecycle,
         "_columns",
-        lambda _conn, name: {
-            "proxy_id",
-            "adopted_ts",
-            "target_control_plane_id",
-        }
-        if name == "proxy_recovery_adoptions"
-        else set(),
+        lambda _conn, name: (
+            {
+                "proxy_id",
+                "adopted_ts",
+                "target_control_plane_id",
+            }
+            if name == "proxy_recovery_adoptions"
+            else set()
+        ),
     )
     monkeypatch.setattr(lifecycle, "lifecycle_chunk_size", lambda: 10)
     monkeypatch.setattr(lifecycle, "lifecycle_max_rows_per_table", lambda: 100)
@@ -248,13 +250,15 @@ def test_remove_proxy_scoped_rows_processes_proxy_recovery_adoptions(
     monkeypatch.setattr(
         lifecycle,
         "_columns",
-        lambda _conn, name: {
-            "proxy_id",
-            "adopted_ts",
-            "target_control_plane_id",
-        }
-        if name == "proxy_recovery_adoptions"
-        else set(),
+        lambda _conn, name: (
+            {
+                "proxy_id",
+                "adopted_ts",
+                "target_control_plane_id",
+            }
+            if name == "proxy_recovery_adoptions"
+            else set()
+        ),
     )
     monkeypatch.setattr(lifecycle, "lifecycle_chunk_size", lambda: 10)
     monkeypatch.setattr(lifecycle, "lifecycle_max_rows_per_table", lambda: 100)
@@ -297,7 +301,9 @@ def test_rename_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
     assert truncated.table == "proxy_unprepared_rows"
     assert truncated.detail == "missing_prepared_lifecycle_index"
     assert not any(statement.startswith("UPDATE ") for statement in conn.statements)
-    assert not any(statement.startswith("ALTER TABLE ") for statement in conn.statements)
+    assert not any(
+        statement.startswith("ALTER TABLE ") for statement in conn.statements
+    )
 
 
 def test_remove_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
@@ -324,8 +330,12 @@ def test_remove_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
     assert result.truncated_tables == ("proxy_unprepared_rows",)
     assert truncated.table == "proxy_unprepared_rows"
     assert truncated.detail == "missing_prepared_lifecycle_index"
-    assert not any(statement.startswith("DELETE FROM ") for statement in conn.statements)
-    assert not any(statement.startswith("ALTER TABLE ") for statement in conn.statements)
+    assert not any(
+        statement.startswith("DELETE FROM ") for statement in conn.statements
+    )
+    assert not any(
+        statement.startswith("ALTER TABLE ") for statement in conn.statements
+    )
 
 
 def test_bounded_lifecycle_probes_for_rows_before_reporting_truncation(

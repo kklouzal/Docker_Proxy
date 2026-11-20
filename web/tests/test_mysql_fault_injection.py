@@ -38,7 +38,9 @@ def test_mysql_deadlock_retry_replays_idempotent_transaction_once_per_worker(
     monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
 
     with db.connect() as conn:
-        conn.execute("CREATE TABLE fault_deadlock(id INT PRIMARY KEY, value INT NOT NULL) ENGINE=InnoDB")
+        conn.execute(
+            "CREATE TABLE fault_deadlock(id INT PRIMARY KEY, value INT NOT NULL) ENGINE=InnoDB"
+        )
         conn.execute("INSERT INTO fault_deadlock(id, value) VALUES(1, 0), (2, 0)")
 
     barrier = threading.Barrier(2)
@@ -75,7 +77,9 @@ def test_mysql_deadlock_retry_replays_idempotent_transaction_once_per_worker(
 
     assert results == ["a", "b"]
     with db.connect() as conn:
-        rows = conn.execute("SELECT id, value FROM fault_deadlock ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT id, value FROM fault_deadlock ORDER BY id"
+        ).fetchall()
     assert [(int(row["id"]), int(row["value"])) for row in rows] == [(1, 2), (2, 2)]
 
 
@@ -91,21 +95,27 @@ def test_mysql_killed_session_during_commit_is_not_blindly_retried(
     monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
 
     with db.connect() as conn:
-        conn.execute("CREATE TABLE fault_commit(id INT PRIMARY KEY, value INT NOT NULL) ENGINE=InnoDB")
+        conn.execute(
+            "CREATE TABLE fault_commit(id INT PRIMARY KEY, value INT NOT NULL) ENGINE=InnoDB"
+        )
 
     attempts = {"count": 0}
 
     def ambiguous_commit() -> None:
         attempts["count"] += 1
         with db.connect_unpooled() as victim:
-            connection_id = victim.execute("SELECT CONNECTION_ID() AS id").fetchone()["id"]
+            connection_id = victim.execute("SELECT CONNECTION_ID() AS id").fetchone()[
+                "id"
+            ]
             victim.execute("INSERT INTO fault_commit(id, value) VALUES(1, 1)")
             with db.connect_unpooled() as killer:
                 killer.execute(f"KILL CONNECTION {int(connection_id)}")
             victim.commit()
 
     with pytest.raises(db.DATABASE_ERRORS):
-        db.run_mysql_operation_with_retry(ambiguous_commit, operation_name="ambiguous-commit")
+        db.run_mysql_operation_with_retry(
+            ambiguous_commit, operation_name="ambiguous-commit"
+        )
 
     assert attempts["count"] == 1
 
@@ -117,9 +127,13 @@ def test_mysql_advisory_lock_released_when_session_is_killed(tmp_path: Path) -> 
     lock_name = "docker_proxy:test:advisory_loss"
     holder = db.connect_unpooled()
     try:
-        acquired = holder.execute("SELECT GET_LOCK(%s, 1) AS acquired", (lock_name,)).fetchone()
+        acquired = holder.execute(
+            "SELECT GET_LOCK(%s, 1) AS acquired", (lock_name,)
+        ).fetchone()
         assert int(acquired["acquired"] or 0) == 1
-        connection_id = int(holder.execute("SELECT CONNECTION_ID() AS id").fetchone()["id"])
+        connection_id = int(
+            holder.execute("SELECT CONNECTION_ID() AS id").fetchone()["id"]
+        )
         with db.connect_unpooled() as killer:
             killer.execute(f"KILL CONNECTION {connection_id}")
 
@@ -127,7 +141,9 @@ def test_mysql_advisory_lock_released_when_session_is_killed(tmp_path: Path) -> 
             holder.execute("SELECT 1")
 
         with db.connect_unpooled() as contender:
-            row = contender.execute("SELECT GET_LOCK(%s, 5) AS acquired", (lock_name,)).fetchone()
+            row = contender.execute(
+                "SELECT GET_LOCK(%s, 5) AS acquired", (lock_name,)
+            ).fetchone()
             assert int(row["acquired"] or 0) == 1
             contender.execute("DO RELEASE_LOCK(%s)", (lock_name,))
     finally:

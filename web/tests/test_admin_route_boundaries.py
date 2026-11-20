@@ -962,7 +962,9 @@ def test_fleet_selection_stores_only_registered_canonical_proxy_ids(
             if key == "renamed-edge":
                 return "edge-2"
             if key == "removed-edge":
-                msg = "Proxy removed-edge is in lifecycle state removed; secret=password"
+                msg = (
+                    "Proxy removed-edge is in lifecycle state removed; secret=password"
+                )
                 raise ValueError(msg)
             return super().resolve_proxy_id(preferred)
 
@@ -1661,8 +1663,7 @@ def test_listener_collision_adjustment_is_reported_and_reapply_is_stable(
     loaded = load_admin_app(monkeypatch, tmp_path)
     template = tmp_path / "squid.conf.template"
     template.write_text(
-        "http_port 0.0.0.0:3128 ssl-bump\n"
-        "http_port 0.0.0.0:3129 tproxy\n",
+        "http_port 0.0.0.0:3128 ssl-bump\nhttp_port 0.0.0.0:3129 tproxy\n",
         encoding="utf-8",
     )
     controller = loaded.module.SquidController()
@@ -1728,9 +1729,7 @@ def test_explicit_listener_collision_adjustment_is_reported_and_reapply_is_stabl
 
     readback = controller.get_tunable_options(rendered)
     reapplied_options = loaded.module._options_from_tunables(readback)
-    reapplied = controller._render_http_port_listeners(
-        config, reapplied_options, 128
-    )
+    reapplied = controller._render_http_port_listeners(config, reapplied_options, 128)
     assert controller.get_tunable_options(reapplied) == readback
     assert (
         loaded.module._listener_adjustment_detail(
@@ -2382,7 +2381,10 @@ def test_apply_all_saved_config_rebuilds_validates_and_syncs_selected_proxy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert loaded.config_revisions.created[-1]["proxy_id"] == "default"
     assert loaded.config_revisions.created[-1]["source_kind"] == "template-reconcile"
-    assert "Saved settings were rebuilt, verified, saved as desired state, and queued" in text
+    assert (
+        "Saved settings were rebuilt, verified, saved as desired state, and queued"
+        in text
+    )
     assert any(
         record["kind"] == "config_apply_all_saved" and record["ok"]
         for record in loaded.audit_store.records
@@ -3308,8 +3310,7 @@ def test_observability_metrics_emits_cache_miss_bytes_as_numeric_value(
         "Cache miss response bytes observed in the selected window."
     ) in body
     assert (
-        'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765'
-        in body
+        'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765' in body
     )
 
 
@@ -3922,7 +3923,7 @@ def test_observability_remediation_suppresses_actions_when_sslfilter_rules_fail(
 ) -> None:
     class RaisingSslfilterStore(FakeSslfilterStore):
         def list_all(self):
-            msg = 'sslfilter database credential=sslfilter-sentinel-7f3a9c'
+            msg = "sslfilter database credential=sslfilter-sentinel-7f3a9c"
             raise RuntimeError(msg)
 
     loaded = load_admin_app(
@@ -4161,9 +4162,9 @@ def test_observability_remediation_no_bump_domain_reports_refresh_failure_after_
     assert params["q"] == ["ssl"]
     assert params["remediation_error"] == ["1"]
     assert params["remediation_domain"] == ["challenge.example"]
-    assert "saved, but proxy reconciliation was not queued" in params[
-        "remediation_msg"
-    ][0]
+    assert (
+        "saved, but proxy reconciliation was not queued" in params["remediation_msg"][0]
+    )
     assert "operation ledger unavailable" in params["remediation_msg"][0]
     assert any(
         record["kind"] == "observability_remediation_no_bump_domain"
@@ -4829,7 +4830,9 @@ def test_policy_runtime_state_tracks_selected_policy_operation_status(
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
-        proxy_client=PolicyEvidenceProxyClient(current_by_proxy={"default": current_sha}),
+        proxy_client=PolicyEvidenceProxyClient(
+            current_by_proxy={"default": current_sha}
+        ),
     )
     monkeypatch.setattr(
         loaded.module,
@@ -4852,7 +4855,9 @@ def test_policy_runtime_state_tracks_selected_policy_operation_status(
     assert state["label"] == expected_label
     assert state["operation_id"] == operation.operation_id
     assert state["operation_status_label"] == (
-        "succeeded" if operation_status == "applied" else operation_status.replace("applying", "running")
+        "succeeded"
+        if operation_status == "applied"
+        else operation_status.replace("applying", "running")
     )
     assert state["desired_policy_sha"] == POLICY_SHA
     assert state["current_policy_sha"] == current_sha
@@ -4943,7 +4948,9 @@ def test_policy_runtime_state_matches_legacy_uppercase_sha_target(
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
-        proxy_client=PolicyEvidenceProxyClient(current_by_proxy={"default": POLICY_SHA_OLD}),
+        proxy_client=PolicyEvidenceProxyClient(
+            current_by_proxy={"default": POLICY_SHA_OLD}
+        ),
     )
     monkeypatch.setattr(
         loaded.module,
@@ -5098,7 +5105,10 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
         proxy_client=RuntimeEvidenceProxyClient(
             {
                 "edge-a": {"desired_pac_sha": PAC_SHA, "current_pac_sha": PAC_SHA},
-                "edge-b": {"desired_pac_sha": PAC_SHA_B, "current_pac_sha": PAC_SHA_OLD},
+                "edge-b": {
+                    "desired_pac_sha": PAC_SHA_B,
+                    "current_pac_sha": PAC_SHA_OLD,
+                },
             }
         ),
     )
@@ -5205,7 +5215,12 @@ def test_adblock_runtime_state_classifies_revision_scoped_apply(
         tmp_path,
         adblock_artifacts=artifacts,
         proxy_client=RuntimeEvidenceProxyClient(
-            {"default": {"active_adblock_sha": "artifact-sha", "current_adblock_sha": current_sha}}
+            {
+                "default": {
+                    "active_adblock_sha": "artifact-sha",
+                    "current_adblock_sha": current_sha,
+                }
+            }
         ),
     )
     operation = loaded.operation_ledger.create_operation(
@@ -5221,7 +5236,9 @@ def test_adblock_runtime_state_classifies_revision_scoped_apply(
 
     state = loaded.module._adblock_runtime_state(
         "default",
-        active_artifact=loaded.module._present_adblock_artifact_summary(artifacts.summary),
+        active_artifact=loaded.module._present_adblock_artifact_summary(
+            artifacts.summary
+        ),
     )
 
     assert state["state"] == expected_state
@@ -5236,7 +5253,9 @@ def test_adblock_runtime_state_no_active_built_unverified_unavailable_and_stale_
     loaded_no_artifact = load_admin_app(monkeypatch, tmp_path)
     no_active = loaded_no_artifact.module._adblock_runtime_state(
         "default",
-        active_artifact=loaded_no_artifact.module._present_adblock_artifact_summary(None),
+        active_artifact=loaded_no_artifact.module._present_adblock_artifact_summary(
+            None
+        ),
     )
     assert no_active["state"] == "no_active_artifact"
 
@@ -5252,7 +5271,9 @@ def test_adblock_runtime_state_no_active_built_unverified_unavailable_and_stale_
         monkeypatch,
         tmp_path,
         adblock_artifacts=artifacts,
-        proxy_client=RuntimeEvidenceProxyClient({"default": {"current_adblock_sha": ""}}),
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"current_adblock_sha": ""}}
+        ),
     )
     stale = loaded.operation_ledger.create_operation(
         "default",
@@ -5267,7 +5288,9 @@ def test_adblock_runtime_state_no_active_built_unverified_unavailable_and_stale_
 
     state = loaded.module._adblock_runtime_state(
         "default",
-        active_artifact=loaded.module._present_adblock_artifact_summary(artifacts.summary),
+        active_artifact=loaded.module._present_adblock_artifact_summary(
+            artifacts.summary
+        ),
     )
     assert state["state"] == "built_unverified"
     assert "different artifact revision/hash" in state["detail"]
@@ -5282,7 +5305,9 @@ def test_adblock_runtime_state_no_active_built_unverified_unavailable_and_stale_
     )
     unavailable = loaded_offline.module._adblock_runtime_state(
         "default",
-        active_artifact=loaded_offline.module._present_adblock_artifact_summary(artifacts.summary),
+        active_artifact=loaded_offline.module._present_adblock_artifact_summary(
+            artifacts.summary
+        ),
     )
     assert unavailable["state"] == "unavailable"
 
@@ -5305,8 +5330,14 @@ def test_adblock_runtime_card_isolates_selected_proxy_partial_convergence(
         adblock_artifacts=artifacts,
         proxy_client=RuntimeEvidenceProxyClient(
             {
-                "edge-a": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": "fleet-artifact"},
-                "edge-b": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": POLICY_SHA_OLD},
+                "edge-a": {
+                    "active_adblock_sha": "fleet-artifact",
+                    "current_adblock_sha": "fleet-artifact",
+                },
+                "edge-b": {
+                    "active_adblock_sha": "fleet-artifact",
+                    "current_adblock_sha": POLICY_SHA_OLD,
+                },
             }
         ),
     )

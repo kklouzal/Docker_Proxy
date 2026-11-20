@@ -5,7 +5,10 @@ from services.sql_identifiers import normalize_mysql_identifier, quote_mysql_ide
 
 
 def test_normalize_mysql_identifier_returns_unquoted_identifier() -> None:
-    assert normalize_mysql_identifier(" proxy_config_revisions ") == "proxy_config_revisions"
+    assert (
+        normalize_mysql_identifier(" proxy_config_revisions ")
+        == "proxy_config_revisions"
+    )
 
 
 def test_quote_mysql_identifier_accepts_simple_identifiers() -> None:
