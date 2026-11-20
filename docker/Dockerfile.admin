@@ -22,8 +22,10 @@ WORKDIR /tmp/deps
 
 COPY web/requirements.txt /tmp/deps/requirements.txt
 
+# Bytecode is compiled at build time (as in the proxy image): otherwise every
+# fresh container compiles dependencies and /app on first import.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install --no-compile --target /python-deps -r /tmp/deps/requirements.txt
+    python3 -m pip install --target /python-deps -r /tmp/deps/requirements.txt
 
 FROM alpine:${ALPINE_VERSION}
 ARG ALPINE_VERSION
@@ -159,6 +161,7 @@ COPY web/tools/adblock_compile.py \
 	web/tools/webcat_build.py \
 	web/tools/start_admin_ui.py \
 	/app/tools/
+RUN python3 -m compileall -q /app
 COPY squid /squid
 COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
 COPY --chmod=755 docker/start-admin-ui.sh /usr/local/bin/start-admin-ui.sh

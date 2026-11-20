@@ -2280,3 +2280,11 @@ def test_public_pac_listener_runs_apart_from_management_and_loads_no_database() 
         env={**os.environ, "PYTHONPATH": f"{REPO_ROOT}:{REPO_ROOT / 'web'}"},
     )
     assert result.stdout.strip() == "[]"
+
+
+def test_images_ship_build_time_bytecode() -> None:
+    """Fresh containers must not compile dependencies or /app at first import."""
+    for dockerfile in ("docker/Dockerfile.proxy", "docker/Dockerfile.admin"):
+        text = _read(dockerfile)
+        assert "--no-compile" not in text, dockerfile
+        assert "RUN python3 -m compileall -q /app" in text, dockerfile
