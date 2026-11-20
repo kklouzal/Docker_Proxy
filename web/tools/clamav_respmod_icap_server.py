@@ -115,6 +115,17 @@ class ScanUnverifiedError(RuntimeError):
     """clamd could not produce a verdict for every response byte."""
 
 
+class ScanStalledError(ScanUnverifiedError):
+    """The clamd stream was lost after the response body stalled.
+
+    Squid feeds a streamed body at the pace the client takes the adapted
+    response, and an origin can pause on purpose; clamd drops an INSTREAM
+    connection idle past its ReadTimeout. Such a loss is not a clamd outage,
+    so it never takes the fail-open bypass: the response is refused (or a
+    started one aborted) as in fail-closed mode.
+    """
+
+
 class ScanLimitExceededError(ScanUnverifiedError):
     """The response exceeded an antivirus scan limit and could not be verified.
 
@@ -1201,6 +1212,8 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         self.server.record("errors")
         if isinstance(exc, ScanLimitExceededError):
             self.server.record("scan_limit_exceeded")
+        if isinstance(exc, ScanStalledError):
+            self.server.record("scan_stalls")
         if isinstance(exc, (IcapProtocolError, BodyTooLargeError)):
             self.server.record("protocol_errors")
         elif isinstance(
@@ -1261,6 +1274,22 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 f"of {server.max_scan_bytes} bytes"
             )
         result: ClamdResult | None = None
+        # When bytes last reached clamd: a scan lost after a longer gap than
+        # the clamd timeout followed a stalled body, not a clamd outage.
+        last_scan_send = time.monotonic()
+
+        def lost_scan(exc: Exception, idle_seconds: float) -> ScanUnverifiedError:
+            """Classify a clamd failure; ``idle_seconds`` = stream gap before it."""
+            if (
+                not isinstance(exc, ClamdSizeLimitError)
+                and idle_seconds >= server.clamd_timeout
+            ):
+                stalled = ScanStalledError(
+                    f"clamd stream lost after the response body stalled: {exc}"
+                )
+                stalled.__cause__ = exc
+                return stalled
+            return _unverified_from_scan_error(exc)
 
         with contextlib.ExitStack() as stack:
             scanner: ClamdInstreamSession | None = None
@@ -1282,7 +1311,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 scanner = None
                 # Release the clamd connection and scan slot immediately.
                 stack.close()
-                if server.fail_open:
+                if server.fail_open and not isinstance(reason, ScanStalledError):
                     return
                 if stream.headers_sent:
                     raise reason
@@ -1291,6 +1320,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 stream.discard()
 
             def on_chunk(chunk: bytes) -> None:
+                nonlocal last_scan_send
                 stream.length += len(chunk)
                 if scanner is not None:
                     if stream.length > server.max_scan_bytes:
@@ -1301,10 +1331,13 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                             )
                         )
                     else:
+                        idle_seconds = time.monotonic() - last_scan_send
                         try:
                             scanner.send_chunk(chunk)
                         except Exception as exc:
-                            stop_scanning(_unverified_from_scan_error(exc))
+                            stop_scanning(lost_scan(exc, idle_seconds))
+                        else:
+                            last_scan_send = time.monotonic()
                 stream.retain(chunk)
                 self._forward_beyond_hold(stream, http_header)
 
@@ -1331,6 +1364,8 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 raise IcapProtocolError(message)
             _validate_http_content_length_matches_body(http_header, stream.length)
             if scanner is not None:
+                # The verdict wait itself is not a stall of the body.
+                idle_seconds = time.monotonic() - last_scan_send
                 try:
                     result = scanner.finish(
                         verdict_timeout=server.scan_timeout
@@ -1338,7 +1373,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                         else None
                     )
                 except Exception as exc:
-                    unverified = _unverified_from_scan_error(exc)
+                    unverified = lost_scan(exc, idle_seconds)
 
         if result is not None and result.infected:
             server.record("infected")
@@ -1355,7 +1390,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 self._write_response(blocked_response(result.signature))
             return
         if unverified is not None:
-            if not server.fail_open:
+            if not server.fail_open or isinstance(unverified, ScanStalledError):
                 raise unverified
             self._record_fail_open_bypass(unverified)
             if stream.headers_sent:
@@ -1570,7 +1605,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 )
             self._abort_stream()
             return
-        if self.server.fail_open:
+        if self.server.fail_open and not isinstance(exc, ScanStalledError):
             self._record_failure(exc)
             scan_error_warning.warning("fail-open after scan/protocol error: %s", exc)
             try:

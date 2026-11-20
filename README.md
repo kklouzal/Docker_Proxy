@@ -404,6 +404,14 @@ can lower, but never raise, that scheduled-housekeeping bound.
     small bodies keep `CLAMD_TIMEOUT`. A body may idle for up to
     `CLAMAV_RESPMOD_BODY_TIMEOUT` (300 s) between bytes, so slow or stalling
     origins are not cut off.
+  - Squid passes a paused or slow client on to the helper as a paused body,
+    and clamd drops an INSTREAM stream that idles past its `ReadTimeout`
+    (120 s by default; set `ReadTimeout 300` in the remote `clamd.conf` to
+    match the body timeout). A scan lost after the body stalled for at least
+    `CLAMD_TIMEOUT` is never a fail-open bypass: the transfer is aborted (or
+    answered with the 502 page) in both modes, logged as `clamd stream lost
+    after the response body stalled` and counted as `scan_stalls`. Only a
+    clamd failure while the body keeps flowing takes the fail-open bypass.
 - Range requests, `206` partial responses, and Server-Sent Events are not sent
   to RESPMOD: an event stream has no end, so its events would sit in the
   withheld tail and the reply would never get a verdict. An exchange counts as

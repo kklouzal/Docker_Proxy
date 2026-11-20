@@ -5249,7 +5249,11 @@ def test_streamed_body_clamd_failure_mid_stream(fail_open: bool) -> None:
     scanner = FailingSendAfterPreviewScanner()
     parts = [b"A" * 20, b"B" * 20, b"C" * 20]
     http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
-    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+    # A clamd outage while the body keeps flowing (gaps below the clamd
+    # timeout); a stalled body is covered by the ScanStalledError tests.
+    with _streaming_server(
+        server, scanner, fail_open=fail_open, clamd_timeout=5
+    ) as icap_server:
         _seen, response, ending = _run_stream(icap_server, http_header, parts)
 
     _header, body, terminated = _decode_icap_response_body(response)
@@ -5268,7 +5272,7 @@ def test_streamed_slow_verdict_fail_open_completes_unscanned() -> None:
     server = _load_server()
     parts = [b"A" * 20, b"B" * 20]
     http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
-    with _streaming_server(server, SlowScanner()) as icap_server:
+    with _streaming_server(server, SlowScanner(), clamd_timeout=5) as icap_server:
         _seen, response, _ending = _run_stream(icap_server, http_header, parts)
 
     _header, body, terminated = _decode_icap_response_body(response)
@@ -5337,6 +5341,99 @@ def test_streamed_body_tolerates_origin_gaps_longer_than_client_timeout() -> Non
     _header, body, terminated = _decode_icap_response_body(response)
     assert body == b"A" * 20 + b"B" * 20
     assert terminated is True
+
+
+class FailAfterStallScanner(MarkerScanner):
+    """Fake clamd that drops the stream once it idled (like ReadTimeout)."""
+
+    def __init__(self, *, idle_limit: float) -> None:
+        super().__init__()
+        self.idle_limit = idle_limit
+        self.last_send = None
+
+    def send_chunk(self, data: bytes) -> None:
+        now = time.monotonic()
+        if self.last_send is not None and now - self.last_send >= self.idle_limit:
+            message = "clamd closed the idle stream"
+            raise BrokenPipeError(message)
+        self.last_send = now
+        super().send_chunk(data)
+
+    def finish(self, *, verdict_timeout=None):
+        if time.monotonic() - self.last_send >= self.idle_limit:
+            message = "clamd closed the idle stream"
+            raise BrokenPipeError(message)
+        return super().finish(verdict_timeout=verdict_timeout)
+
+
+def _stalled_stream(icap_server, http_header: bytes, parts, *, stall_before: int):
+    """Send ``parts``; pause 0.3 s before part ``stall_before`` (len = terminator)."""
+    thread = _serve_in_thread(icap_server)
+    port = icap_server.server_address[1]
+    try:
+        with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=2) as sock:
+            sock.sendall(_stream_request_head(port, http_header))
+            for index, part in enumerate([*parts, None]):
+                if index == stall_before:
+                    time.sleep(0.3)
+                with contextlib.suppress(OSError):
+                    sock.sendall(b"0\r\n\r\n" if part is None else _wire_chunk(part))
+            response, ending = _read_to_close(sock)
+    finally:
+        icap_server.shutdown()
+        thread.join(timeout=1)
+    return response, ending
+
+
+@pytest.mark.parametrize("stall_before", [1, 2])  # mid-body / before terminator
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_streamed_scan_lost_after_a_stall_never_bypasses(
+    fail_open: bool, stall_before: int
+) -> None:
+    # Squid paces a streamed body by the client (a paused download) and an
+    # origin can stall on purpose; clamd drops an idle INSTREAM stream. That
+    # loss must not deliver the rest unscanned, even in fail-open mode.
+    server = _load_server()
+    scanner = FailAfterStallScanner(idle_limit=0.2)
+    parts = [b"A" * 20, b"B" * 20 + MARKER]
+    payload = b"".join(parts)
+    http_header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
+    with _streaming_server(
+        server, scanner, fail_open=fail_open, clamd_timeout=0.2
+    ) as icap_server:
+        response, ending = _stalled_stream(
+            icap_server, http_header, parts, stall_before=stall_before
+        )
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    assert terminated is False
+    assert MARKER not in body
+    assert ending in {"reset", "eof"}
+    assert icap_server.stats.counters["scan_stalls"] == 1
+    assert icap_server.stats.counters["stream_aborts"] == 1
+    assert "fail_open_bypasses" not in icap_server.stats.counters
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_small_body_scan_lost_after_a_stall_gets_the_error_page(
+    fail_open: bool,
+) -> None:
+    server = _load_server()
+    scanner = FailAfterStallScanner(idle_limit=0.2)
+    parts = [b"A" * 4, b"B" * 4]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n"
+    with _streaming_server(
+        server, scanner, fail_open=fail_open, clamd_timeout=0.2
+    ) as icap_server:
+        response, _ending = _stalled_stream(
+            icap_server, http_header, parts, stall_before=1
+        )
+
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"ICAP/1.0 204" not in response
+    assert b"AAAA" not in response
+    assert icap_server.stats.counters["scan_stalls"] == 1
+    assert "fail_open_bypasses" not in icap_server.stats.counters
 
 
 # --- clamd StreamMaxLength refusal -----------------------------------------
