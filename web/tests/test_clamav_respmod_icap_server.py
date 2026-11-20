@@ -373,29 +373,21 @@ def test_icap_chunked_body_rejects_malformed_trailer_fields() -> None:
                 preview=True,
             )
         except server.IcapProtocolError as exc:
-            assert str(exc) == "malformed ICAP chunk trailer"
+            assert str(exc).startswith("invalid ICAP chunk trailer")
         else:  # pragma: no cover - regression guard should always raise
             message = f"malformed ICAP chunk trailer was accepted: {trailer!r}"
             raise AssertionError(message)
 
 
-def test_icap_chunked_body_valued_ieof_extension_is_preview_eof() -> None:
+def test_icap_chunked_body_rejects_valued_ieof_extension() -> None:
     server = _load_server()
-    continues = 0
 
-    def on_continue() -> None:
-        nonlocal continues
-        continues += 1
-
-    body, remainder = server.read_icap_chunked_body(
-        io.BytesIO(b"2\r\nhe\r\n0; foo=bar; ieof=value\r\n\r\n3\r\nllo\r\n0\r\n\r\n"),
-        preview=True,
-        continue_callback=on_continue,
-    )
-
-    assert body == b"he"
-    assert remainder == b"3\r\nllo\r\n0\r\n\r\n"
-    assert continues == 0
+    # RFC 3507 section 4.5: ieof is a bare chunk extension.
+    with pytest.raises(server.IcapProtocolError, match="invalid ICAP ieof"):
+        server.read_icap_chunked_body(
+            io.BytesIO(b"2\r\nhe\r\n0; foo=bar; ieof=value\r\n\r\n"),
+            preview=True,
+        )
 
 
 def test_icap_chunked_body_rejects_ieof_on_nonzero_chunk() -> None:
@@ -418,7 +410,7 @@ def test_icap_chunked_body_rejects_duplicate_ieof_extension() -> None:
 
     with pytest.raises(
         server.IcapProtocolError,
-        match="duplicate ICAP ieof chunk extension",
+        match="duplicate ICAP chunk extension: ieof",
     ):
         server.read_icap_chunked_body(
             io.BytesIO(b"0;ieof;IEOF\r\n\r\n"),

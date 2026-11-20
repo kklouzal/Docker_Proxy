@@ -352,12 +352,9 @@ def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
 
 def _parse_chunk_size_line(line: bytes) -> int | None:
     try:
-        parsed = parse_chunk_header(line)
+        return parse_chunk_header(line).size
     except IcapWireSyntaxError:
         return None
-    if parsed.has_ieof and parsed.size != 0:
-        return None
-    return parsed.size
 
 
 def _chunk_trailers_parse(

@@ -299,9 +299,10 @@ def test_packaged_cicap_runner_imports_shared_service_from_app(tmp_path) -> None
     services.mkdir(parents=True)
     bin_dir.mkdir(parents=True)
     (services / "__init__.py").write_text("", encoding="utf-8")
-    (services / "clamd_protocol.py").write_bytes(
-        (REPO_ROOT / "web" / "services" / "clamd_protocol.py").read_bytes()
-    )
+    for module in ("clamd_protocol.py", "icap_protocol.py"):
+        (services / module).write_bytes(
+            (REPO_ROOT / "web" / "services" / module).read_bytes()
+        )
     runner_source = _read("docker/cicap_av_runner.py").replace(
         '_PACKAGED_APP_ROOT = Path("/app")',
         f"_PACKAGED_APP_ROOT = Path({str(app)!r})",
