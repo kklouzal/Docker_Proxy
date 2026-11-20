@@ -439,12 +439,12 @@ def test_maintain_observability_tables_continues_after_table_probe_failure(
             raise RuntimeError(msg)
         return table in existing
 
-    def run_table(table: str, *, analyze: bool, optimize: bool) -> str:
+    def run_table(_connect, table: str, *, analyze: bool, optimize: bool) -> str:
         calls.append(f"{table}:{analyze}:{optimize}")
         return "analyzed"
 
     monkeypatch.setattr(maintenance, "_table_exists", table_exists)
-    monkeypatch.setattr(maintenance, "_run_table_maintenance", run_table)
+    monkeypatch.setattr(maintenance, "run_mysql_table_maintenance", run_table)
 
     result = maintenance.maintain_observability_tables(analyze=True, optimize=False)
 

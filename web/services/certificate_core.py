@@ -25,6 +25,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from services.certificate_digest import certificate_bundle_sha256
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
+from services.runtime_helpers import sha256_text as _sha256_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -169,10 +170,6 @@ def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedP
         check=True,
         timeout=timeout,
     )
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
 
 
 def _sha256_bytes(data: bytes) -> str:

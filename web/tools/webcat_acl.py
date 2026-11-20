@@ -19,6 +19,7 @@ import contextlib  # ruff: ignore[module-import-not-at-top-of-file]
 import fcntl  # ruff: ignore[module-import-not-at-top-of-file]
 
 from services.blocked_log_runtime import BlockedLogDb as _BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
+from services.blocked_log_runtime import default_blocked_log_max_rows  # ruff: ignore[module-import-not-at-top-of-file]
 from services.db import connect  # ruff: ignore[module-import-not-at-top-of-file]
 from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
 from services.domain_normalization import parent_domain_suffixes  # ruff: ignore[module-import-not-at-top-of-file]
@@ -684,10 +685,6 @@ def _write_response(
     write_acl_response(channel_id, ok, message=message)
 
 
-def _default_log_max_rows() -> int:
-    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Squid external ACL helper for domain category blocking (local categories DB).",
@@ -695,7 +692,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--log-max-rows",
         type=int,
-        default=_default_log_max_rows(),
+        default=default_blocked_log_max_rows(),
     )
     ap.add_argument(
         "--fail",

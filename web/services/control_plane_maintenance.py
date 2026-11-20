@@ -783,15 +783,6 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
     }
 
 
-def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    return run_mysql_table_maintenance(
-        maintenance_connect,
-        table,
-        analyze=analyze,
-        optimize=optimize,
-    )
-
-
 def maintain_control_plane_tables(
     *,
     analyze: bool = True,
@@ -829,7 +820,8 @@ def maintain_control_plane_tables(
             )
             continue
         try:
-            maintenance = _run_table_maintenance(
+            maintenance = run_mysql_table_maintenance(
+                maintenance_connect,
                 table,
                 analyze=analyze,
                 optimize=optimize,

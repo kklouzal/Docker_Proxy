@@ -19,13 +19,15 @@ from services.helper_runtime import (  # ruff: ignore[module-import-not-at-top-o
     split_acl_channel,
     write_acl_response,
 )
-from services.runtime_helpers import env_int as _env_int  # ruff: ignore[module-import-not-at-top-of-file]
 from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from services.blocked_log_runtime import BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
+from services.blocked_log_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
+    BlockedLogDb,
+    default_blocked_log_max_rows,
+)
 
 
 def _parse_line(line: str) -> tuple[str | None, str, str]:
@@ -44,10 +46,6 @@ def _parse_line(line: str) -> tuple[str | None, str, str]:
     if parts:
         return channel_id, "", parts[0]
     return channel_id, "", ""
-
-
-def _default_log_max_rows() -> int:
-    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -69,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--log-max-rows",
         type=int,
-        default=_default_log_max_rows(),
+        default=default_blocked_log_max_rows(),
     )
     args = ap.parse_args(list(argv) if argv is not None else None)
     fail_open = args.fail == "open"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # ruff: file-ignore[raw-string-in-exception, f-string-in-exception, raise-vanilla-args]
-import hashlib
 import time
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -22,6 +21,7 @@ from services.proxy_write_guard import (
     resolve_proxy_write_id,
 )
 from services.row_access import row_value as _row_value
+from services.runtime_helpers import sha256_text as _sha256_text
 from services.schema_lifecycle import read_control_plane_identity
 
 
@@ -735,10 +735,6 @@ def _validate_certificate_bundle_revision_digests(
             raise ProxyRecoveryRestoreError(
                 "certificate bundle revision bundle digest does not match certificate material",
             )
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
 
 
 def _normalize_column_value(

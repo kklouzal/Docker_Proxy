@@ -67,6 +67,11 @@ _BLOCKED_LOG_STOP = object()
 _BLOCKED_LOG_TABLE = "webfilter_blocked_log"
 
 
+def default_blocked_log_max_rows() -> int:
+    """Blocked-log row cap shared by the ACL helpers' --log-max-rows default."""
+    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
+
+
 class BlockedLogDb:
     def __init__(self, *, max_rows: int = 5000) -> None:
         try:

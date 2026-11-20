@@ -130,15 +130,6 @@ def _delete_table_in_chunks(table: str) -> BoundedDeleteResult:
     )
 
 
-def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    return run_mysql_table_maintenance(
-        maintenance_connect,
-        table,
-        analyze=analyze,
-        optimize=optimize,
-    )
-
-
 def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
     try:
         result = _delete_table_in_chunks(table)
@@ -463,7 +454,8 @@ def maintain_observability_tables(
             continue
 
         try:
-            maintenance = _run_table_maintenance(
+            maintenance = run_mysql_table_maintenance(
+                maintenance_connect,
                 table,
                 analyze=analyze,
                 optimize=optimize,
