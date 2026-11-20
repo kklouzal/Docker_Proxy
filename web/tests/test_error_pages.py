@@ -240,6 +240,13 @@ def test_admin_error_pages_route_lists_and_previews_templates(
     assert "ERR_ACCESS_DENIED" in body
     assert "ERR_WEBFILTER_BLOCKED" in body
     assert "Open in new tab" in body
+    pages = loaded.module.list_error_pages()
+    squid_count = sum(1 for item in pages if not item.custom)
+    custom_count = sum(1 for item in pages if item.custom)
+    assert f'<span class="stat-value">{squid_count}</span>' in body
+    assert f'<span class="stat-value">{custom_count}</span>' in body
+    assert "<code>%U</code> requested URL without password" in body
+    assert "<code>%u</code> URL including password" in body
 
     preview = client.get("/error-pages/preview/ERR_DNS_FAIL")
     assert preview.status_code == 200

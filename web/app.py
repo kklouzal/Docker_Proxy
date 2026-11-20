@@ -80,6 +80,8 @@ from services.directory_auth import (
     get_directory_auth_store,
 )
 from services.error_pages import (
+    ADMIN_DIAGNOSTIC_TOKENS,
+    SAFE_USER_TOKENS,
     list_error_pages,
     missing_template_names,
     read_template,
@@ -9223,6 +9225,10 @@ def error_pages():
     return render_template(
         "error_pages.html",
         pages=pages,
+        squid_template_count=sum(1 for page in pages if not page.custom),
+        custom_template_count=sum(1 for page in pages if page.custom),
+        safe_user_tokens=SAFE_USER_TOKENS,
+        admin_diagnostic_tokens=ADMIN_DIAGNOSTIC_TOKENS,
         token_summary=token_summary,
         unavailable_templates=unavailable_templates,
     )
