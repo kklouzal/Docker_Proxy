@@ -111,16 +111,18 @@ def test_proxy_client_sets_bearer_auth_and_json_body(
 
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
-    payload = proxy_client.ProxyClient(timeout_seconds=1.25).sync_proxy(
-        "live", force=True, timeout_seconds=9.5
+    payload = proxy_client.ProxyClient(timeout_seconds=1.25).validate_config(
+        "live", "workers 1\n", timeout_seconds=9.5
     )
 
     assert payload == {"ok": True, "changed": False}
-    assert captured["url"] == "http://proxy-mgmt:5000/root/api/manage/sync"
+    assert captured["url"] == "http://proxy-mgmt:5000/root/api/manage/config/validate"
     assert captured["method"] == "POST"
     assert captured["auth"] == "Bearer secret-token"
     assert captured["content_type"] == "application/json"
-    assert json.loads(captured["body"].decode("utf-8")) == {"force": True}
+    assert json.loads(captured["body"].decode("utf-8")) == {
+        "config_text": "workers 1\n"
+    }
     assert captured["timeout"] == pytest.approx(9.5)
 
 
@@ -173,11 +175,11 @@ def test_proxy_client_canonicalizes_endpoint_shaped_management_url(
 
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
-    assert proxy_client.ProxyClient().sync_proxy("live")["ok"] is True
-    assert captured["url"] == "http://proxy-mgmt:5000/api/manage/sync"
+    assert proxy_client.ProxyClient().validate_config("live", "")["ok"] is True
+    assert captured["url"] == "http://proxy-mgmt:5000/api/manage/config/validate"
 
 
-def test_proxy_client_can_request_config_validation_and_rollback(
+def test_proxy_client_can_request_config_validation(
     monkeypatch, proxy_client_module
 ) -> None:
     proxy_client = proxy_client_module
@@ -203,10 +205,6 @@ def test_proxy_client_can_request_config_validation_and_rollback(
     assert (
         client.validate_config("live", "workers 1\n", timeout_seconds=7.0)["ok"] is True
     )
-    assert (
-        client.rollback_config("live", reason="bad apply", timeout_seconds=8.0)["ok"]
-        is True
-    )
 
     assert captured[0] == {
         "url": "http://proxy-mgmt:5000/api/manage/config/validate",
@@ -214,12 +212,7 @@ def test_proxy_client_can_request_config_validation_and_rollback(
         "body": {"config_text": "workers 1\n"},
         "timeout": 7.0,
     }
-    assert captured[1] == {
-        "url": "http://proxy-mgmt:5000/api/manage/config/rollback",
-        "method": "POST",
-        "body": {"reason": "bad apply"},
-        "timeout": 8.0,
-    }
+    assert len(captured) == 1
 
 
 def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
@@ -394,7 +387,7 @@ def test_proxy_client_http_error_uses_json_detail(
     )
 
     def fake_urlopen(_request, timeout) -> NoReturn:
-        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        msg = "http://proxy-mgmt:5000/api/manage/config/validate"
         raise urllib.error.HTTPError(
             msg,
             409,
@@ -406,7 +399,7 @@ def test_proxy_client_http_error_uses_json_detail(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError, match="sync failed clearly"):
-        proxy_client.ProxyClient().sync_proxy("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
 
 @pytest.mark.parametrize(
@@ -429,7 +422,7 @@ def test_proxy_client_closes_http_error_response_stream(
     response_stream = io.BytesIO(body)
 
     def fake_urlopen(_request, timeout) -> NoReturn:
-        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        msg = "http://proxy-mgmt:5000/api/manage/config/validate"
         raise urllib.error.HTTPError(
             msg,
             409,
@@ -441,7 +434,7 @@ def test_proxy_client_closes_http_error_response_stream(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().sync_proxy("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
     assert isinstance(exc_info.value.__cause__, urllib.error.HTTPError)
     assert response_stream.closed
@@ -457,7 +450,7 @@ def test_proxy_client_http_error_redacts_json_detail(
     )
 
     def fake_urlopen(_request, timeout) -> NoReturn:
-        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        msg = "http://proxy-mgmt:5000/api/manage/config/validate"
         raise urllib.error.HTTPError(
             msg,
             409,
@@ -469,7 +462,7 @@ def test_proxy_client_http_error_redacts_json_detail(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().sync_proxy("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
     message = str(exc_info.value)
     assert "token=[redacted]" in message
@@ -485,7 +478,7 @@ def test_proxy_client_http_error_rejects_non_object_json(
     )
 
     def fake_urlopen(_request, timeout) -> NoReturn:
-        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        msg = "http://proxy-mgmt:5000/api/manage/config/validate"
         raise urllib.error.HTTPError(
             msg,
             502,
@@ -497,7 +490,7 @@ def test_proxy_client_http_error_rejects_non_object_json(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().sync_proxy("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
     message = str(exc_info.value)
     assert "returned JSON that was not an object" in message
@@ -634,7 +627,7 @@ def test_proxy_client_rejects_oversized_http_error_response_without_raw_detail(
     )
 
     def fake_urlopen(_request, timeout) -> NoReturn:
-        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        msg = "http://proxy-mgmt:5000/api/manage/config/validate"
         raise urllib.error.HTTPError(
             msg,
             502,
@@ -646,7 +639,7 @@ def test_proxy_client_rejects_oversized_http_error_response_without_raw_detail(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().sync_proxy("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
     message = str(exc_info.value)
     assert "error response exceeded 16 bytes" in message
@@ -747,7 +740,7 @@ def test_proxy_client_open_phase_consumes_http_error_body_deadline(
     def fake_open(_request, timeout) -> NoReturn:
         assert timeout == pytest.approx(1.0)
         now[0] += 0.5
-        error_url = "http://secret-base.invalid/api/manage/sync"
+        error_url = "http://secret-base.invalid/api/manage/config/validate"
         raise urllib.error.HTTPError(
             error_url,
             502,
@@ -759,7 +752,7 @@ def test_proxy_client_open_phase_consumes_http_error_body_deadline(
     monkeypatch.setattr(proxy_client, "_open_management_request", fake_open)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().sync_proxy("live", timeout_seconds=1.0)
+        proxy_client.ProxyClient().validate_config("live", "", timeout_seconds=1.0)
 
     message = str(exc_info.value)
     assert "timed out after 1.0s" in message
@@ -785,7 +778,7 @@ def test_proxy_client_url_error_surfaces_redacted_reason(
     )
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
-        proxy_client.ProxyClient().clear_proxy_cache("live")
+        proxy_client.ProxyClient().validate_config("live", "")
 
     message = str(exc_info.value)
     assert "network unreachable" in message
@@ -795,7 +788,7 @@ def test_proxy_client_url_error_surfaces_redacted_reason(
     assert "user-password" not in message
     assert "query-secret" not in message
     assert "proxy=live" in message
-    assert "url=http://proxy-mgmt:5000/api/manage/cache/clear" in message
+    assert "url=http://proxy-mgmt:5000/api/manage/config/validate" in message
 
 
 def test_proxy_client_url_error_fails_closed_when_reason_cannot_be_rendered(

@@ -320,9 +320,7 @@ class FakeProxyClient:
     def __init__(self, admin_app: Any, *, fail: bool = False) -> None:
         self.admin_app = admin_app
         self.fail = fail
-        self.synced: list[tuple[str, bool]] = []
         self.validated: list[tuple[str, str]] = []
-        self.cleared: list[str] = []
         self.log_requests: list[tuple[str, str]] = []
 
     def _maybe_fail(self) -> None:
@@ -406,22 +404,6 @@ class FakeProxyClient:
         ok = "not_a_real_squid_directive" not in config_text and "*." not in config_text
         detail = "valid" if ok else "invalid directive or wildcard domain"
         return {"ok": ok, "detail": detail, "proxy_id": str(proxy_id)}
-
-    def sync_proxy(
-        self,
-        proxy_id: object,
-        *,
-        force: bool = False,
-        timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
-        self._maybe_fail()
-        self.synced.append((str(proxy_id), bool(force)))
-        return {"ok": True, "detail": "sync requested"}
-
-    def clear_proxy_cache(self, proxy_id: object) -> dict[str, Any]:
-        self._maybe_fail()
-        self.cleared.append(str(proxy_id))
-        return {"ok": True, "detail": "cache cleared"}
 
     def test_clamav_eicar(self, proxy_id: object) -> dict[str, Any]:
         self._maybe_fail()

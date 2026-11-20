@@ -451,25 +451,6 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
-    def sync_proxy(
-        self,
-        proxy_id: object | None,
-        *,
-        force: bool = False,
-        operation_id: int | None = None,
-        timeout_seconds: float = 15.0,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"force": bool(force)}
-        if operation_id is not None:
-            payload["operation_id"] = int(operation_id)
-        return self._request(
-            proxy_id,
-            method="POST",
-            path="/api/manage/sync",
-            payload=payload,
-            timeout_seconds=timeout_seconds,
-        ).data
-
     def get_current_config(
         self,
         proxy_id: object | None,
@@ -495,35 +476,6 @@ class ProxyClient:
             method="POST",
             path="/api/manage/config/validate",
             payload={"config_text": config_text or ""},
-            timeout_seconds=timeout_seconds,
-        ).data
-
-    def rollback_config(
-        self,
-        proxy_id: object | None,
-        *,
-        reason: str = "",
-        timeout_seconds: float = 60.0,
-    ) -> dict[str, Any]:
-        return self._request(
-            proxy_id,
-            method="POST",
-            path="/api/manage/config/rollback",
-            payload={"reason": reason or "Rollback requested by admin UI."},
-            timeout_seconds=timeout_seconds,
-        ).data
-
-    def clear_proxy_cache(
-        self,
-        proxy_id: object | None,
-        *,
-        timeout_seconds: float = 60.0,
-    ) -> dict[str, Any]:
-        return self._request(
-            proxy_id,
-            method="POST",
-            path="/api/manage/cache/clear",
-            payload={},
             timeout_seconds=timeout_seconds,
         ).data
 

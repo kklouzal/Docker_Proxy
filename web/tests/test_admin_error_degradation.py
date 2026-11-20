@@ -254,7 +254,6 @@ def test_reload_and_cache_clear_record_failure_without_crashing(
     assert "Proxy reconciliation queued" in failure_records[0]["detail"]
     assert failure_records[1]["ok"] is True
     assert "Proxy cache clear queued" in failure_records[1]["detail"]
-    assert loaded.proxy_client.cleared == []
     assert loaded.operation_ledger.operations[-1].operation_type == "cache_clear"
 
 

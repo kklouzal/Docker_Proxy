@@ -93,7 +93,6 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_bump_domains == ["*.discord.com"]
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -106,7 +105,6 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     _assert_redirect_success(response)
 
     assert loaded.sslfilter_store.no_cache_domains == ["cache.example"]
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -139,7 +137,6 @@ def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selecte
     assert "pac_queue=1" in location
     assert "policy_queue=1" not in location
     assert loaded.sslfilter_store.exclude_private_nets is True
-    assert loaded.proxy_client.synced == []
     operation = loaded.operation_ledger.operations[-1]
     assert operation.proxy_id == "edge-2"
     assert operation.operation_type == "pac_refresh"
@@ -254,7 +251,6 @@ def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
     assert "wl_ok=1" in location
     assert "policy_queue=1" in location
     assert webfilter_store.whitelist == [("allow.example", 1)]
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -350,7 +346,6 @@ def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     assert "pane=ssl" in location
     assert "q=blocked.example" in location
     assert loaded.sslfilter_store.no_bump_domains == ["blocked.example"]
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -413,7 +408,6 @@ def test_program_controlled_admin_config_mutations_validate_before_sync(
     _assert_redirect_success(response)
     assert len(loaded.proxy_client.validated) == 1
     assert loaded.config_revisions.created[-1]["source_kind"] == expected_source_kind
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -443,7 +437,6 @@ def test_clamav_settings_route_persists_validated_runtime_controls(
     config_text = str(created["config_text"])
     assert created["source_kind"] == "clamav-settings"
     assert loaded.proxy_client.validated[-1] == ("default", config_text)
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "config_apply"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -651,7 +644,6 @@ def test_policy_store_mutations_request_sync_without_config_revision_validation(
     response = _post(client, path, data)
 
     _assert_redirect_success(response)
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
@@ -885,7 +877,6 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
     )
 
     _assert_redirect_success(response)
-    assert loaded.proxy_client.synced == []
     operation = loaded.operation_ledger.operations[-1]
     assert operation.operation_type == "pac_refresh"
     assert operation.proxy_id == "edge-pac"
@@ -902,6 +893,5 @@ def test_cache_clear_queues_operation_without_direct_proxy_client(
     response = client.post("/cache/clear", follow_redirects=False)
 
     _assert_redirect_success(response)
-    assert loaded.proxy_client.cleared == []
     assert loaded.operation_ledger.operations[-1].operation_type == "cache_clear"
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-cache"

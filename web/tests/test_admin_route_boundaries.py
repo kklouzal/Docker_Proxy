@@ -75,18 +75,6 @@ class RecordingProxyClient:
     def validate_config(self, proxy_id: object, config_text: str) -> dict[str, object]:
         return {"ok": True, "detail": "valid", "proxy_id": str(proxy_id)}
 
-    def sync_proxy(
-        self,
-        proxy_id: object,
-        *,
-        force: bool = False,
-        timeout_seconds: float | None = None,
-    ) -> dict[str, object]:
-        return {"ok": True, "detail": "sync requested"}
-
-    def clear_proxy_cache(self, proxy_id: object) -> dict[str, object]:
-        return {"ok": True, "detail": "cache cleared"}
-
     def get_clamav_health(
         self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
     ) -> dict[str, object]:
@@ -2331,7 +2319,6 @@ def test_sslfilter_apply_verify_forces_selected_proxy_sync(
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].target_kind == "policy_state"
@@ -2406,7 +2393,6 @@ def test_sslfilter_apply_verify_targets_selected_proxy(monkeypatch, tmp_path) ->
 
     assert response.status_code in {301, 302, 303, 307, 308}
     assert "proxy_id=edge-2" in response.headers["Location"]
-    assert loaded.proxy_client.synced == []
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].target_kind == "policy_state"
