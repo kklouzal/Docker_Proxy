@@ -967,7 +967,7 @@ class AdblockArtifactStore:
 
             loaded_store = get_adblock_store()
             loaded_store.init_db()
-            loaded_settings = loaded_store.get_settings()
+            loaded_settings = loaded_store.get_artifact_settings()
             loaded_settings_version = loaded_store.get_settings_version()
             loaded_statuses = loaded_store.list_statuses()
             loaded_enabled_statuses = [
