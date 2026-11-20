@@ -141,6 +141,26 @@ def _normalize_category_name(value: object) -> str:
     return category.strip("_-")
 
 
+def category_acl_token(category: str) -> str:
+    """Encode a category as an ACL-name token, injectively.
+
+    Letters and digits pass through; "_" becomes "__" and any other character
+    "_x<hex code point>_", so categories that differ only by "-" vs "_" (or any
+    other character) never share a Squid ACL. The fixed
+    ``webfilter_block_google_safe_browsing`` ACL cannot collide either: a
+    category spelled that way encodes as ``google__safe__browsing``.
+    """
+    out: list[str] = []
+    for ch in category:
+        if "a" <= ch <= "z" or "0" <= ch <= "9":
+            out.append(ch)
+        elif ch == "_":
+            out.append("__")
+        else:
+            out.append(f"_x{ord(ch):x}_")
+    return "".join(out)
+
+
 def validate_source_url(source_url: str) -> str:
     invalid_url_msg = "Web filter source URLs must be valid absolute HTTP/HTTPS URLs."
     source = (source_url or "").strip()
@@ -621,15 +641,6 @@ class WebFilterStoreBase:
         webfilter_fail = _env_fail_mode("WEBFILTER_FAIL")
         safe_browsing_fail = _env_fail_mode("SAFE_BROWSING_FAIL")
 
-        def _safe_acl_name(category: str) -> str:
-            out = []
-            for ch in (category or "").lower():
-                if "a" <= ch <= "z" or "0" <= ch <= "9" or ch == "_":
-                    out.append(ch)
-                else:
-                    out.append("_")
-            return "".join(out).strip("_") or "cat"
-
         whitelist_lines: list[str] = []
         for pattern in list(settings.whitelist_domains or []):
             normalized = (pattern or "").strip().lower()
@@ -766,7 +777,7 @@ class WebFilterStoreBase:
             )
 
         for category in selected:
-            safe = _safe_acl_name(category)
+            safe = category_acl_token(category)
             exempt = "".join(
                 f" !{name}" for name in scoped_exceptions.get(category, [])
             )
