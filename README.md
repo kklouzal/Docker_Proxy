@@ -356,6 +356,12 @@ can lower, but never raise, that scheduled-housekeeping bound.
   This avoids proxy-local temp-file path handoff.
 - Fail-open/fail-closed policy controls, c-icap `virus_scan` tuning for uploads,
   and stream-based RESPMOD scanning for downloads.
+- RESPMOD scans complete GET/HEAD response bodies. Range requests, `206`
+  partial responses, and `text/event-stream` (Server-Sent Events) replies are
+  not sent to it: an event stream has no end, so buffering it would hold every
+  event until the helper's 2 s client idle timeout and then fail the reply.
+  That content type is declared by the origin; URL-extension file-security
+  blocks still apply to such replies.
 - `CLAMAV_STREAM_MAX_BYTES` is the proxy helper's explicit per-response scan
   ceiling (256 MiB by default). Remote clamd `StreamMaxLength`/`MaxFileSize`
   settings are not discoverable through the INSTREAM protocol and should be at

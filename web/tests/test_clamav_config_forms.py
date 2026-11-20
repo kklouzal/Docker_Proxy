@@ -91,6 +91,50 @@ def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() 
     assert "download/RESPMOD AV scanning disabled" not in policy
 
 
+def test_download_respmod_policy_skips_event_streams_before_scanning_downloads() -> (
+    None
+):
+    import re
+
+    from services.clamav_config_forms import (
+        STREAMING_RESPONSE_MIME_REGEX,
+        render_file_security_policy_config,
+    )
+
+    lines = render_file_security_policy_config().splitlines()
+
+    assert (
+        "acl file_security_streaming_response rep_mime_type -i "
+        f"{STREAMING_RESPONSE_MIME_REGEX}"
+    ) in lines
+    deny = lines.index(
+        "adaptation_access av_resp_set deny file_security_streaming_response"
+    )
+    assert deny < lines.index(
+        "adaptation_access av_resp_set allow file_security_download_methods"
+    )
+    # Squid matches the raw Content-Type value case-insensitively with POSIX
+    # ERE; Python's re has no [[:space:]] class, so spell it out here.
+    pattern = re.compile(
+        STREAMING_RESPONSE_MIME_REGEX.replace("[[:space:]]", r"[ \t\r\n\f\v]"),
+        re.IGNORECASE,
+    )
+    for value in (
+        "text/event-stream",
+        "text/event-stream; charset=utf-8",
+        "Text/Event-Stream;charset=UTF-8",
+    ):
+        assert pattern.search(value), value
+    for value in (
+        "",
+        "text/plain",
+        "application/octet-stream",
+        "text/event-stream-archive",
+        "application/x-text/event-stream",
+    ):
+        assert not pattern.search(value), value
+
+
 def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
     from services.clamav_config_forms import normalize_clamav_options
 
