@@ -124,3 +124,34 @@ def test_chunked_download_without_content_length_is_accepted(
 
     assert (ok, err) == (True, "")
     assert path.read_bytes() == body
+
+
+def test_next_download_time_follows_the_failure_backoff() -> None:
+    store = store_module.AdblockStore(
+        lists_dir="/nonexistent",
+        update_interval_seconds=43200,
+        download_retry_seconds=900,
+    )
+
+    def status(last_success: int, last_attempt: int) -> store_module.ListStatus:
+        return store_module.ListStatus(
+            key="easylist",
+            url="https://lists.example/list.txt",
+            enabled=True,
+            last_success=last_success,
+            last_attempt=last_attempt,
+            last_error="" if last_attempt <= last_success else "failed",
+            bytes=1,
+            rules=1,
+        )
+
+    now = 100_000
+    # Never downloaded: due now.
+    assert store.next_download_ts(status(0, 0), now) == now
+    # Last download succeeded: due one update interval later.
+    assert store.next_download_ts(status(90_000, 90_000), now) == 90_000 + 43200
+    # Last attempt failed: retried after the backoff, not at the interval.
+    assert store.next_download_ts(status(50_000, 99_800), now) == 99_800 + 900
+    assert store.next_download_ts(status(0, 99_800), now) == 99_800 + 900
+    # Overdue is reported as now.
+    assert store.next_download_ts(status(1, 1), now) == now

@@ -1061,6 +1061,8 @@ class AdblockStore:
         return os.path.join(self.lists_dir, f"{safe}.txt")
 
     def stats(self) -> dict[str, Any]:
+        # Block counts are kept per UTC day, so the recent figures cover the
+        # current and the previous UTC day (24-48 h), not a rolling 24 h.
         now = _now()
         day = int(now // 86400)
         day_ago = day - 1
@@ -1099,6 +1101,17 @@ class AdblockStore:
         if status.last_success <= 0:
             return True
         return (now_ts - status.last_success) >= int(self.update_interval_seconds)
+
+    def next_download_ts(self, status: ListStatus, now_ts: int) -> int:
+        """When the builder will next download this enabled list (at most now)."""
+        if status.last_attempt > status.last_success:
+            # A failed attempt waits out the retry backoff.
+            due = status.last_attempt + self.download_retry_seconds
+        elif status.last_success > 0:
+            due = status.last_success + int(self.update_interval_seconds)
+        else:
+            due = now_ts
+        return max(int(due), int(now_ts))
 
     def download_retry_backoff(self, status: ListStatus, now_ts: int) -> bool:
         """Whether the last download attempt failed within the retry window."""
