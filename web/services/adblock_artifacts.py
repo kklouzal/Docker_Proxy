@@ -1423,7 +1423,6 @@ def _write_empty_request_lookup_db(path: Path) -> None:
     conn = sqlite3.connect(str(path))
     try:
         adblock_compile._create_lookup_schema(conn)
-        adblock_compile._create_lookup_indexes(conn)
         metadata = {
             "schema_version": LOOKUP_SCHEMA_VERSION,
             "lookup_strategy": adblock_compile.LOOKUP_STRATEGY,

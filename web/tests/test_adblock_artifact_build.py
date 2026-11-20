@@ -816,12 +816,13 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
                     "domain_index": lookup_conn.execute(
                         "SELECT COUNT(*) FROM domain_index"
                     ).fetchone()[0],
-                    "regex_index": lookup_conn.execute(
-                        "SELECT COUNT(*) FROM regex_index"
+                    "generic_index": lookup_conn.execute(
+                        "SELECT COUNT(*) FROM generic_index"
                     ).fetchone()[0],
                 }
                 indexed_host = lookup_conn.execute(
-                    "SELECT action FROM domain_index WHERE host=?",
+                    "SELECT r.action FROM domain_index d "
+                    "JOIN rules r ON r.rule_id = d.rule_id WHERE d.host=?",
                     ("ads.example",),
                 ).fetchone()
             finally:
@@ -840,7 +841,7 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
         assert lookup_counts == {
             "rules": 3,
             "domain_index": 2,
-            "regex_index": 1,
+            "generic_index": 1,
         }
         assert indexed_host == ("block",)
     finally:

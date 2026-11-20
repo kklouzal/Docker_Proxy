@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import pathlib
-import re
 import sqlite3
 import sys
 from contextlib import suppress
@@ -31,10 +30,13 @@ from services.adblock_lookup import (  # ruff: ignore[module-import-not-at-top-o
 from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
     abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
 )
-from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
-    abp_suffix_to_regex as _abp_suffix_to_regex,
-)
 from services.adblock_patterns import abp_to_regex as _abp_to_regex  # ruff: ignore[module-import-not-at-top-of-file]
+from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
+    pattern_token_key as _pattern_token_key,
+)
+from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
+    pattern_tokens as _pattern_tokens,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -50,6 +52,9 @@ if TYPE_CHECKING:
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
+# Pattern kinds selected by the request host (domain_index / host_index); every
+# other kind is a generic_index candidate keyed by a URL token.
+_HOST_INDEXED_KINDS = frozenset({"domain_only", "host_anchored"})
 
 
 @dataclass
@@ -145,20 +150,14 @@ LOOKUP_INDEX_COUNT_TABLES = (
     "rules",
     "domain_index",
     "host_index",
-    "host_pattern_index",
-    "host_pattern_token_index",
-    "regex_index",
-    "regex_token_index",
     "generic_index",
-    "option_index",
     "resource_type_index",
-    "domain_scope_index",
 )
 LOOKUP_STRATEGY = (
-    "domain suffix candidates -> domain_index; exact and host-suffix "
-    "candidates -> host_index; host-pattern/regex token prefilters before "
-    "payload verification; generic literal-key prefilter before payload "
-    "verification"
+    "request host suffixes -> domain_index (||host^) and host_index "
+    "(||host/path); URL tokens -> generic_index (every other rule, keyed by a "
+    "whole-token literal, or '' when none qualifies); candidates are verified "
+    "against the full rule"
 )
 
 
@@ -437,62 +436,21 @@ def _option_groups(opt_parsed: dict[str, Any]) -> set[str]:
     return groups
 
 
-def _host_pattern_to_regex(host_pattern: str) -> str:
-    host = (host_pattern or "").strip().lower().rstrip(".")
-    if not host:
-        return ""
-    return _abp_to_regex(host)
+def _normalize_host_pattern(host_pattern: str) -> str:
+    """Normalize a ``||`` host part that is not a complete host name.
 
-
-def _suffix_fields(suffix: str) -> dict[str, Any]:
-    suffix_right_anchored = suffix.endswith("|")
-    suffix_body = suffix[:-1] if suffix_right_anchored else suffix
-    return {
-        "suffix": suffix,
-        "suffix_body": suffix_body,
-        "suffix_right_anchored": suffix_right_anchored,
-        "suffix_regex": _abp_suffix_to_regex(suffix),
-        **_split_suffix_parts(suffix_body),
-    }
-
-
-def _split_suffix_parts(suffix_body: str) -> dict[str, Any]:
-    suffix = suffix_body or ""
-    separator_prefix = suffix.startswith("^")
-    if separator_prefix:
-        suffix = suffix[1:]
-    separator_suffix = suffix.endswith("^")
-    if separator_suffix:
-        suffix = suffix[:-1]
-
-    fragment_pattern = ""
-    if "#" in suffix:
-        suffix, fragment_pattern = suffix.split("#", 1)
-        fragment_pattern = "#" + fragment_pattern
-
-    path_pattern = ""
-    query_pattern = ""
-    if suffix.startswith("?"):
-        query_pattern = suffix
-    elif "?" in suffix:
-        path_pattern, query = suffix.split("?", 1)
-        query_pattern = "?" + query
-    else:
-        path_pattern = suffix
-
-    return {
-        "suffix_separator_prefix": separator_prefix,
-        "suffix_separator_suffix": separator_suffix,
-        "path_pattern": path_pattern,
-        "query_pattern": query_pattern,
-        "fragment_pattern": fragment_pattern,
-    }
+    A trailing dot is kept: it leaves the label open (``||ads.`` matches
+    ``ads.example.com``), unlike a complete host's ignorable trailing dot.
+    """
+    normalized = _normalize_host(host_pattern)
+    if host_pattern.endswith(".") and normalized and not normalized.endswith("."):
+        return normalized + "."
+    return normalized
 
 
 def _classify_absolute_url_pattern(pattern: str) -> tuple[str, dict[str, Any]] | None:
     p = (pattern or "").strip()
-    left_anchored = p.startswith("|") and not p.startswith("||")
-    candidate = p[1:] if left_anchored else p
+    candidate = p[1:] if p.startswith("|") and not p.startswith("||") else p
     if "://" not in candidate:
         return None
 
@@ -502,45 +460,25 @@ def _classify_absolute_url_pattern(pattern: str) -> tuple[str, dict[str, Any]] |
         return None
 
     host = rest
-    suffix = ""
     for i, ch in enumerate(rest):
         if ch in {"/", "^", "?", "#", "|"}:
             host = rest[:i]
-            suffix = rest[i:]
             break
     if not host:
         return None
-
-    normalized_host = _normalize_host(host)
-    fields = {
-        "absolute_url": True,
-        "url_left_anchored": left_anchored,
-        "url_scheme_pattern": scheme,
-        "compiled_regex": _abp_to_regex(p),
-        **_suffix_fields(suffix),
-    }
-    if _looks_like_host(normalized_host):
-        return "absolute_url", {
-            "host": normalized_host,
-            "anchor": "absolute_url",
-            **fields,
-        }
-
-    normalized_pattern = _normalize_host(host)
-    return "absolute_url_pattern", {
-        "host": normalized_host,
-        "host_pattern": normalized_pattern,
-        "host_pattern_regex": _host_pattern_to_regex(normalized_pattern),
-        "anchor": "absolute_url_pattern",
-        **fields,
-    }
+    kind = (
+        "absolute_url"
+        if _looks_like_host(_normalize_host(host))
+        else "absolute_url_pattern"
+    )
+    return kind, {"compiled_regex": _abp_to_regex(p)}
 
 
 def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
     # Returns (pattern_kind, extra_fields)
     p = (pattern or "").strip()
     if not p:
-        return "option_only", {"applies_without_url_pattern": True}
+        return "option_only", {}
     if len(p) >= 3 and p.startswith("/") and p.endswith("/"):
         return "regex", {"regex": p[1:-1], "compiled_regex": p[1:-1]}
     if p.startswith("||"):
@@ -575,28 +513,22 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
             ):
                 host = normalized_prefix
                 suffix = host_pattern[star_index:] + suffix
-        host = _normalize_host(host)
-        suffix_fields = _suffix_fields(suffix)
-        if _looks_like_host(host):
+        # A host part ending in "." is an open label prefix, not a host name.
+        normalized_host = "" if host.endswith(".") else _normalize_host(host)
+        if _looks_like_host(normalized_host):
             if suffix in {"", "^"}:
-                return "domain_only", {"host": host, "anchor": "domain"}
+                return "domain_only", {"host": normalized_host}
             return "host_anchored", {
-                "host": host,
-                "anchor": "domain",
-                "compiled_regex": _abp_host_anchored_to_regex(host, suffix),
-                **suffix_fields,
+                "host": normalized_host,
+                "compiled_regex": _abp_host_anchored_to_regex(normalized_host, suffix),
+                "suffix": suffix,
             }
-        normalized_pattern = _normalize_host(host_pattern)
         return "host_anchored_pattern", {
-            "host": host,
-            "host_pattern": normalized_pattern,
-            "host_pattern_regex": _host_pattern_to_regex(normalized_pattern),
-            "anchor": "domain_pattern",
             "compiled_regex": _abp_host_anchored_to_regex(
-                normalized_pattern,
+                _normalize_host_pattern(host_pattern),
                 suffix,
             ),
-            **suffix_fields,
+            "suffix": suffix,
         }
     absolute_url = _classify_absolute_url_pattern(p)
     if absolute_url is not None:
@@ -607,14 +539,11 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
         # Should have been stripped earlier; keep classification stable.
         return "exception_prefixed", {}
     if p.endswith("|") and not p.endswith(r"\|"):
-        return "right_anchored", {
-            "compiled_regex": _abp_to_regex(p),
-            "right_anchored": True,
-        }
+        return "right_anchored", {"compiled_regex": _abp_to_regex(p)}
     # Generic substring/wildcard network rule.
     if any(ch in p for ch in ("*", "^")):
         return "wildcard", {"compiled_regex": _abp_to_regex(p)}
-    return "substring", {"substring": p}
+    return "substring", {}
 
 
 def _cosmetic_marker(rule: str) -> str:
@@ -653,6 +582,23 @@ def _badfilter_disabled_keys(
                     ),
                 )
     return disabled
+
+
+def _generic_token_counts(sources: list[tuple[str, list[str]]]) -> dict[str, int]:
+    """Count, per token, the generic-index patterns it qualifies as a key for."""
+    counts: dict[str, int] = {}
+    for _list_key, lines in sources:
+        for raw in lines:
+            s = (raw or "").strip()
+            if not s or _is_comment_or_header(s) or _is_cosmetic(s):
+                continue
+            _is_exception, pattern, _opts = _split_network_rule(s)
+            kind = _classify_network_pattern(pattern)[0]
+            if kind in _HOST_INDEXED_KINDS or kind == "regex":
+                continue
+            for token in set(_pattern_tokens(pattern)):
+                counts[token] = counts.get(token, 0) + 1
+    return counts
 
 
 def _compile_and_extract_all(
@@ -757,38 +703,6 @@ def _json_compact(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _literal_lookup_key(pattern: str) -> str:
-    tokens = [
-        token.strip(".")
-        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", pattern or "")
-        if token.strip(".")
-    ]
-    if not tokens:
-        return ""
-    return max((token.lower() for token in tokens), key=lambda item: (len(item), item))
-
-
-def _regex_lookup_key(pattern: str) -> str:
-    if any(marker in (pattern or "") for marker in ("|", "?")) or "{0" in (
-        pattern or ""
-    ):
-        return ""
-    return _literal_lookup_key(pattern)
-
-
-def _sqlite_scalar_values(value: Any) -> list[str]:
-    if value is True:
-        return ["1"]
-    if value is False or value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item or "").strip()]
-    if isinstance(value, dict):
-        return [_json_compact(value)]
-    text = str(value or "").strip()
-    return [text] if text else []
-
-
 def _badfilter_disable_key(rec: dict[str, Any]) -> tuple[str, str, str]:
     options = dict(rec.get("options") or {})
     options.pop("badfilter", None)
@@ -830,67 +744,20 @@ def _create_lookup_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE domain_index(
             host TEXT NOT NULL,
-            action TEXT NOT NULL,
             rule_id TEXT NOT NULL,
-            PRIMARY KEY(host, action, rule_id)
+            PRIMARY KEY(host, rule_id)
         ) WITHOUT ROWID;
 
         CREATE TABLE host_index(
             host TEXT NOT NULL,
-            action TEXT NOT NULL,
             rule_id TEXT NOT NULL,
-            pattern_kind TEXT NOT NULL,
-            url_scheme_pattern TEXT NOT NULL,
-            path_pattern TEXT NOT NULL,
-            query_pattern TEXT NOT NULL,
-            suffix_separator_prefix INTEGER NOT NULL,
-            suffix_separator_suffix INTEGER NOT NULL,
-            PRIMARY KEY(host, action, rule_id)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE host_pattern_index(
-            host_pattern TEXT NOT NULL,
-            action TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            pattern_kind TEXT NOT NULL,
-            url_scheme_pattern TEXT NOT NULL,
-            path_pattern TEXT NOT NULL,
-            query_pattern TEXT NOT NULL,
-            PRIMARY KEY(host_pattern, action, rule_id)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE host_pattern_token_index(
-            literal_key TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            PRIMARY KEY(literal_key, rule_id)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE regex_index(
-            action TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            regex TEXT NOT NULL,
-            PRIMARY KEY(action, rule_id)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE regex_token_index(
-            literal_key TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            PRIMARY KEY(literal_key, rule_id)
+            PRIMARY KEY(host, rule_id)
         ) WITHOUT ROWID;
 
         CREATE TABLE generic_index(
             literal_key TEXT NOT NULL,
-            pattern_kind TEXT NOT NULL,
-            action TEXT NOT NULL,
             rule_id TEXT NOT NULL,
-            PRIMARY KEY(literal_key, pattern_kind, action, rule_id)
-        ) WITHOUT ROWID;
-
-        CREATE TABLE option_index(
-            option_key TEXT NOT NULL,
-            option_value TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            PRIMARY KEY(option_key, option_value, rule_id)
+            PRIMARY KEY(literal_key, rule_id)
         ) WITHOUT ROWID;
 
         CREATE TABLE resource_type_index(
@@ -899,33 +766,6 @@ def _create_lookup_schema(conn: sqlite3.Connection) -> None:
             rule_id TEXT NOT NULL,
             PRIMARY KEY(resource_type, negated, rule_id)
         ) WITHOUT ROWID;
-
-        CREATE TABLE domain_scope_index(
-            domain TEXT NOT NULL,
-            excluded INTEGER NOT NULL,
-            pattern INTEGER NOT NULL,
-            rule_id TEXT NOT NULL,
-            PRIMARY KEY(domain, excluded, pattern, rule_id)
-        ) WITHOUT ROWID;
-        """
-    )
-
-
-def _create_lookup_indexes(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE INDEX idx_rules_kind_action ON rules(pattern_kind, action);
-        CREATE INDEX idx_domain_action ON domain_index(action, host);
-        CREATE INDEX idx_host_action ON host_index(action, host);
-        CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
-        CREATE INDEX idx_host_pattern_token_rule ON host_pattern_token_index(rule_id);
-        CREATE INDEX idx_regex_action ON regex_index(action);
-        CREATE INDEX idx_regex_token_rule ON regex_token_index(rule_id);
-        CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
-        CREATE INDEX idx_option_key ON option_index(option_key, option_value);
-        CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
-        CREATE INDEX idx_resource_type_rule ON resource_type_index(rule_id);
-        CREATE INDEX idx_domain_scope ON domain_scope_index(domain, excluded, pattern);
         """
     )
 
@@ -956,6 +796,7 @@ def _insert_lookup_rule(
     conn: sqlite3.Connection,
     rec: dict[str, Any],
     counts: dict[str, int],
+    token_counts: dict[str, int],
 ) -> None:
     rule_id = str(rec.get("id") or "")
     if not rule_id:
@@ -992,102 +833,33 @@ def _insert_lookup_rule(
         return
     counts["rules"] += 1
 
-    if pattern_kind == "domain_only" and rec.get("host"):
+    # Every rule is a candidate through exactly one index: the request host
+    # suffixes select ||host^ (domain_index) and ||host/path (host_index)
+    # rules; every other rule is keyed by a whole-token literal of its
+    # pattern (regex rules by "", so they are evaluated after their options).
+    if pattern_kind == "domain_only":
         conn.execute(
-            "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
-            (str(rec.get("host") or ""), action, rule_id),
+            "INSERT OR IGNORE INTO domain_index(host, rule_id) VALUES(?, ?)",
+            (str(rec.get("host") or ""), rule_id),
         )
         counts["domain_index"] += 1
-    elif pattern_kind in {
-        "absolute_url",
-        "host_anchored",
-    } and rec.get("host"):
+    elif pattern_kind == "host_anchored":
         conn.execute(
-            """
-                INSERT OR IGNORE INTO host_index(
-                    host, action, rule_id, pattern_kind,
-                    url_scheme_pattern, path_pattern, query_pattern,
-                    suffix_separator_prefix, suffix_separator_suffix
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-            (
-                str(rec.get("host") or ""),
-                action,
-                rule_id,
-                pattern_kind,
-                str(rec.get("url_scheme_pattern") or ""),
-                str(rec.get("path_pattern") or ""),
-                str(rec.get("query_pattern") or ""),
-                1 if rec.get("suffix_separator_prefix") else 0,
-                1 if rec.get("suffix_separator_suffix") else 0,
-            ),
+            "INSERT OR IGNORE INTO host_index(host, rule_id) VALUES(?, ?)",
+            (str(rec.get("host") or ""), rule_id),
         )
         counts["host_index"] += 1
-    elif pattern_kind in {
-        "absolute_url_pattern",
-        "host_anchored_pattern",
-    } and rec.get("host_pattern"):
-        host_pattern = str(rec.get("host_pattern") or "")
-        conn.execute(
-            """
-                INSERT OR IGNORE INTO host_pattern_index(
-                    host_pattern, action, rule_id, pattern_kind,
-                    url_scheme_pattern, path_pattern, query_pattern
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                host_pattern,
-                action,
-                rule_id,
-                pattern_kind,
-                str(rec.get("url_scheme_pattern") or ""),
-                str(rec.get("path_pattern") or ""),
-                str(rec.get("query_pattern") or ""),
-            ),
+    else:
+        literal_key = (
+            ""
+            if pattern_kind == "regex"
+            else _pattern_token_key(str(rec.get("pattern") or ""), token_counts)
         )
-        counts["host_pattern_index"] += 1
         conn.execute(
-            "INSERT OR IGNORE INTO host_pattern_token_index(literal_key, rule_id) VALUES(?, ?)",
-            (_literal_lookup_key(host_pattern), rule_id),
-        )
-        counts["host_pattern_token_index"] += 1
-    elif pattern_kind == "regex":
-        regex = str(rec.get("regex") or "")
-        conn.execute(
-            "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
-            (action, rule_id, regex),
-        )
-        counts["regex_index"] += 1
-        conn.execute(
-            "INSERT OR IGNORE INTO regex_token_index(literal_key, rule_id) VALUES(?, ?)",
-            (_regex_lookup_key(regex), rule_id),
-        )
-        counts["regex_token_index"] += 1
-    elif pattern_kind != "empty":
-        conn.execute(
-            """
-                INSERT OR IGNORE INTO generic_index(
-                    literal_key, pattern_kind, action, rule_id
-                ) VALUES(?, ?, ?, ?)
-                """,
-            (
-                _literal_lookup_key(str(rec.get("pattern") or "")),
-                pattern_kind,
-                action,
-                rule_id,
-            ),
+            "INSERT OR IGNORE INTO generic_index(literal_key, rule_id) VALUES(?, ?)",
+            (literal_key, rule_id),
         )
         counts["generic_index"] += 1
-
-    options = rec.get("options") or {}
-    if isinstance(options, dict):
-        for key, value in options.items():
-            for item in _sqlite_scalar_values(value):
-                conn.execute(
-                    "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
-                    (str(key), item, rule_id),
-                )
-                counts["option_index"] += 1
 
     for resource_type in rec.get("resource_types") or []:
         conn.execute(
@@ -1101,31 +873,6 @@ def _insert_lookup_rule(
             (str(resource_type), rule_id),
         )
         counts["resource_type_index"] += 1
-
-    for domain in rec.get("domain_includes") or []:
-        conn.execute(
-            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
-            (str(domain), rule_id),
-        )
-        counts["domain_scope_index"] += 1
-    for domain in rec.get("domain_excludes") or []:
-        conn.execute(
-            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
-            (str(domain), rule_id),
-        )
-        counts["domain_scope_index"] += 1
-    for domain in rec.get("domain_include_patterns") or []:
-        conn.execute(
-            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
-            (str(domain), rule_id),
-        )
-        counts["domain_scope_index"] += 1
-    for domain in rec.get("domain_exclude_patterns") or []:
-        conn.execute(
-            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
-            (str(domain), rule_id),
-        )
-        counts["domain_scope_index"] += 1
 
 
 def _write_request_lookup_index(
@@ -1157,6 +904,7 @@ def _write_request_lookup_index(
             ("lookup_strategy", LOOKUP_STRATEGY),
         )
         disabled_by_badfilter = _badfilter_disabled_keys(sources)
+        token_counts = _generic_token_counts(sources)
         skipped_badfilter = 0
 
         def add_network_rule(rec: dict[str, Any]) -> None:
@@ -1167,7 +915,7 @@ def _write_request_lookup_index(
             ):
                 skipped_badfilter += 1
                 return
-            _insert_lookup_rule(conn, rec, counts)
+            _insert_lookup_rule(conn, rec, counts, token_counts)
 
         with conn:
             for list_key, lines in sources:
@@ -1178,23 +926,6 @@ def _write_request_lookup_index(
                     add_network_rule=add_network_rule,
                 )
 
-        _create_lookup_indexes(conn)
-        count_queries = {
-            "rules": "SELECT COUNT(*) FROM rules",
-            "domain_index": "SELECT COUNT(*) FROM domain_index",
-            "host_index": "SELECT COUNT(*) FROM host_index",
-            "host_pattern_index": "SELECT COUNT(*) FROM host_pattern_index",
-            "host_pattern_token_index": "SELECT COUNT(*) FROM host_pattern_token_index",
-            "regex_index": "SELECT COUNT(*) FROM regex_index",
-            "regex_token_index": "SELECT COUNT(*) FROM regex_token_index",
-            "generic_index": "SELECT COUNT(*) FROM generic_index",
-            "option_index": "SELECT COUNT(*) FROM option_index",
-            "resource_type_index": "SELECT COUNT(*) FROM resource_type_index",
-            "domain_scope_index": "SELECT COUNT(*) FROM domain_scope_index",
-        }
-        for table_name, query in count_queries.items():
-            row = conn.execute(query).fetchone()
-            counts[table_name] = int(row[0] or 0) if row else 0
         for key, value in sorted(counts.items()):
             conn.execute(
                 "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
@@ -1204,7 +935,6 @@ def _write_request_lookup_index(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
             ("count_skipped_badfilter", str(int(skipped_badfilter))),
         )
-        conn.execute("PRAGMA optimize")
         conn.commit()
         # Rules arrive in source order but are keyed by a hash, which leaves
         # half-full B-tree pages; rebuilding packs them (deterministically,

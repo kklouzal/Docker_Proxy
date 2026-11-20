@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import fnmatch
 import json
-import re
 import sqlite3
 import threading
 import time
@@ -16,11 +14,11 @@ from services.adblock_hosts import (
 )
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
+from services.adblock_patterns import url_tokens as _url_tokens
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}", re.IGNORECASE)
 _DEFAULT_SQLITE_CACHE_KIB = 32768
 _DEFAULT_SQLITE_MMAP_BYTES = 256 * 1024 * 1024
 _DEFAULT_RULE_CACHE_MAX = 50000
@@ -35,7 +33,7 @@ _OrderKey = tuple[int, str, str, str, str]
 # (tools/adblock_compile.py) and this reader requires. Readers reject any other
 # version instead of guessing at its tables; the Admin UI rebuilds artifacts
 # whose report names another version.
-LOOKUP_SCHEMA_VERSION = "4"
+LOOKUP_SCHEMA_VERSION = "5"
 
 
 def lookup_schema_error(conn: sqlite3.Connection) -> str:
@@ -100,43 +98,6 @@ class AdblockLookupCloseTimeoutError(TimeoutError):
             "timed out closing adblock lookup index "
             f"with {active_connections} active connection(s)"
         )
-
-
-class _RegexCandidate:
-    __slots__ = ("regex", "rule_id")
-
-    def __init__(self, rule_id: str, pattern: str) -> None:
-        self.rule_id = rule_id
-        self.regex: re.Pattern[str] | None
-        try:
-            self.regex = re.compile(pattern, re.IGNORECASE)
-        except re.error:
-            self.regex = None
-
-
-class _HostPatternCandidate:
-    __slots__ = ("host_pattern", "pattern_kind", "rule_id")
-
-    def __init__(self, host_pattern: str, pattern_kind: str, rule_id: str) -> None:
-        self.host_pattern = host_pattern
-        self.pattern_kind = pattern_kind
-        self.rule_id = rule_id
-
-
-def _url_literal_tokens(url: str) -> list[str]:
-    tokens: set[str] = set()
-    for token in _TOKEN_RE.findall(url or ""):
-        normalized = token.lower()
-        tokens.add(normalized)
-        if "." in normalized:
-            labels = [part for part in normalized.split(".") if part]
-            tokens.update(
-                ".".join(labels[index:])
-                for index in range(1, max(len(labels) - 1, 1))
-                if len(".".join(labels[index:])) >= 3
-            )
-        tokens.update(part for part in re.split(r"[./]", normalized) if len(part) >= 3)
-    return sorted(tokens)
 
 
 def _row_to_rule(row: sqlite3.Row) -> dict[str, Any]:
@@ -392,11 +353,9 @@ class AdblockLookupIndex:
         indexes = self._memory_indexes(conn)
         host = _normalize_host(parsed.hostname or "")
         rule_ids = set(self._host_rule_ids(conn, indexes, host))
-        url_tokens = _url_literal_tokens(url)
-        rule_ids.update(indexes.matching_regex_ids(url, url_tokens))
         generic_by_key = indexes.generic_by_key
         rule_ids.update(generic_by_key.get("", ()))
-        for token in url_tokens:
+        for token in _url_tokens(url):
             rule_ids.update(generic_by_key.get(token, ()))
 
         return indexes.filter_by_resource_type(rule_ids, resource_type)
@@ -430,11 +389,8 @@ class AdblockLookupIndex:
                 host_suffixes,
             )
         }
-        if host:
-            rule_ids.update(indexes.absolute_url_by_host.get(host, ()))
-            for suffix in host_suffixes:
-                rule_ids.update(indexes.host_anchored_by_host.get(suffix, ()))
-            rule_ids.update(indexes.matching_host_pattern_ids(host, host_suffixes))
+        for suffix in host_suffixes:
+            rule_ids.update(indexes.host_anchored_by_host.get(suffix, ()))
         result = frozenset(rule_ids)
         if self.host_cache_max:
             with self._host_cache_lock:
@@ -471,97 +427,22 @@ class _MemoryIndexes:
     those the equivalent SQL lookups return.
     """
 
-    __slots__ = (
-        "absolute_url_by_host",
-        "generic_by_key",
-        "host_anchored_by_host",
-        "host_pattern_fallback_ids",
-        "host_pattern_ids_by_key",
-        "host_patterns",
-        "regex_candidates",
-        "regex_fallback_ids",
-        "regex_ids_by_key",
-        "resource_types_by_id",
-    )
+    __slots__ = ("generic_by_key", "host_anchored_by_host", "resource_types_by_id")
 
     def __init__(self) -> None:
-        self.absolute_url_by_host: dict[str, tuple[str, ...]] = {}
         self.host_anchored_by_host: dict[str, tuple[str, ...]] = {}
         self.generic_by_key: dict[str, tuple[str, ...]] = {}
-        self.host_patterns: dict[str, _HostPatternCandidate] = {}
-        self.host_pattern_ids_by_key: dict[str, tuple[str, ...]] = {}
-        self.host_pattern_fallback_ids: frozenset[str] = frozenset()
-        self.regex_candidates: dict[str, _RegexCandidate] = {}
-        self.regex_ids_by_key: dict[str, tuple[str, ...]] = {}
-        self.regex_fallback_ids: frozenset[str] = frozenset()
         # rule_id -> (positive resource types, negated resource types)
         self.resource_types_by_id: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
 
     @classmethod
     def load(cls, conn: sqlite3.Connection) -> _MemoryIndexes:
         indexes = cls()
-        indexes.absolute_url_by_host = _ids_by_key(
-            conn.execute(
-                "SELECT host, rule_id FROM host_index WHERE pattern_kind='absolute_url'"
-            )
-        )
         indexes.host_anchored_by_host = _ids_by_key(
-            conn.execute(
-                "SELECT host, rule_id FROM host_index WHERE pattern_kind='host_anchored'"
-            )
+            conn.execute("SELECT host, rule_id FROM host_index")
         )
         indexes.generic_by_key = _ids_by_key(
             conn.execute("SELECT literal_key, rule_id FROM generic_index")
-        )
-
-        indexes.host_patterns = {
-            str(row[2] or ""): _HostPatternCandidate(
-                str(row[0] or ""),
-                str(row[1] or ""),
-                str(row[2] or ""),
-            )
-            for row in conn.execute(
-                "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
-            )
-            if row[0] and row[2]
-        }
-        host_pattern_keys = _token_keys_by_rule_id(conn, "host_pattern_token_index")
-        indexes.host_pattern_ids_by_key = _ids_by_key(
-            (key, rule_id)
-            for rule_id, keys in host_pattern_keys.items()
-            for key in keys
-        )
-        indexes.host_pattern_fallback_ids = frozenset(
-            rule_id
-            for rule_id, candidate in indexes.host_patterns.items()
-            if not _single_token_key_is_safe(
-                host_pattern_keys.get(rule_id, []),
-                lambda key, candidate=candidate: _host_pattern_token_key_is_safe(
-                    candidate.host_pattern,
-                    key,
-                ),
-            )
-        )
-
-        indexes.regex_candidates = {
-            str(row[0] or ""): _RegexCandidate(str(row[0] or ""), str(row[1] or ""))
-            for row in conn.execute("SELECT rule_id, regex FROM regex_index")
-            if row[0] and row[1]
-        }
-        regex_keys = _token_keys_by_rule_id(conn, "regex_token_index")
-        indexes.regex_ids_by_key = _ids_by_key(
-            (key, rule_id) for rule_id, keys in regex_keys.items() for key in keys
-        )
-        indexes.regex_fallback_ids = frozenset(
-            rule_id
-            for rule_id, candidate in indexes.regex_candidates.items()
-            if not _single_token_key_is_safe(
-                regex_keys.get(rule_id, []),
-                lambda key, candidate=candidate: _regex_token_key_is_safe(
-                    candidate.regex.pattern if candidate.regex is not None else "",
-                    key,
-                ),
-            )
         )
 
         positive: dict[str, set[str]] = {}
@@ -581,46 +462,6 @@ class _MemoryIndexes:
             for rule_id in positive.keys() | negated.keys()
         }
         return indexes
-
-    def matching_host_pattern_ids(
-        self,
-        host: str,
-        host_suffixes: list[str],
-    ) -> set[str]:
-        candidates_by_id = self.host_patterns
-        if not candidates_by_id:
-            return set()
-        candidate_ids = set(self.host_pattern_ids_by_key.get("", ()))
-        for token in _url_literal_tokens(host):
-            candidate_ids.update(self.host_pattern_ids_by_key.get(token, ()))
-        candidate_ids.update(self.host_pattern_fallback_ids)
-        return {
-            rule_id
-            for rule_id in candidate_ids
-            if rule_id in candidates_by_id
-            and _host_pattern_matches_candidate(
-                host, host_suffixes, candidates_by_id[rule_id]
-            )
-        }
-
-    def matching_regex_ids(self, url: str, url_tokens: list[str]) -> set[str]:
-        candidates_by_id = self.regex_candidates
-        if not candidates_by_id:
-            return set()
-        candidate_ids = set(self.regex_ids_by_key.get("", ()))
-        for token in url_tokens:
-            candidate_ids.update(self.regex_ids_by_key.get(token, ()))
-        candidate_ids.update(self.regex_fallback_ids)
-        matched: set[str] = set()
-        for rule_id in candidate_ids:
-            candidate = candidates_by_id.get(rule_id)
-            if (
-                candidate is not None
-                and candidate.regex is not None
-                and candidate.regex.search(url or "")
-            ):
-                matched.add(candidate.rule_id)
-        return matched
 
     def filter_by_resource_type(
         self,
@@ -661,94 +502,6 @@ def _query_by_values(
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(conn.execute(sql_prefix + "(" + placeholders + ")", tuple(chunk)))
     return rows
-
-
-def _token_keys_by_rule_id(
-    conn: sqlite3.Connection,
-    table_name: str,
-) -> dict[str, list[str]]:
-    keys_by_id: dict[str, list[str]] = {}
-    if table_name == "host_pattern_token_index":
-        rows = conn.execute(
-            "SELECT literal_key, rule_id FROM host_pattern_token_index",
-        )
-    elif table_name == "regex_token_index":
-        rows = conn.execute("SELECT literal_key, rule_id FROM regex_token_index")
-    else:
-        raise ValueError(table_name)
-    for row in rows:
-        rule_id = str(row["rule_id"] or "")
-        if rule_id:
-            keys_by_id.setdefault(rule_id, []).append(str(row["literal_key"] or ""))
-    return keys_by_id
-
-
-def _single_token_key_is_safe(
-    keys: list[str],
-    is_safe: Any,
-) -> bool:
-    return len(keys) == 1 and bool(is_safe(keys[0]))
-
-
-def _indexed_literal_key(pattern: str) -> str:
-    tokens = [
-        token.strip(".")
-        for token in _TOKEN_RE.findall(pattern or "")
-        if token.strip(".")
-    ]
-    if not tokens:
-        return ""
-    return max((token.lower() for token in tokens), key=lambda item: (len(item), item))
-
-
-def _host_pattern_token_key_is_safe(host_pattern: str, key: str) -> bool:
-    pattern = (host_pattern or "").lower()
-    if key != _indexed_literal_key(pattern):
-        return False
-    if not key:
-        return True
-    start = 0
-    while True:
-        start = pattern.find(key, start)
-        if start < 0:
-            return False
-        end = start + len(key)
-        starts_at_label_boundary = start == 0 or pattern[start - 1] == "."
-        ends_at_label_boundary = end == len(pattern) or pattern[end] == "."
-        if starts_at_label_boundary and (
-            ("." not in key and ends_at_label_boundary) or end == len(pattern)
-        ):
-            return True
-        start += 1
-
-
-def _regex_token_key_is_safe(pattern: str, key: str) -> bool:
-    expected_key = (
-        ""
-        if any(marker in (pattern or "") for marker in ("|", "?"))
-        or "{0" in (pattern or "")
-        else _indexed_literal_key(pattern)
-    )
-    if key != expected_key:
-        return False
-    # A non-empty regex literal can match within a larger URL token (for
-    # example, /tracker.*/ matches "trackerxyz"), so equality against the URL
-    # token set is not a sound prefilter. Empty keys are unconditional and safe.
-    return not key
-
-
-def _host_pattern_matches_candidate(
-    host: str,
-    host_suffixes: list[str],
-    candidate: _HostPatternCandidate,
-) -> bool:
-    if candidate.pattern_kind == "absolute_url_pattern":
-        return fnmatch.fnmatchcase(host, candidate.host_pattern)
-    # host_anchored_pattern: the pattern may match any parent domain.
-    return any(
-        fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
-        for host_suffix in host_suffixes
-    )
 
 
 def _rule_order(rule: dict[str, Any]) -> _OrderKey:

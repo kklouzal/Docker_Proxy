@@ -279,22 +279,14 @@ def test_network_rules_emit_normalized_request_indexes() -> None:
     assert regex_rule["domain_excludes"] == ["amazon.com"]
     assert "/$script" not in regex_rule["options"]
 
-    host_rules = _of_kind(records, *_HOST_KINDS)
+    host_rules = _of_kind(records, "host_anchored")
     by_host = {rule["host"]: rule for rule in host_rules}
     assert by_host["example.com"]["suffix"] == "/ad/path|"
-    assert by_host["example.com"]["suffix_right_anchored"] is True
-    assert by_host["example.com"]["path_pattern"] == "/ad/path"
-    assert by_host["example.com"]["query_pattern"] == ""
     assert by_host["example.com"]["compiled_regex"].endswith(r"/ad/path$")
     assert by_host["example.com"]["resource_types"] == ["script"]
     assert by_host["example.com"]["third_party"] == "exclude"
     assert by_host["port.example"]["suffix"] == ":8443/ad/path|"
     assert ":8443/ad/path$" in by_host["port.example"]["compiled_regex"]
-    assert by_host["left.example"]["pattern_kind"] == "absolute_url"
-    assert by_host["left.example"]["url_scheme_pattern"] == "https"
-    assert by_host["left.example"]["url_left_anchored"] is True
-    assert by_host["left.example"]["path_pattern"] == "/ad"
-    assert by_host["left.example"]["suffix_separator_suffix"] is True
     assert by_host["youtube.com"]["action"] == "allow"
     assert by_host["youtube.com"]["domain_includes"] == [
         "music.youtube.com",
@@ -302,13 +294,16 @@ def test_network_rules_emit_normalized_request_indexes() -> None:
     ]
     assert by_host["shop.example"]["suffix"] == r"/path\$price^"
     assert by_host["shop.example"]["resource_types"] == ["script"]
-    absolute_patterns = [
-        rule for rule in host_rules if rule["pattern_kind"] == "absolute_url_pattern"
-    ]
-    assert absolute_patterns[0]["host_pattern"] == "loader.*.com"
-    assert absolute_patterns[0]["path_pattern"] == "/ws"
-    assert absolute_patterns[0]["resource_types"] == ["websocket"]
-    assert absolute_patterns[0]["third_party"] == "only"
+    by_raw = {rule["raw"]: rule for rule in records}
+    left = by_raw["|https://left.example/ad^$image"]
+    assert left["pattern_kind"] == "absolute_url"
+    assert re.search(left["compiled_regex"], "https://left.example/ad?x")
+    assert not re.search(left["compiled_regex"], "http://x/?https://left.example/ad")
+    absolute_pattern = by_raw["wss://loader.*.com/ws^$websocket,third-party"]
+    assert absolute_pattern["pattern_kind"] == "absolute_url_pattern"
+    assert re.search(absolute_pattern["compiled_regex"], "wss://loader.cdn.com/ws")
+    assert absolute_pattern["resource_types"] == ["websocket"]
+    assert absolute_pattern["third_party"] == "only"
 
     domain_rules = _of_kind(records, "domain_only")
     assert any(
@@ -325,7 +320,6 @@ def test_network_rules_emit_normalized_request_indexes() -> None:
     assert any(
         rule["excluded_resource_types"] == ["stylesheet"] for rule in generic_rules
     )
-    assert any(rule.get("right_anchored") is True for rule in generic_rules)
 
 
 def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> None:
@@ -357,53 +351,79 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         assert conn.execute(
             "SELECT COUNT(*) FROM rules WHERE raw='badfilter-target'"
         ).fetchone() == (0,)
-        assert conn.execute(
-            "SELECT action FROM domain_index WHERE host=?",
+        assert sorted(conn.execute("SELECT host FROM domain_index")) == [
             ("ads.example",),
-        ).fetchone() == ("block",)
-        assert conn.execute(
-            "SELECT action FROM domain_index WHERE host=?",
             ("allow.example",),
-        ).fetchone() == ("allow",)
-        assert conn.execute(
-            "SELECT path_pattern FROM host_index WHERE host=?",
+        ]
+        assert conn.execute("SELECT host FROM host_index").fetchall() == [
             ("example.com",),
-        ).fetchone() == ("/ad/path",)
-        assert conn.execute(
-            "SELECT host_pattern FROM host_pattern_index"
-        ).fetchone() == ("loader.*.com",)
-        assert conn.execute(
-            "SELECT literal_key FROM host_pattern_token_index"
-        ).fetchone() == ("loader",)
-        assert conn.execute("SELECT COUNT(*) FROM regex_index").fetchone() == (1,)
-        assert conn.execute("SELECT literal_key FROM regex_token_index").fetchone() == (
-            "tracker",
+        ]
+        # Every other rule is keyed by a whole-token literal ("loader" sits
+        # between "/" and "."; "plain" and "token" touch the unanchored
+        # pattern edges, so "ad" keys that rule); the regex and the
+        # option-only rule have no key and are candidates for every request.
+        keys = dict(
+            conn.execute(
+                "SELECT r.raw, g.literal_key FROM generic_index g "
+                "JOIN rules r ON r.rule_id = g.rule_id"
+            )
         )
-        assert conn.execute(
-            "SELECT literal_key FROM generic_index WHERE pattern_kind='substring'"
-        ).fetchone() == ("plain-ad-token",)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM option_index WHERE option_key='popup'"
-        ).fetchone() == (1,)
+        assert keys == {
+            "wss://loader.*.com/ws^$websocket,third-party": "loader",
+            "/tracker[.]example/$third-party": "",
+            "plain-ad-token$~stylesheet": "ad",
+            "$popup,third-party,domain=example.com": "",
+        }
         assert conn.execute(
             "SELECT COUNT(*) FROM resource_type_index WHERE resource_type='websocket'"
         ).fetchone() == (1,)
-        assert conn.execute(
-            """
-            SELECT 1 FROM sqlite_master
-            WHERE type='index' AND name='idx_resource_type_rule'
-            """
-        ).fetchone() == (1,)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM domain_scope_index WHERE domain='example.com'"
-        ).fetchone() == (1,)
-        lookup_strategy = conn.execute(
-            "SELECT value FROM metadata WHERE key='lookup_strategy'"
-        ).fetchone()[0]
-        assert "host-pattern/regex token prefilters" in lookup_strategy
-        assert "generic literal-key prefilter" in lookup_strategy
+        assert {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        } == {
+            "metadata",
+            "rules",
+            "domain_index",
+            "host_index",
+            "generic_index",
+            "resource_type_index",
+        }
+        assert counts == {
+            "rules": 7,
+            "domain_index": 2,
+            "host_index": 1,
+            "generic_index": 4,
+            "resource_type_index": 4,
+        }
     finally:
         conn.close()
+
+
+def test_generic_keys_are_whole_url_tokens() -> None:
+    from services.adblock_patterns import (
+        pattern_token_key,
+        pattern_tokens,
+        url_tokens,
+    )
+
+    # Edge tokens of an unanchored pattern, and tokens touching "*", can run
+    # into neighbouring URL characters, so they never key a rule.
+    assert pattern_tokens("-ad-banner.") == ["ad", "banner"]
+    assert pattern_tokens("adserver.") == []
+    assert pattern_tokens("/ads*banner/") == []
+    assert pattern_tokens("||ads.") == ["ads"]
+    assert pattern_tokens("|https://x.o2.pl^") == ["https", "x", "o2", "pl"]
+    assert pattern_tokens("ad.js|") == ["js"]
+    assert pattern_tokens(r"ad\*token/") == []
+    assert pattern_tokens("&ad_type=") == ["ad", "type"]
+    assert pattern_tokens("||bücher.*/ads/") == []
+    assert {"x", "ad", "banner", "js"} <= url_tokens(
+        "https://cdn.example/X-AD-Banner.js"
+    )
+    # The rarest qualifying token keys the rule; ties prefer the longer one.
+    assert pattern_token_key("-ad-banner.", {"banner": 9, "ad": 2}) == "ad"
+    assert pattern_token_key("-ad-banner.", {}) == "banner"
+    assert pattern_token_key("adserver.", {}) == ""
 
 
 def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> None:
@@ -442,7 +462,6 @@ def test_parser_preserves_option_only_and_csp_rules() -> None:
 
     popup_rule = by_option["popup,third-party,domain"]
     assert popup_rule["pattern_kind"] == "option_only"
-    assert popup_rule["applies_without_url_pattern"] is True
     assert popup_rule["resource_types"] == ["popup"]
     assert popup_rule["third_party"] == "only"
     assert popup_rule["domain_includes"] == ["example.com"]
@@ -475,12 +494,10 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns() -> None:
 
     wildcard = by_raw["||google.*/pagead/lvz?$script"]
     assert wildcard["pattern_kind"] == "host_anchored_pattern"
-    assert wildcard["host_pattern"] == "google.*"
-    assert wildcard["path_pattern"] == "/pagead/lvz"
-    assert wildcard["query_pattern"] == "?"
     assert wildcard["resource_types"] == ["script"]
     assert r"\|\|" not in wildcard["compiled_regex"]
     assert "google\\..*" in wildcard["compiled_regex"]
+    assert re.search(wildcard["compiled_regex"], "https://www.google.de/pagead/lvz?")
 
     host_with_wildcard_suffix = by_raw["||betvictor.com*&utm_campaign=$popup"]
     assert host_with_wildcard_suffix["pattern_kind"] == "host_anchored"
@@ -492,7 +509,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns() -> None:
         "@@||sourcepointcmp.bloomberg.*/mms/get_site_data?$domain=bloomberg.co.jp|bloomberg.com"
     ]
     assert exception["action"] == "allow"
-    assert exception["host_pattern"] == "sourcepointcmp.bloomberg.*"
+    assert exception["pattern_kind"] == "host_anchored_pattern"
     assert exception["domain_includes"] == ["bloomberg.co.jp", "bloomberg.com"]
 
     domain_rules = _of_kind(records, "domain_only")
@@ -518,14 +535,18 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns() -> None:
     assert method["options"]["denyallow"] == ["foo.example", "bar.example"]
 
     trailing_path_separator = by_raw["||cdn.example.com/assets/ad.js^$script"]
-    assert trailing_path_separator["path_pattern"] == "/assets/ad.js"
-    assert trailing_path_separator["query_pattern"] == ""
-    assert trailing_path_separator["suffix_separator_suffix"] is True
+    assert trailing_path_separator["suffix"] == "/assets/ad.js^"
+    assert re.search(
+        trailing_path_separator["compiled_regex"],
+        "https://cdn.example.com/assets/ad.js",
+    )
 
     trailing_query_separator = by_raw["||query.example.com/api?kind=ad^$xmlhttprequest"]
-    assert trailing_query_separator["path_pattern"] == "/api"
-    assert trailing_query_separator["query_pattern"] == "?kind=ad"
-    assert trailing_query_separator["suffix_separator_suffix"] is True
+    assert trailing_query_separator["suffix"] == "/api?kind=ad^"
+    assert re.search(
+        trailing_query_separator["compiled_regex"],
+        "https://query.example.com/api?kind=ad&x=1",
+    )
 
     duplicated_domain = by_raw[
         "@@||consent.truste.com/notice$domain=$domain=fortune.com|hsl.fi"

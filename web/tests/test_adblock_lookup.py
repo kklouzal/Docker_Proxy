@@ -236,12 +236,9 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
         lookup.candidate_rules("https://static.example/plain-ad-token.js")
     )
     assert "plain-ad-token$~stylesheet" in generic_candidates
-    assert "/tracker[.]example/$third-party" not in generic_candidates
-
-    regex_candidates = _raws(
-        lookup.candidate_rules("https://cdn.example/tracker.example/pixel")
-    )
-    assert "/tracker[.]example/$third-party" in regex_candidates
+    # Regex rules have no token key: they are candidates for every request
+    # and evaluated after their options.
+    assert "/tracker[.]example/$third-party" in generic_candidates
 
 
 def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
@@ -266,56 +263,42 @@ def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
     assert "||google.*/pagead/lvz?$script" in candidates
 
 
-def test_token_prefilters_preserve_host_pattern_and_regex_candidate_superset(
+def test_token_prefilter_keeps_rules_whose_literals_run_into_url_text(
     tmp_path: Path,
 ) -> None:
-    db_path = _build_lookup_db(
-        tmp_path,
-        [
-            "||ad*server.example^",
-            "/tracker*/",
-            "/tracker.*/",
-            "/tracker[.]example/",
-        ],
-    )
+    rules = [
+        "-ad-banner.",
+        "adserver.",
+        "&ad_type=",
+        "||ad*server.example^",
+        "||ads.",
+        "||ads*banner.gif",
+        "/tracker*/",
+        "/tracker[.]example/",
+    ]
+    db_path = _build_lookup_db(tmp_path, rules)
 
     from services.adblock_lookup import AdblockLookupIndex
 
-    urls = [
-        "https://adXYZserver.example/banner.js",
-        "https://static.example/tracke",
-        "https://static.example/trackerxyz",
-        "https://static.example/tracker.example/pixel",
-    ]
-    indexed_lookup = AdblockLookupIndex(db_path)
-    indexed_candidates = {
-        url: _raws(indexed_lookup.candidate_rules(url)) for url in urls
+    lookup = AdblockLookupIndex(db_path)
+    # Each URL matches its rule although the rule's literal text is only part
+    # of a longer URL token (x-ad-banner.js, myadserver.com, ...).
+    expected = {
+        "https://cdn.example/js/x-ad-banner.min.js": "-ad-banner.",
+        "https://myadserver.com/x": "adserver.",
+        "https://cdn.example/p?x=1&ad_type=banner": "&ad_type=",
+        "https://adxyzserver.example/banner.js": "||ad*server.example^",
+        "https://ads.tracker.example/x": "||ads.",
+        "https://adsfoo.com/banner.gif": "||ads*banner.gif",
+        "https://static.example/trackerxyz/": "/tracker*/",
+        "https://static.example/tracker.example/pixel": "/tracker[.]example/",
     }
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            """
-            DELETE FROM host_pattern_token_index;
-            DELETE FROM regex_token_index;
-            """,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    missing_rows_lookup = AdblockLookupIndex(db_path)
-    missing_rows_candidates = {
-        url: _raws(missing_rows_lookup.candidate_rules(url)) for url in urls
-    }
-
-    # Without token rows every pattern is a fallback candidate (a full scan),
-    # so the prefiltered result must equal it.
-    assert indexed_candidates == missing_rows_candidates
-    assert "||ad*server.example^" in indexed_candidates[urls[0]]
-    assert "/tracker*/" in indexed_candidates[urls[1]]
-    assert "/tracker.*/" in indexed_candidates[urls[2]]
-    assert "/tracker[.]example/" in indexed_candidates[urls[3]]
+    for url, rule in expected.items():
+        assert rule in _raws(lookup.candidate_rules(url)), url
+    # A whole-token key still prunes unrelated URLs.
+    assert "-ad-banner." not in _raws(
+        lookup.candidate_rules("https://cdn.example/js/x-adbanner.js")
+    )
 
 
 def test_adblock_lookup_rejects_malformed_authority_candidates(
@@ -357,7 +340,7 @@ def test_adblock_lookup_rejects_malformed_authority_candidates(
     )
 
 
-@pytest.mark.parametrize("version", [None, "1", "5"])
+@pytest.mark.parametrize("version", [None, "1", "4"])
 def test_lookup_rejects_unsupported_schema_version(
     tmp_path: Path, version: str | None
 ) -> None:

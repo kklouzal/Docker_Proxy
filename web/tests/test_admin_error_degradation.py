@@ -281,7 +281,7 @@ def test_adblock_page_shows_active_compiled_artifact_summary(
                 "lookup_index_counts": {
                     "domain_index": 11,
                     "host_index": 2,
-                    "regex_index": 3,
+                    "generic_index": 3,
                 },
             },
         },
@@ -353,7 +353,7 @@ def test_adblock_page_surfaces_stale_or_failed_artifact_build(
                 "lookup_index_counts": {
                     "domain_index": 0,
                     "host_index": 0,
-                    "regex_index": 0,
+                    "generic_index": 0,
                 },
             },
         },
