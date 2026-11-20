@@ -202,6 +202,8 @@ def test_idle_kept_alive_connection_is_closed(serve) -> None:
     ("raw", "status"),
     [
         (b"BAD\r\n\r\n", b"400 Bad Request"),
+        (b"GET / HTTP/1.1\nHost: x\n\n", b"400 Bad Request"),
+        (b"GET / HTTP/1.1\r\nHost: x\n\r\n", b"400 Bad Request"),
         (b"GET /" + b"a" * 5000 + b" HTTP/1.1\r\nHost: x\r\n\r\n", b"414 URI Too Long"),
         (
             b"GET / HTTP/1.1\r\nHost: x\r\n" + b"X-A: b\r\n" * 101 + b"\r\n",

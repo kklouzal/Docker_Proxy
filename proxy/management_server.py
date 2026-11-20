@@ -42,6 +42,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 import selectors
 import signal
 import socket
@@ -70,6 +71,8 @@ REQUEST_HEAD_TIMEOUT = 10.0
 # Bytes of request head read by the main thread before a request thread takes
 # over; far above any management request head, below gunicorn's head limits.
 HEAD_BUFFER_LIMIT = 64 * 1024
+# The parser rejects a bare LF line ending at once: hand it over then.
+_BARE_LF = re.compile(rb"(?<!\r)\n")
 # gthread's bound for draining an unread request body before keep-alive.
 BODY_DRAIN_TIMEOUT = 5.0
 
@@ -365,7 +368,11 @@ class ManagementServer:
         if not had_bytes and conn.parser is not None:
             # A kept-alive connection began its next request.
             conn.deadline = time.monotonic() + self.head_timeout
-        if b"\r\n\r\n" in conn.buffer or len(conn.buffer) >= HEAD_BUFFER_LIMIT:
+        if (
+            b"\r\n\r\n" in conn.buffer
+            or _BARE_LF.search(conn.buffer)
+            or len(conn.buffer) >= HEAD_BUFFER_LIMIT
+        ):
             self._unwait(conn)
             self._dispatch(conn)
 
