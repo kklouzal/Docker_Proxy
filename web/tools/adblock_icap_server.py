@@ -30,6 +30,7 @@ from services.adblock_decision import (  # ruff: ignore[module-import-not-at-top
     SUPPORTED_REQUEST_METHODS,
     AdblockDecision,
     AdblockDecisionEngine,
+    artifact_decision_cache_settings,
 )
 from services.helper_runtime import HelperStats  # ruff: ignore[module-import-not-at-top-of-file]
 from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
@@ -800,6 +801,24 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
             self.increment_stat("block_record_failed")
 
 
+def _explicit_env_int(name: str) -> int | None:
+    try:
+        return int((os.environ.get(name) or "").strip())
+    except ValueError:
+        return None
+
+
+def _decision_cache_settings(args: argparse.Namespace) -> tuple[int, int]:
+    artifact_ttl, artifact_max = artifact_decision_cache_settings(args.db)
+    cache_ttl = args.cache_ttl
+    if cache_ttl is None:
+        cache_ttl = artifact_ttl if artifact_ttl is not None else 3600
+    cache_max = args.cache_max
+    if cache_max is None:
+        cache_max = artifact_max if artifact_max is not None else 200000
+    return cache_ttl, cache_max
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SQLite-backed adblock ICAP server")
     parser.add_argument("--host", default=os.environ.get("CICAP_HOST", "127.0.0.1"))
@@ -815,15 +834,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--access-log",
         default=os.environ.get("ADBLOCK_ICAP_ACCESS_LOG", "/var/log/cicap-access.log"),
     )
+    # Unset means: use the Admin UI value published in the artifact's
+    # settings.json, else the built-in default.
     parser.add_argument(
         "--cache-ttl",
         type=int,
-        default=env_int("ADBLOCK_CACHE_TTL", 3600),
+        default=_explicit_env_int("ADBLOCK_CACHE_TTL"),
     )
     parser.add_argument(
         "--cache-max",
         type=int,
-        default=env_int("ADBLOCK_CACHE_MAX", 200000),
+        default=_explicit_env_int("ADBLOCK_CACHE_MAX"),
     )
     parser.add_argument(
         "--rule-cache-max",
@@ -856,10 +877,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
+    cache_ttl, cache_max = _decision_cache_settings(args)
     engine = AdblockDecisionEngine(
         args.db,
-        cache_ttl_seconds=args.cache_ttl,
-        cache_max=args.cache_max,
+        cache_ttl_seconds=cache_ttl,
+        cache_max=cache_max,
         rule_cache_max=args.rule_cache_max,
     )
     block_recorder = None

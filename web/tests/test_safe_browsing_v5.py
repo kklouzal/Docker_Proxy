@@ -1331,7 +1331,9 @@ def test_safe_browsing_verdict_cache_scopes_to_selected_lists(monkeypatch) -> No
     assert checker.check_url("http://social.example/") == SafeBrowsingVerdict(
         "unsafe", "SOCIAL_ENGINEERING", "se-4b", False, "confirmed by hashes.search"
     )
-    assert remote_calls == [(target[:4],), (target[:4],)]
+    # The unexpired hashes.search answer is list independent; it is reused
+    # and re-evaluated against the newly selected lists.
+    assert remote_calls == [(target[:4],)]
 
 
 def test_safe_browsing_unselected_cached_threat_does_not_skip_selected_lookup(
@@ -3017,3 +3019,63 @@ def test_safe_browsing_hash_list_replacement_skips_existing_prefix_read_and_mark
     )
     assert "ORDER BY prefix ASC LIMIT" in delete_sql
     assert delete_params == ("mw-4b", 123456789, 5000)
+
+
+def test_safe_browsing_updater_honors_missing_minimum_wait_after_success(
+    monkeypatch,
+) -> None:
+    store = SafeBrowsingStore()
+    status_calls: list[tuple[bool, str, int]] = []
+    monkeypatch.setattr(store, "update_lists", lambda _settings: (True, "", 0))
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
+
+    store._run_updater_once(
+        _batch_update_settings, lambda *args: status_calls.append(args)
+    )
+
+    # Omitted minimumWaitDuration permits an immediate follow-up update, so
+    # it must not be replaced by the 1800 s failure retry floor.
+    assert status_calls == [
+        (False, "", 2800),
+        (True, "", 1060),
+    ]
+
+
+def test_safe_browsing_caches_empty_hash_search_answers(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    target = expression_hashes("http://collision.example/")[0]
+    remote_calls: list[tuple[bytes, ...]] = []
+
+    monkeypatch.setattr(checker, "_selected_lists_for_lookup", lambda: ("mw-4b",))
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
+    monkeypatch.setattr(checker, "_cache_search_response", _ignore_cache_response)
+
+    def search_hashes(api_key, prefixes):
+        remote_calls.append(tuple(prefixes))
+        return [], 300
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    # Distinct URLs sharing the locally listed prefix must reuse the cached
+    # empty answer ("this fact MUST also be cached") until it expires.
+    for path in ("a", "b", "c"):
+        verdict = checker.check_url(f"http://collision.example/{path}")
+        assert verdict.verdict == "safe"
+    assert remote_calls == [(target[:4],)]
+
+    clock = {"now": 1000.0}
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=lambda: clock["now"])
+    checker._search_cache.clear()
+    checker._verdict_cache.clear()
+    checker.check_url("http://collision.example/c")
+    assert len(remote_calls) == 2
+    clock["now"] += 301
+    checker.check_url("http://collision.example/d")
+    assert len(remote_calls) == 3

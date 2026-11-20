@@ -21,6 +21,7 @@ import fcntl  # ruff: ignore[module-import-not-at-top-of-file]
 from services.blocked_log_runtime import BlockedLogDb as _BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
 from services.db import connect  # ruff: ignore[module-import-not-at-top-of-file]
 from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
+from services.domain_normalization import parent_domain_suffixes  # ruff: ignore[module-import-not-at-top-of-file]
 from services.helper_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
     HelperStats,
     TtlLruCache,
@@ -32,18 +33,11 @@ from services.runtime_helpers import env_int as _env_int  # ruff: ignore[module-
 from services.runtime_helpers import now_ts as _now  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
 
 
-def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
-    d = _norm_domain(domain)
-    if not d:
-        return []
-    parts = [p for p in d.split(".") if p]
-    if len(parts) < 2:
-        return [d]
-    # sub.example.co.uk -> try full, then drop left labels
-    return [".".join(parts[i:]) for i in range(min(len(parts) - 1, max_levels))]
+def _parent_domains(domain: str) -> list[str]:
+    return parent_domain_suffixes(_norm_domain(domain))
 
 
 class _Db:

@@ -144,3 +144,36 @@ def test_ambiguous_ipv4_like_host_shared_contract() -> None:
         "2001:db8::1",
     ):
         assert is_ambiguous_ipv4_like_host(value) is False
+
+
+def test_parent_domain_suffixes_cover_every_parent_of_deep_hosts() -> None:
+    from services.domain_normalization import parent_domain_suffixes  # type: ignore
+    from services.webfilter_core import _parent_domains  # type: ignore
+    from tools.webcat_acl import _parent_domains as acl_parent_domains  # type: ignore
+
+    deep = "a.b.c.d.e.f.g.blocked.example"
+    expected = [
+        "a.b.c.d.e.f.g.blocked.example",
+        "b.c.d.e.f.g.blocked.example",
+        "c.d.e.f.g.blocked.example",
+        "d.e.f.g.blocked.example",
+        "e.f.g.blocked.example",
+        "f.g.blocked.example",
+        "g.blocked.example",
+        "blocked.example",
+    ]
+    # Category rows for blocked.example must still be found when a client adds
+    # more than six subdomain labels in front of it.
+    assert parent_domain_suffixes(deep) == expected
+    assert _parent_domains(deep.upper() + ".") == expected
+    assert acl_parent_domains(deep) == expected
+    assert parent_domain_suffixes("localhost") == ["localhost"]
+    assert parent_domain_suffixes("") == []
+
+
+def test_registrable_domain_start_skips_common_second_level_suffixes() -> None:
+    from services.domain_normalization import registrable_domain_start  # type: ignore
+
+    assert registrable_domain_start(["example", "com"]) == 0
+    assert registrable_domain_start(["a", "b", "example", "com"]) == 2
+    assert registrable_domain_start(["a", "example", "co", "uk"]) == 1

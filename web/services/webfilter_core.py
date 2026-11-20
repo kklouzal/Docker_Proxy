@@ -22,6 +22,7 @@ from services.domain_normalization import (
 from services.domain_normalization import (
     normalize_domain as _norm_domain,
 )
+from services.domain_normalization import parent_domain_suffixes
 from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
 from services.policy_requests import normalize_client_ip as _normalize_client_ip
@@ -184,17 +185,8 @@ def _strip_comment(line: str) -> str:
     return (line or "").split("#", 1)[0].strip()
 
 
-def _parent_domains(domain: str, *, max_levels: int = 6) -> list[str]:
-    normalized = _norm_domain(domain)
-    if not normalized:
-        return []
-    parts = [part for part in normalized.split(".") if part]
-    if len(parts) < 2:
-        return [normalized]
-    out: list[str] = [
-        ".".join(parts[index:]) for index in range(min(len(parts) - 1, max_levels))
-    ]
-    return out
+def _parent_domains(domain: str) -> list[str]:
+    return parent_domain_suffixes(_norm_domain(domain))
 
 
 def _default_webfilter_helpers() -> int:
@@ -702,6 +694,9 @@ class WebFilterStoreBase:
                 )
             )
 
+        # Category-scoped exceptions only exempt their own category; legacy
+        # exceptions without a category exempt every web-filter decision.
+        scoped_exceptions: dict[str, list[str]] = {}
         for ex in exceptions:
             domain = _norm_domain(getattr(ex, "domain", ""))
             client_ip = _normalize_client_ip(getattr(ex, "client_ip", ""))
@@ -709,33 +704,53 @@ class WebFilterStoreBase:
                 continue
             suffix = f"{getattr(ex, 'id', 0)}"
             method = str(getattr(ex, "method", "") or "").upper()
-            method_acl = ""
-            method_acl_note = ""
-            method_acl_rule = ""
             if method and not re.fullmatch(r"[A-Z0-9!#$%&'*+.^_`|~-]{1,16}", method):
                 continue
+            exception_acls = [
+                f"webfilter_exception_src_{suffix}",
+                f"webfilter_exception_dst_{suffix}",
+            ]
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
-            dst_domains = f"{domain} .{domain}" if "." in domain else domain
+            # ".example.com" already matches the apex; listing both makes Squid
+            # warn and discard the redundant entry on every reconfigure.
+            dst_domains = f".{domain}" if "." in domain else domain
+            lines.append(
+                f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
+            )
             if method:
-                method_acl = f"webfilter_exception_method_{suffix}"
-                method_acl_note = f" {method_acl}"
-                method_acl_rule = f"acl {method_acl} method {method}"
+                exception_acls.append(f"webfilter_exception_method_{suffix}")
+                lines.append(
+                    f"acl webfilter_exception_method_{suffix} method {method}",
+                )
+            acl_terms = " ".join(exception_acls)
+            category = _normalize_category_name(getattr(ex, "category", ""))
+            if category:
+                lines.append(f"acl webfilter_exception_{suffix} all-of {acl_terms}")
+                scoped_exceptions.setdefault(category, []).append(
+                    f"webfilter_exception_{suffix}",
+                )
+                lines.append(
+                    f"note webfilter_allow exception_{suffix} "
+                    f"webfilter_exception_{suffix}",
+                )
+                continue
             lines.extend(
                 (
-                    f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
-                    *((method_acl_rule,) if method_acl_rule else ()),
-                    f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}{method_acl_note}",
-                    f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}{method_acl_note}",
+                    f"note webfilter_allow exception_{suffix} {acl_terms}",
+                    f"http_access allow {acl_terms}",
                 )
             )
 
         for category in selected:
             safe = _safe_acl_name(category)
+            exempt = "".join(
+                f" !{name}" for name in scoped_exceptions.get(category, [])
+            )
             lines.extend(
                 (
                     f"acl webfilter_block_{safe} external {helper_name} {category}",
                     f"deny_info ERR_WEBFILTER_BLOCKED webfilter_block_{safe}",
-                    f"http_access deny webfilter_block_{safe}",
+                    f"http_access deny{exempt} webfilter_block_{safe}",
                 )
             )
 

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
+import json
 import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
-from services.adblock_hosts import adblock_host_matches as _host_matches
+from services.adblock_hosts import adblock_host_suffix_candidates
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
 from services.adblock_lookup import AdblockLookupIndex
@@ -18,9 +20,7 @@ from services.adblock_patterns import (
     abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
 )
 from services.adblock_patterns import abp_to_regex as _abp_to_regex
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from services.domain_normalization import registrable_domain_start
 
 _RESOURCE_EXTENSIONS = {
     "font": {".eot", ".otf", ".ttf", ".woff", ".woff2"},
@@ -54,7 +54,6 @@ _NON_BLOCKING_MODIFIER_OPTIONS = {
     "rewrite",
     "specifichide",
 }
-_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 # uBO's method= option is limited to the DNR request-method set.
 SUPPORTED_REQUEST_METHODS = frozenset(
     {
@@ -69,6 +68,40 @@ SUPPORTED_REQUEST_METHODS = frozenset(
 )
 
 
+# Bounds enforced by AdblockStore.set_shared_settings for the Admin UI values.
+_MAX_ARTIFACT_CACHE_TTL_SECONDS = 7 * 24 * 3600
+_MAX_ARTIFACT_CACHE_ENTRIES = 1_000_000
+
+
+def artifact_decision_cache_settings(
+    db_path: str | Path,
+) -> tuple[int | None, int | None]:
+    """Return the Admin UI cache TTL/size published beside the lookup DB.
+
+    The artifact's ``settings.json`` carries the shared ``cache_ttl`` and
+    ``cache_max`` values; a missing file or value yields ``None`` so callers
+    keep their configured defaults.
+    """
+    settings_path = Path(db_path).parent / "settings.json"
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+
+    def bounded(key: str, maximum: int) -> int | None:
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 0 <= value <= maximum else None
+
+    return (
+        bounded("cache_ttl", _MAX_ARTIFACT_CACHE_TTL_SECONDS),
+        bounded("cache_max", _MAX_ARTIFACT_CACHE_ENTRIES),
+    )
+
+
 @dataclass(frozen=True)
 class AdblockDecision:
     blocked: bool
@@ -79,13 +112,38 @@ class AdblockDecision:
     list_key: str = ""
 
 
-def _domain_matches(host: str, domain: str) -> bool:
+@dataclass(frozen=True)
+class _RequestContext:
+    """Per-request facts shared by every candidate rule evaluation."""
+
+    url: str
+    method: str
+    resource_type: str
+    request_host: str
+    request_suffixes: frozenset[str]
+    source_host: str
+    source_suffixes: frozenset[str]
+    third_party: bool | None
+
+
+@lru_cache(maxsize=16384)
+def _normalized_rule_host(value: str) -> str:
+    return _normalize_host(value)
+
+
+def _host_suffix_set(normalized_host: str) -> frozenset[str]:
+    return frozenset(adblock_host_suffix_candidates(normalized_host))
+
+
+def _domain_matches(host: str, suffixes: frozenset[str], domain: str) -> bool:
     domain = (domain or "").strip().lower().rstrip(".")
     if not domain:
         return False
-    if "*" in domain or domain.startswith("["):
-        return fnmatch.fnmatchcase(_normalize_host(host), domain)
-    return _host_matches(host, domain)
+    if "*" in domain:
+        return fnmatch.fnmatchcase(host, domain)
+    # Bracketed IPv6 literals are exact hosts, never fnmatch character classes.
+    normalized = _normalized_rule_host(domain)
+    return bool(normalized) and normalized in suffixes
 
 
 def _site_key(host: str) -> str:
@@ -102,21 +160,12 @@ def _site_key(host: str) -> str:
         return normalized
     if all(label.isdigit() for label in labels):
         return normalized
-    try:  # pragma: no cover - optional dependency path
-        from publicsuffix2 import get_sld  # type: ignore
+    return ".".join(labels[registrable_domain_start(labels) :])
 
-        site = get_sld(normalized)
-        if site:
-            return site.lower().rstrip(".")
-    except Exception:
-        pass
-    if (
-        len(labels) >= 3
-        and len(labels[-1]) == 2
-        and labels[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES
-    ):
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+
+def _source_host(source_url: str) -> str:
+    parsed = _safe_urlsplit(source_url)
+    return _normalize_host(parsed.hostname if parsed is not None else "")
 
 
 def _is_third_party(request_host: str, source_host: str) -> bool | None:
@@ -237,6 +286,41 @@ def third_party_hint_from_headers(headers: dict[str, str] | None) -> bool | None
     return None
 
 
+def _first_match(
+    matches: list[dict[str, Any]],
+    action: str,
+    *,
+    important: bool,
+) -> dict[str, Any] | None:
+    for rule in matches:
+        if rule.get("action") != action:
+            continue
+        if not important or "important" in set(rule.get("behavior_options") or []):
+            return rule
+    return None
+
+
+def _decision_for_matches(matches: list[dict[str, Any]]) -> AdblockDecision:
+    # uBO precedence: important exception > important block > exception > block.
+    for action, important, reason in (
+        ("allow", True, "important-exception"),
+        ("block", True, "important-rule-match"),
+        ("allow", False, "exception"),
+        ("block", False, "rule-match"),
+    ):
+        rule = _first_match(matches, action, important=important)
+        if rule is not None:
+            return AdblockDecision(
+                blocked=action == "block",
+                rule_id=str(rule.get("rule_id") or rule.get("id") or ""),
+                raw=str(rule.get("raw") or ""),
+                action=action,
+                reason=reason,
+                list_key=str(rule.get("list_key") or ""),
+            )
+    return AdblockDecision(blocked=False)
+
+
 class AdblockDecisionEngine:
     def __init__(
         self,
@@ -279,18 +363,28 @@ class AdblockDecisionEngine:
         )
         effective_source_url = source_url or source_url_from_headers(headers)
         effective_third_party_hint = third_party_hint_from_headers(headers)
+        # Rules only see the source page through its host, so key the cache on
+        # that rather than on every distinct Referer path/query.
+        source_host = _source_host(effective_source_url)
         cache_key = (
             _normalize_method(method),
             url or "",
             effective_resource_type,
-            effective_source_url,
+            source_host,
             str(effective_third_party_hint),
         )
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
 
-        if _safe_urlsplit(url) is None:
+        context = self._request_context(
+            url,
+            method=method,
+            resource_type=effective_resource_type,
+            source_host=source_host,
+            third_party_hint=effective_third_party_hint,
+        )
+        if context is None:
             decision = AdblockDecision(blocked=False)
             self._put_cached(cache_key, decision)
             return decision
@@ -299,69 +393,8 @@ class AdblockDecisionEngine:
             url,
             resource_type=effective_resource_type,
         )
-        matches = [
-            rule
-            for rule in candidates
-            if self._rule_matches(
-                rule,
-                url,
-                method=method,
-                resource_type=effective_resource_type,
-                source_url=effective_source_url,
-                third_party_hint=effective_third_party_hint,
-            )
-        ]
-        important_block = next(
-            (
-                rule
-                for rule in matches
-                if rule.get("action") == "block"
-                and "important" in set(rule.get("behavior_options") or [])
-            ),
-            None,
-        )
-        if important_block is not None:
-            decision = AdblockDecision(
-                blocked=True,
-                rule_id=str(
-                    important_block.get("rule_id") or important_block.get("id") or "",
-                ),
-                raw=str(important_block.get("raw") or ""),
-                action="block",
-                reason="important-rule-match",
-                list_key=str(important_block.get("list_key") or ""),
-            )
-        else:
-            allow = next(
-                (rule for rule in matches if rule.get("action") == "allow"),
-                None,
-            )
-            if allow is not None:
-                decision = AdblockDecision(
-                    blocked=False,
-                    rule_id=str(allow.get("rule_id") or allow.get("id") or ""),
-                    raw=str(allow.get("raw") or ""),
-                    action="allow",
-                    reason="exception",
-                    list_key=str(allow.get("list_key") or ""),
-                )
-            else:
-                block = next(
-                    (rule for rule in matches if rule.get("action") == "block"),
-                    None,
-                )
-                decision = (
-                    AdblockDecision(
-                        blocked=True,
-                        rule_id=str(block.get("rule_id") or block.get("id") or ""),
-                        raw=str(block.get("raw") or ""),
-                        action="block",
-                        reason="rule-match",
-                        list_key=str(block.get("list_key") or ""),
-                    )
-                    if block is not None
-                    else AdblockDecision(blocked=False)
-                )
+        matches = [rule for rule in candidates if self._rule_matches(rule, context)]
+        decision = _decision_for_matches(matches)
         self._put_cached(cache_key, decision)
         return decision
 
@@ -395,47 +428,59 @@ class AdblockDecisionEngine:
             while len(self._cache) > self.cache_max:
                 self._cache.popitem(last=False)
 
-    def _rule_matches(
-        self,
-        rule: dict[str, Any],
+    @staticmethod
+    def _request_context(
         url: str,
         *,
         method: str,
         resource_type: str,
-        source_url: str,
+        source_host: str,
         third_party_hint: bool | None,
-    ) -> bool:
+    ) -> _RequestContext | None:
         parsed = _safe_urlsplit(url)
         if parsed is None:
-            return False
+            return None
         request_host = _normalize_host(parsed.hostname or "")
-        source_parsed = _safe_urlsplit(source_url)
-        source_host = _normalize_host(
-            source_parsed.hostname if source_parsed is not None else "",
-        )
-        if not self._options_match(
-            rule,
-            method=method,
+        third_party = _is_third_party(request_host, source_host)
+        if third_party is None and third_party_hint is not None:
+            third_party = bool(third_party_hint)
+        return _RequestContext(
+            url=url,
+            method=_normalize_method(method),
             resource_type=resource_type,
             request_host=request_host,
+            request_suffixes=_host_suffix_set(request_host),
             source_host=source_host,
-            third_party_hint=third_party_hint,
-        ):
+            source_suffixes=_host_suffix_set(source_host),
+            third_party=third_party,
+        )
+
+    def _rule_matches(self, rule: dict[str, Any], context: _RequestContext) -> bool:
+        if not self._options_match(rule, context):
             return False
 
+        url = context.url
         kind = str(rule.get("pattern_kind") or "")
         pattern = str(rule.get("pattern") or "")
         case_sensitive = "match-case" in set(rule.get("behavior_options") or [])
         if kind == "option_only":
             return True
         if kind == "domain_only":
-            return _host_matches(request_host, str(rule.get("host") or ""))
+            return _domain_matches(
+                context.request_host,
+                context.request_suffixes,
+                str(rule.get("host") or ""),
+            )
         if kind == "absolute_url":
             compiled_regex = str(rule.get("compiled_regex") or _abp_to_regex(pattern))
             compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
             return bool(compiled and compiled.search(url))
         if kind == "host_anchored":
-            if not _host_matches(request_host, str(rule.get("host") or "")):
+            if not _domain_matches(
+                context.request_host,
+                context.request_suffixes,
+                str(rule.get("host") or ""),
+            ):
                 return False
             compiled_regex = str(
                 rule.get("compiled_regex")
@@ -469,16 +514,12 @@ class AdblockDecisionEngine:
             return needle in haystack
         return False
 
-    def _options_match(
-        self,
-        rule: dict[str, Any],
-        *,
-        method: str,
-        resource_type: str,
-        request_host: str,
-        source_host: str,
-        third_party_hint: bool | None,
-    ) -> bool:
+    def _options_match(self, rule: dict[str, Any], context: _RequestContext) -> bool:
+        if rule.get("misc_options"):
+            # Like ABP and uBlock Origin, discard a filter carrying an option
+            # this engine does not understand rather than enforcing it without
+            # the restriction (or non-blocking meaning) that option adds.
+            return False
         value_options = rule.get("value_options") or {}
         if not isinstance(value_options, dict):
             return False
@@ -499,7 +540,7 @@ class AdblockDecisionEngine:
                 target = excluded_methods if excluded else included_methods
                 target.add(option_method)
 
-            request_method = _normalize_method(method)
+            request_method = context.method
             if request_method not in SUPPORTED_REQUEST_METHODS:
                 return False
             if included_methods and request_method not in included_methods:
@@ -511,26 +552,24 @@ class AdblockDecisionEngine:
         excluded_resource_types = {
             str(item) for item in rule.get("excluded_resource_types") or []
         }
-        if resource_types and resource_type not in resource_types:
+        if resource_types and context.resource_type not in resource_types:
             return False
-        if excluded_resource_types and resource_type in excluded_resource_types:
+        if excluded_resource_types and context.resource_type in excluded_resource_types:
             return False
 
         third_party = str(rule.get("third_party") or "any")
-        third_party_state = _is_third_party(request_host, source_host)
-        if third_party_state is None and third_party_hint is not None:
-            third_party_state = bool(third_party_hint)
-        if third_party == "only" and third_party_state is not True:
+        if third_party == "only" and context.third_party is not True:
             return False
-        if third_party == "exclude" and third_party_state is not False:
+        if third_party == "exclude" and context.third_party is not False:
             return False
 
-        if not self._domain_scope_matches(rule, source_host):
+        if not self._domain_scope_matches(rule, context):
             return False
 
         denyallow = (rule.get("value_options") or {}).get("denyallow") or []
         if denyallow and any(
-            _domain_matches(request_host, str(item)) for item in denyallow
+            _domain_matches(context.request_host, context.request_suffixes, str(item))
+            for item in denyallow
         ):
             return False
 
@@ -542,36 +581,35 @@ class AdblockDecisionEngine:
             (behavior_options | value_options) & _NON_BLOCKING_MODIFIER_OPTIONS
         )
 
-    def _domain_scope_matches(self, rule: dict[str, Any], source_host: str) -> bool:
-        includes = [
-            _normalize_host(str(item)) for item in rule.get("domain_includes") or []
-        ]
+    def _domain_scope_matches(
+        self,
+        rule: dict[str, Any],
+        context: _RequestContext,
+    ) -> bool:
+        includes = rule.get("domain_includes") or []
         include_patterns = [
-            _normalize_host(str(item))
+            _normalized_rule_host(str(item))
             for item in rule.get("domain_include_patterns") or []
         ]
-        excludes = [
-            _normalize_host(str(item)) for item in rule.get("domain_excludes") or []
-        ]
+        excludes = rule.get("domain_excludes") or []
         exclude_patterns = [
-            _normalize_host(str(item))
+            _normalized_rule_host(str(item))
             for item in rule.get("domain_exclude_patterns") or []
         ]
-        has_domain_scope = bool(
-            includes or include_patterns or excludes or exclude_patterns
-        )
-        if has_domain_scope and not source_host:
+        if not (includes or include_patterns or excludes or exclude_patterns):
+            return True
+        source_host = context.source_host
+        if not source_host:
             return False
-        if any(_domain_matches(source_host, item) for item in excludes):
+        suffixes = context.source_suffixes
+        if any(_domain_matches(source_host, suffixes, str(item)) for item in excludes):
             return False
-        if any(
-            fnmatch.fnmatchcase(_normalize_host(source_host), item)
-            for item in exclude_patterns
-        ):
+        if any(fnmatch.fnmatchcase(source_host, item) for item in exclude_patterns):
             return False
         if includes or include_patterns:
-            return any(_domain_matches(source_host, item) for item in includes) or any(
-                fnmatch.fnmatchcase(_normalize_host(source_host), item)
-                for item in include_patterns
+            return any(
+                _domain_matches(source_host, suffixes, str(item)) for item in includes
+            ) or any(
+                fnmatch.fnmatchcase(source_host, item) for item in include_patterns
             )
         return True

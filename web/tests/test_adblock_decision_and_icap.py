@@ -514,11 +514,13 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
     assert (
         engine._rule_matches(
             fallback_host_rule,
-            "https://host.example:8443/ads.js",
-            method="GET",
-            resource_type="other",
-            source_url="",
-            third_party_hint=None,
+            engine._request_context(
+                "https://host.example:8443/ads.js",
+                method="GET",
+                resource_type="other",
+                source_host="",
+                third_party_hint=None,
+            ),
         )
         is False
     )
@@ -2150,8 +2152,9 @@ def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
     args = _parse_args([])
 
     assert args.port == 14000
-    assert args.cache_ttl == 3600
-    assert args.cache_max == 200000
+    # Malformed cache overrides fall back to the artifact settings / defaults.
+    assert args.cache_ttl is None
+    assert args.cache_max is None
     assert args.rule_cache_max == 50000
     assert args.max_request_bytes == 262144
     assert args.max_body_drain_bytes == 8388608
@@ -2217,3 +2220,147 @@ def test_proxy_payload_includes_sqlite_adblock_runtime() -> None:
 
 if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def test_domain_option_matches_bracketed_ipv6_source_literally() -> None:
+    from services.adblock_decision import _domain_matches, _host_suffix_set
+
+    host = "[2001:db8::1]"
+    suffixes = _host_suffix_set(host)
+    # fnmatch would read "[2001:db8::1]" as a one-character class.
+    assert _domain_matches(host, suffixes, "[2001:db8::1]") is True
+    assert _domain_matches("1", _host_suffix_set("1"), "[2001:db8::1]") is False
+    assert _domain_matches("ads.example", _host_suffix_set("ads.example"), "*.example")
+
+
+def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||alias-xhr.example^$xhr",
+            "||alias-3p.example^$3p",
+            "||alias-1p.example^$1p",
+            "||alias-from.example^$from=source.example",
+            "||unknown-option.example^$webrtc",
+            "@@||unknown-allow.example^$specifichide",
+            "||unknown-allow.example^",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+    xhr = {"sec-fetch-mode": "cors", "sec-fetch-dest": "empty"}
+    image = {"accept": "image/webp"}
+
+    assert engine.decide("https://alias-xhr.example/a", headers=xhr).blocked is True
+    assert engine.decide("https://alias-xhr.example/a", headers=image).blocked is False
+
+    cross = {"referer": "https://other.example/"}
+    same = {"referer": "https://www.alias-3p.example/"}
+    assert engine.decide("https://alias-3p.example/a", headers=cross).blocked is True
+    assert engine.decide("https://alias-3p.example/a", headers=same).blocked is False
+    same_1p = {"referer": "https://www.alias-1p.example/"}
+    assert engine.decide("https://alias-1p.example/a", headers=same_1p).blocked
+    assert engine.decide("https://alias-1p.example/a", headers=cross).blocked is False
+
+    scoped = {"referer": "https://source.example/"}
+    assert engine.decide("https://alias-from.example/a", headers=scoped).blocked
+    assert engine.decide("https://alias-from.example/a", headers=cross).blocked is False
+
+    # Unsupported options must not turn into unrestricted block or allow rules.
+    assert engine.decide("https://unknown-option.example/a").blocked is False
+    assert engine.decide("https://unknown-allow.example/a").blocked is True
+
+
+def test_important_exception_overrides_important_block(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||vip.example^$important",
+            "@@||vip.example/ok^$important",
+            "@@||vip.example/plain^",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    allowed = engine.decide("https://vip.example/ok")
+    assert allowed.blocked is False
+    assert allowed.reason == "important-exception"
+    plain = engine.decide("https://vip.example/plain")
+    assert plain.blocked is True
+    assert plain.reason == "important-rule-match"
+
+
+def test_icap_decision_cache_uses_artifact_admin_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from tools.adblock_icap_server import _decision_cache_settings, _parse_args
+
+    db_path = tmp_path / "request_lookup.sqlite"
+    monkeypatch.delenv("ADBLOCK_CACHE_TTL", raising=False)
+    monkeypatch.delenv("ADBLOCK_CACHE_MAX", raising=False)
+
+    # No published settings: built-in defaults.
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        3600,
+        200000,
+    )
+
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"cache_ttl": 120, "cache_max": 4096}),
+        encoding="utf-8",
+    )
+    # The Admin UI values published with the artifact take effect.
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        120,
+        4096,
+    )
+
+    # An explicit operator override still wins.
+    monkeypatch.setenv("ADBLOCK_CACHE_TTL", "30")
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        30,
+        4096,
+    )
+
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"cache_ttl": -5, "cache_max": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ADBLOCK_CACHE_TTL")
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        3600,
+        200000,
+    )
+
+
+def test_decision_cache_keys_on_source_host_not_referer_path(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^$domain=source.example"])
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
+    for page in ("a", "b?x=1", "c#frag"):
+        decision = engine.decide(
+            "https://ads.example/x.js",
+            headers={"referer": f"https://source.example/{page}"},
+        )
+        assert decision.blocked is True
+    assert len(engine._cache) == 1
+    assert (
+        engine.decide(
+            "https://ads.example/x.js",
+            headers={"referer": "https://other.example/a"},
+        ).blocked
+        is False
+    )
+    assert len(engine._cache) == 2

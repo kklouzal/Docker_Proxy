@@ -10,7 +10,16 @@ _DOMAIN_RE = re.compile(
 )
 
 
-def _valid_dns_hostname(raw: str) -> bool:
+# Deterministic registrable-domain heuristic shared by adblock party checks and
+# Safe Browsing host-suffix generation. No Public Suffix List ships with the
+# images, so ``example.co.uk``-style ccTLD second levels are the only multi-label
+# public suffixes recognised.
+_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = frozenset(
+    {"ac", "co", "com", "edu", "gov", "net", "org"},
+)
+
+
+def is_valid_dns_hostname(raw: str) -> bool:
     if len(raw) > 253:
         return False
     labels = raw.split(".")
@@ -129,7 +138,7 @@ def normalize_domain(value: object) -> str:
     normalized = ".".join(labels).rstrip(".")
     if is_ambiguous_ipv4_like_host(normalized):
         return ""
-    return normalized if _valid_dns_hostname(normalized) else ""
+    return normalized if is_valid_dns_hostname(normalized) else ""
 
 
 def looks_like_domain(value: object) -> bool:
@@ -137,3 +146,24 @@ def looks_like_domain(value: object) -> bool:
     if not domain or "." not in domain or ".." in domain or ":" in domain:
         return False
     return _DOMAIN_RE.match(domain) is not None
+
+
+def registrable_domain_start(labels: list[str]) -> int:
+    """Return the index of the first label of the eTLD+1 within ``labels``."""
+    if len(labels) <= 2:
+        return 0
+    if len(labels[-1]) == 2 and labels[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES:
+        return len(labels) - 3
+    return len(labels) - 2
+
+
+def parent_domain_suffixes(domain: str) -> list[str]:
+    """Return ``domain`` and every parent suffix, most specific first.
+
+    The bare top-level label is excluded. ``domain`` must already be a
+    normalized dotted host name; the list is bounded by its label count.
+    """
+    labels = [label for label in domain.split(".") if label]
+    if len(labels) < 2:
+        return [domain] if domain else []
+    return [".".join(labels[index:]) for index in range(len(labels) - 1)]

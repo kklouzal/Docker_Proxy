@@ -154,6 +154,22 @@ _BEHAVIOR_OPTIONS: set[str] = {
     "match-case",
 }
 
+# uBlock Origin option aliases, mapped to the canonical ABP option they mean.
+# Negating an alias negates its canonical option (``~1p`` -> ``third-party``).
+_OPTION_ALIASES: dict[str, str] = {
+    "1p": "~third-party",
+    "3p": "third-party",
+    "beacon": "ping",
+    "css": "stylesheet",
+    "doc": "document",
+    "ehide": "elemhide",
+    "first-party": "~third-party",
+    "frame": "subdocument",
+    "from": "domain",
+    "ghide": "generichide",
+    "xhr": "xmlhttprequest",
+}
+
 _ALL_KNOWN_OPTIONS = (
     _KNOWN_TYPES
     | _VALUE_OPTIONS
@@ -161,9 +177,36 @@ _ALL_KNOWN_OPTIONS = (
     | {"third-party", "~third-party"}
     | {f"~{item}" for item in _KNOWN_TYPES}
     | {f"~{item}" for item in _BEHAVIOR_OPTIONS}
+    | set(_OPTION_ALIASES)
+    | {f"~{item}" for item in _OPTION_ALIASES}
 )
 
 
+def _canonical_option_key(key: str) -> str:
+    negated = key.startswith("~")
+    base = key[1:] if negated else key
+    canonical = _OPTION_ALIASES.get(base)
+    if canonical is None:
+        return key
+    if not negated:
+        return canonical
+    return canonical[1:] if canonical.startswith("~") else f"~{canonical}"
+
+
+LOOKUP_SCHEMA_VERSION = "4"
+LOOKUP_INDEX_COUNT_TABLES = (
+    "rules",
+    "domain_index",
+    "host_index",
+    "host_pattern_index",
+    "host_pattern_token_index",
+    "regex_index",
+    "regex_token_index",
+    "generic_index",
+    "option_index",
+    "resource_type_index",
+    "domain_scope_index",
+)
 LOOKUP_STRATEGY = (
     "domain suffix candidates -> domain_index; exact and host-suffix "
     "candidates -> host_index; host-pattern/regex token prefilters before "
@@ -262,7 +305,7 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
     for t in tokens:
         if "=" in t:
             k, v = t.split("=", 1)
-            k = k.strip().lower()
+            k = _canonical_option_key(k.strip().lower())
             v = v.strip()
             if k == "domain":
                 # ABP domain=example.com|~foo.com
@@ -282,7 +325,7 @@ def _parse_options(opts: str) -> tuple[list[str], dict[str, Any]]:
                 parsed[k] = v
         else:
             # flags can be negated: ~third-party, ~script
-            parsed[t.strip().lower()] = True
+            parsed[_canonical_option_key(t.strip().lower())] = True
     return tokens, parsed
 
 
@@ -1135,24 +1178,12 @@ def _write_request_lookup_index(
     with suppress(FileNotFoundError):
         path.unlink()
     conn = sqlite3.connect(str(path))
-    counts: dict[str, int] = {
-        "rules": 0,
-        "domain_index": 0,
-        "host_index": 0,
-        "host_pattern_index": 0,
-        "host_pattern_token_index": 0,
-        "regex_index": 0,
-        "regex_token_index": 0,
-        "generic_index": 0,
-        "option_index": 0,
-        "resource_type_index": 0,
-        "domain_scope_index": 0,
-    }
+    counts: dict[str, int] = dict.fromkeys(LOOKUP_INDEX_COUNT_TABLES, 0)
     try:
         _create_lookup_schema(conn)
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            ("schema_version", "4"),
+            ("schema_version", LOOKUP_SCHEMA_VERSION),
         )
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",

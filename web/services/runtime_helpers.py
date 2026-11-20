@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from services.domain_normalization import is_ambiguous_ipv4_like_host
+from services.domain_normalization import (
+    is_ambiguous_ipv4_like_host,
+    is_valid_dns_hostname,
+)
 
 _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
     errno.EBADF,
@@ -154,21 +157,6 @@ def _is_valid_port(value: str) -> bool:
     return value.isdigit() and 1 <= int(value) <= 65535
 
 
-def _valid_dns_hostname(value: str) -> bool:
-    candidate = value.rstrip(".")
-    if not candidate or len(candidate) > 253:
-        return False
-    labels = candidate.split(".")
-    if not labels or any(not label for label in labels):
-        return False
-    for label in labels:
-        if len(label) > 63 or not label[0].isalnum() or not label[-1].isalnum():
-            return False
-        if any(not (ch.isalnum() or ch == "-") for ch in label):
-            return False
-    return True
-
-
 def _normalize_host_token(host: str) -> str:
     candidate = host.strip()
     if not candidate:
@@ -189,7 +177,7 @@ def _normalize_host_token(host: str) -> str:
     candidate = candidate.removesuffix(".")
     if is_ambiguous_ipv4_like_host(candidate):
         return ""
-    return candidate if _valid_dns_hostname(candidate) else ""
+    return candidate if is_valid_dns_hostname(candidate) else ""
 
 
 def authority_has_empty_explicit_port(netloc: str) -> bool:

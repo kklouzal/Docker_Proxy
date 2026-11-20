@@ -23,6 +23,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
 )
 from services.domain_normalization import normalize_domain as _norm_domain
+from services.domain_normalization import registrable_domain_start
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable
 from services.runtime_helpers import env_int as _env_int
@@ -50,7 +51,6 @@ _VALID_THREAT_TYPES = {
     "POTENTIALLY_HARMFUL_APPLICATION",
 }
 _IGNORED_THREAT_ATTRIBUTES = {"THREAT_ATTRIBUTE_UNSPECIFIED", "CANARY", "FRAME_ONLY"}
-_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 logger = logging.getLogger(__name__)
 
 
@@ -384,30 +384,6 @@ def _is_ip_literal(host: str) -> bool:
         return False
 
 
-def _etld_plus_one_index(parts: list[str]) -> int:
-    if len(parts) <= 2:
-        return 0
-    # Prefer a PSL library when present; keep a deterministic fallback for the
-    # common second-level public suffixes used by the docs and many ccTLDs.
-    host = ".".join(parts)
-    try:  # pragma: no cover - optional dependency path
-        from publicsuffix2 import get_sld  # type: ignore
-
-        sld = get_sld(host)
-        if sld:
-            sld_parts = sld.split(".")
-            return max(0, len(parts) - len(sld_parts))
-    except Exception:
-        pass
-    if (
-        len(parts) >= 3
-        and len(parts[-1]) == 2
-        and parts[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES
-    ):
-        return len(parts) - 3
-    return len(parts) - 2
-
-
 def _host_suffixes(host: str) -> list[str]:
     host = _normalize_host(host)
     if not host:
@@ -418,7 +394,7 @@ def _host_suffixes(host: str) -> list[str]:
     if not parts:
         return []
     exact = ".".join(parts)
-    etld1_index = _etld_plus_one_index(parts)
+    etld1_index = registrable_domain_start(parts)
     # Google's examples order the exact host first, then up to four suffixes
     # from the last five hostname components, stopping at eTLD+1.
     start = max(0, etld1_index - 3, len(parts) - 5)
@@ -1227,9 +1203,12 @@ class SafeBrowsingStore:
             )
             wait = failure_wait
         finished_at = _now()
+        # A successful update with no minimumWaitDuration means the client
+        # SHOULD update again immediately; the next scheduler poll does so.
+        retry_after = int(wait) if ok else int(wait or failure_wait)
         self._persist_updater_status(
             set_status,
-            (ok, err, finished_at + max(60, int(wait or failure_wait))),
+            (ok, err, finished_at + max(60, retry_after)),
         )
 
     def _loop(self, get_settings, set_status) -> None:
@@ -1269,6 +1248,10 @@ class SafeBrowsingLocalChecker:
         self._verdict_cache: dict[
             tuple[str, tuple[str, ...]], tuple[float, SafeBrowsingVerdict]
         ] = {}
+        # hashes.search answers per prefix, valid for the provider cacheDuration.
+        # The v5 contract requires caching empty answers too, so this keeps
+        # the whole (list-independent) response rather than only matches.
+        self._search_cache: dict[bytes, tuple[float, list[dict[str, object]]]] = {}
         self._list_version_state: tuple[tuple[str, bytes | None], ...] | None = None
         self._list_version_state_verified = False
         # Prevent an old concurrent lookup from repopulating helper caches after
@@ -1551,6 +1534,35 @@ class SafeBrowsingLocalChecker:
         except Exception:
             self.close()
 
+    def _cached_search_response(
+        self,
+        prefix: bytes,
+    ) -> tuple[list[dict[str, object]], int] | None:
+        now_mono = time.monotonic()
+        with self._local_cache_lock:
+            cached = self._search_cache.get(prefix)
+            if cached is None:
+                return None
+            expires, response = cached
+            if expires <= now_mono:
+                del self._search_cache[prefix]
+                return None
+        return response, int(expires - now_mono)
+
+    def _remember_search_response(
+        self,
+        prefix: bytes,
+        response: list[dict[str, object]],
+        cache_duration: int,
+    ) -> None:
+        duration = max(0, int(cache_duration))
+        if duration == 0:
+            return
+        with self._local_cache_lock:
+            self._search_cache[prefix] = (time.monotonic() + duration, response)
+            if len(self._search_cache) > self._cache_max:
+                self._search_cache.clear()
+
     def _cache_verdict(
         self,
         key: tuple[str, tuple[str, ...]],
@@ -1624,20 +1636,27 @@ class SafeBrowsingLocalChecker:
                         reason="api key unavailable for full-hash confirmation",
                     )
                 else:
-                    try:
-                        response, duration = self._store.search_hashes(
-                            api_key, [prefix]
+                    cached_search = self._cached_search_response(prefix)
+                    if cached_search is not None:
+                        response, duration = cached_search
+                    else:
+                        try:
+                            response, duration = self._store.search_hashes(
+                                api_key, [prefix]
+                            )
+                        except Exception:
+                            self.close()
+                            cache_final_verdict = False
+                            verdict = SafeBrowsingVerdict(
+                                "safe",
+                                reason="full-hash confirmation unavailable",
+                            )
+                            last_safe_verdict = verdict
+                            continue
+                        self._remember_search_response(prefix, response, duration)
+                        self._cache_search_response(
+                            prefix, response, duration, local_lists
                         )
-                    except Exception:
-                        self.close()
-                        cache_final_verdict = False
-                        verdict = SafeBrowsingVerdict(
-                            "safe",
-                            reason="full-hash confirmation unavailable",
-                        )
-                        last_safe_verdict = verdict
-                        continue
-                    self._cache_search_response(prefix, response, duration, local_lists)
                     verdict_ttl = min(verdict_ttl, max(0, int(duration)))
                     verdict = SafeBrowsingVerdict(
                         "safe",

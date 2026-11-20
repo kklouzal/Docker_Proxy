@@ -47,22 +47,31 @@ from services.runtime_helpers import now_ts as _now
 logger = logging.getLogger(__name__)
 
 _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
+# Archives built before the artifact was trimmed to its runtime members stored
+# byte-identical JSONL views once plus this alias manifest. Retained revisions
+# and recovery bundles can still carry them, so materialization keeps
+# restoring the aliases.
 _ARTIFACT_ALIASES_FILENAME = "artifact-aliases.json"
 _ARTIFACT_ALIASES_FORMAT_VERSION = 1
-_DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
-_DEFAULT_SETTINGS_FILENAME = "settings.json"
-_BUILDER_SOURCE_KINDS = {"background", "compile"}
-
-# These compiler views are byte-for-byte identical for current artifacts. Keep
-# one authoritative member in the persisted ZIP, then restore the historical
-# filename as a hard link (or copy where links are unavailable) when runtime
-# materializes it. Old archives without a manifest remain unchanged/readable.
 _COMPILED_ARTIFACT_ALIAS_CANDIDATES = {
     "network_kind_domain_only.jsonl": "request_index_domain.jsonl",
     "network_kind_host_anchored.jsonl": "request_index_host.jsonl",
     "network_kind_regex.jsonl": "request_index_regex.jsonl",
     "cosmetic_elemhide_exception.jsonl": "cosmetic_exception.jsonl",
 }
+_DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
+_DEFAULT_SETTINGS_FILENAME = "settings.json"
+_BUILDER_SOURCE_KINDS = {"background", "compile"}
+
+# Proxies consume only the request lookup database; the report and settings
+# describe it for the Admin UI and runtime alignment checks. The compiler's
+# diagnostic JSONL buckets stay in the build workspace instead of being
+# persisted per revision and materialized on every proxy.
+_RUNTIME_ARTIFACT_MEMBERS = (
+    _DEFAULT_SETTINGS_FILENAME,
+    "report.json",
+    "request_lookup.sqlite",
+)
 
 
 _BUILDER_MYSQL_RETRY_ATTEMPTS = 4
@@ -851,10 +860,6 @@ class AdblockArtifactStore:
             activate=activate,
         )
 
-    def estimate_archive_size(self, directory: str | os.PathLike[str]) -> int:
-        file_map = _load_directory_files(directory)
-        return len(_build_deterministic_archive(file_map))
-
     def record_apply_result(
         self,
         proxy_id: object | None,
@@ -1100,7 +1105,7 @@ class AdblockArtifactStore:
                     source_kind=source_kind,
                     activate=True,
                 )
-                archive_bytes = self.estimate_archive_size(out_dir)
+                archive_bytes = len(revision.archive_blob or b"")
         except Exception as exc:
             logger.exception("adblock artifact build failed")
             detail = public_error_message(
@@ -1359,66 +1364,10 @@ def _active_enabled_lists_drift(
 
 
 def _write_empty_output(out_dir: str) -> None:
+    from tools import adblock_compile  # type: ignore
+
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
-    for filename in (
-        "network_rules.jsonl",
-        "cosmetic_rules.jsonl",
-        "network_no_options.jsonl",
-        "network_with_options.jsonl",
-        "network_option_domain.jsonl",
-        "network_option_third_party.jsonl",
-        "network_option_type.jsonl",
-        "network_option_misc.jsonl",
-        "network_kind_domain_only.jsonl",
-        "network_kind_host_anchored.jsonl",
-        "network_kind_left_anchored.jsonl",
-        "network_kind_substring.jsonl",
-        "network_kind_wildcard.jsonl",
-        "network_kind_regex.jsonl",
-        "network_block.jsonl",
-        "network_exception.jsonl",
-        "request_index_domain.jsonl",
-        "request_index_host.jsonl",
-        "request_index_regex.jsonl",
-        "request_index_generic.jsonl",
-        "cosmetic_elemhide.jsonl",
-        "cosmetic_elemhide_exception.jsonl",
-        "cosmetic_extended_css.jsonl",
-        "cosmetic_extended_css_exception.jsonl",
-        "cosmetic_html_filter.jsonl",
-        "cosmetic_html_filter_exception.jsonl",
-        "cosmetic_scriptlet.jsonl",
-        "cosmetic_scriptlet_exception.jsonl",
-        "cosmetic_scoped.jsonl",
-        "cosmetic_global.jsonl",
-        "cosmetic_exception.jsonl",
-        "cosmetic_non_exception.jsonl",
-    ):
-        (root / filename).write_text("", encoding="utf-8")
-    for resource_type in (
-        "document",
-        "font",
-        "image",
-        "media",
-        "object",
-        "other",
-        "ping",
-        "popup",
-        "script",
-        "stylesheet",
-        "subdocument",
-        "websocket",
-        "xmlhttprequest",
-    ):
-        (root / f"network_type_{resource_type}.jsonl").write_text(
-            "",
-            encoding="utf-8",
-        )
-        (root / f"network_type_not_{resource_type}.jsonl").write_text(
-            "",
-            encoding="utf-8",
-        )
     _write_empty_request_lookup_db(root / "request_lookup.sqlite")
     report = {
         "enabled_lists": [],
@@ -1433,24 +1382,14 @@ def _write_empty_output(out_dir: str) -> None:
             "cosmetic_by_marker": {},
             "option_key_counts": {},
             "option_group_counts": {},
-            "lookup_index_counts": {
-                "domain_index": 0,
-                "domain_scope_index": 0,
-                "generic_index": 0,
-                "host_index": 0,
-                "host_pattern_index": 0,
-                "host_pattern_token_index": 0,
-                "option_index": 0,
-                "regex_index": 0,
-                "regex_token_index": 0,
-                "resource_type_index": 0,
-                "rules": 0,
-            },
+            "lookup_index_counts": dict.fromkeys(
+                adblock_compile.LOOKUP_INDEX_COUNT_TABLES,
+                0,
+            ),
         },
         "per_list": {},
         "notes": {
             "empty": "No enabled adblock lists are active, so the materialized artifact contains an empty request lookup.",
-            "request_indexes": "request_index_*.jsonl files are empty because no adblock lists are enabled.",
         },
     }
     (root / "report.json").write_text(
@@ -1467,141 +1406,15 @@ def _write_empty_request_lookup_db(path: Path) -> None:
         path.unlink()
     conn = sqlite3.connect(str(path))
     try:
-        conn.executescript(
-            """
-            PRAGMA journal_mode=OFF;
-            PRAGMA synchronous=OFF;
-
-            CREATE TABLE metadata(
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            ) WITHOUT ROWID;
-
-            CREATE TABLE rules(
-                rule_id TEXT PRIMARY KEY,
-                list_key TEXT NOT NULL,
-                action TEXT NOT NULL,
-                exception INTEGER NOT NULL,
-                pattern_kind TEXT NOT NULL,
-                raw TEXT NOT NULL,
-                pattern TEXT NOT NULL,
-                options_json TEXT NOT NULL,
-                resource_types_json TEXT NOT NULL,
-                excluded_resource_types_json TEXT NOT NULL,
-                third_party TEXT NOT NULL,
-                behavior_options_json TEXT NOT NULL,
-                value_options_json TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            ) WITHOUT ROWID;
-
-            CREATE TABLE domain_index(
-                host TEXT NOT NULL,
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(host, action, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE host_index(
-                host TEXT NOT NULL,
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                pattern_kind TEXT NOT NULL,
-                url_scheme_pattern TEXT NOT NULL,
-                path_pattern TEXT NOT NULL,
-                query_pattern TEXT NOT NULL,
-                suffix_separator_prefix INTEGER NOT NULL,
-                suffix_separator_suffix INTEGER NOT NULL,
-                PRIMARY KEY(host, action, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE host_pattern_index(
-                host_pattern TEXT NOT NULL,
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                pattern_kind TEXT NOT NULL,
-                url_scheme_pattern TEXT NOT NULL,
-                path_pattern TEXT NOT NULL,
-                query_pattern TEXT NOT NULL,
-                PRIMARY KEY(host_pattern, action, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE host_pattern_token_index(
-                literal_key TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(literal_key, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE regex_index(
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                regex TEXT NOT NULL,
-                PRIMARY KEY(action, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE regex_token_index(
-                literal_key TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(literal_key, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE generic_index(
-                literal_key TEXT NOT NULL,
-                pattern_kind TEXT NOT NULL,
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(literal_key, pattern_kind, action, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE option_index(
-                option_key TEXT NOT NULL,
-                option_value TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(option_key, option_value, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE resource_type_index(
-                resource_type TEXT NOT NULL,
-                negated INTEGER NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(resource_type, negated, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE TABLE domain_scope_index(
-                domain TEXT NOT NULL,
-                excluded INTEGER NOT NULL,
-                pattern INTEGER NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(domain, excluded, pattern, rule_id)
-            ) WITHOUT ROWID;
-
-            CREATE INDEX idx_rules_kind_action ON rules(pattern_kind, action);
-            CREATE INDEX idx_domain_action ON domain_index(action, host);
-            CREATE INDEX idx_host_action ON host_index(action, host);
-            CREATE INDEX idx_host_pattern_action ON host_pattern_index(action, host_pattern);
-            CREATE INDEX idx_host_pattern_token_rule ON host_pattern_token_index(rule_id);
-            CREATE INDEX idx_regex_action ON regex_index(action);
-            CREATE INDEX idx_regex_token_rule ON regex_token_index(rule_id);
-            CREATE INDEX idx_generic_kind_key ON generic_index(pattern_kind, literal_key);
-            CREATE INDEX idx_option_key ON option_index(option_key, option_value);
-            CREATE INDEX idx_resource_type ON resource_type_index(resource_type, negated);
-            CREATE INDEX idx_resource_type_rule ON resource_type_index(rule_id);
-            CREATE INDEX idx_domain_scope ON domain_scope_index(domain, excluded, pattern);
-            """
-        )
+        adblock_compile._create_lookup_schema(conn)
+        adblock_compile._create_lookup_indexes(conn)
         metadata = {
-            "schema_version": "4",
-            "count_domain_index": "0",
-            "count_domain_scope_index": "0",
-            "count_generic_index": "0",
-            "count_host_index": "0",
-            "count_host_pattern_index": "0",
-            "count_host_pattern_token_index": "0",
-            "count_option_index": "0",
-            "count_regex_index": "0",
-            "count_regex_token_index": "0",
-            "count_resource_type_index": "0",
-            "count_rules": "0",
+            "schema_version": adblock_compile.LOOKUP_SCHEMA_VERSION,
             "lookup_strategy": adblock_compile.LOOKUP_STRATEGY,
+            **{
+                f"count_{table}": "0"
+                for table in adblock_compile.LOOKUP_INDEX_COUNT_TABLES
+            },
         }
         conn.executemany(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
@@ -1638,48 +1451,11 @@ def _write_settings_file(
 def _load_directory_files(directory: str | os.PathLike[str]) -> dict[str, bytes]:
     root = Path(directory)
     file_map: dict[str, bytes] = {}
-    if not root.exists():
-        return file_map
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
-        file_map[rel] = path.read_bytes()
+    for name in _RUNTIME_ARTIFACT_MEMBERS:
+        path = root / name
+        if path.is_file():
+            file_map[name] = path.read_bytes()
     return file_map
-
-
-def _deduplicate_generated_artifact_files(
-    file_map: dict[str, bytes],
-) -> dict[str, bytes]:
-    if _ARTIFACT_ALIASES_FILENAME in file_map:
-        msg = "Generated adblock artifact contains a reserved alias manifest."
-        raise AdblockArtifactArchiveError(msg)
-
-    aliases = {
-        alias: source
-        for alias, source in _COMPILED_ARTIFACT_ALIAS_CANDIDATES.items()
-        if alias in file_map
-        and source in file_map
-        and file_map[alias] == file_map[source]
-    }
-    if not aliases:
-        return file_map
-
-    deduplicated = dict(file_map)
-    for alias in aliases:
-        del deduplicated[alias]
-    deduplicated[_ARTIFACT_ALIASES_FILENAME] = (
-        json.dumps(
-            {
-                "aliases": aliases,
-                "format_version": _ARTIFACT_ALIASES_FORMAT_VERSION,
-            },
-            indent=2,
-            sort_keys=True,
-        ).encode("utf-8")
-        + b"\n"
-    )
-    return deduplicated
 
 
 def _validate_generated_artifact_budget(file_map: dict[str, bytes]) -> None:
@@ -1696,7 +1472,6 @@ def _validate_generated_artifact_budget(file_map: dict[str, bytes]) -> None:
 
 
 def _calculate_artifact_sha(file_map: dict[str, bytes]) -> str:
-    file_map = _deduplicate_generated_artifact_files(file_map)
     digest = hashlib.sha256()
     for rel_path in sorted(file_map):
         digest.update(rel_path.encode("utf-8", errors="replace"))
@@ -1708,10 +1483,9 @@ def _calculate_artifact_sha(file_map: dict[str, bytes]) -> str:
 
 def _build_deterministic_archive(file_map: dict[str, bytes]) -> bytes:
     # Reject an artifact before it can become authoritative if the proxy or
-    # recovery validator would later be unable to consume its fully
-    # materialized (alias-expanded) payload.
+    # recovery validator would later be unable to consume its materialized
+    # payload.
     _validate_generated_artifact_budget(file_map)
-    file_map = _deduplicate_generated_artifact_files(file_map)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for rel_path in sorted(file_map):
