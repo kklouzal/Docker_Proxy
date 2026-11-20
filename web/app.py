@@ -873,57 +873,74 @@ def _certificate_revision_sha(bundle_store: Any, revision_id: object) -> str:
     return str(getattr(revision, "bundle_sha256", "") or "").strip()
 
 
-def _certificate_global_revert_context(
-    operation: Any,
-    bundle_store: Any,
-) -> dict[str, Any]:
-    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
-        return {"is_global_certificate_revert": False}
-    current_revision = None
-    try:
-        current_revision = bundle_store.get_active_bundle()
-    except Exception:
-        current_revision = None
-    rollback_sha = _certificate_revision_sha(
-        bundle_store,
-        getattr(operation, "rollback_ref", ""),
-    )
-    current_revision_id = _safe_revision_id(getattr(current_revision, "revision_id", 0))
-    current_sha = str(getattr(current_revision, "bundle_sha256", "") or "").strip()
-    target_ref = str(getattr(operation, "target_ref", "") or "").strip()
-    request_hash = str(getattr(operation, "request_hash", "") or "").strip()
-    target_matches_active = bool(
-        current_revision_id
-        and target_ref
-        and str(current_revision_id) == target_ref
-        and (not request_hash or (current_sha and request_hash == current_sha))
-    )
-    return {
-        "is_global_certificate_revert": True,
-        "global_revert_current_revision": current_revision_id,
-        "global_revert_current_sha": current_sha,
-        "global_revert_current_short_sha": _short_sha(current_sha),
-        "global_revert_target_revision": target_ref,
-        "global_revert_target_sha": request_hash,
-        "global_revert_target_short_sha": _short_sha(request_hash),
-        "global_revert_rollback_revision": str(
-            getattr(operation, "rollback_ref", "") or "",
-        ),
-        "global_revert_rollback_sha": rollback_sha,
-        "global_revert_rollback_short_sha": _short_sha(rollback_sha),
-        "global_revert_target_matches_active": target_matches_active,
-    }
+class _CertificateRevertContexts:
+    """Per-request global CA revert context for operation rows.
 
+    Every certificate-revision row compares against the same active bundle and
+    rows often share rollback revisions, so the lookups are made once per
+    rendered list instead of once per row (the ledger is polled every few
+    seconds from every open Admin UI tab).
+    """
 
-def _operation_global_certificate_context(
-    operation: Any,
-    bundle_store: Any | None = None,
-) -> dict[str, Any]:
-    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
-        return {"is_global_certificate_revert": False}
-    if bundle_store is None:
-        bundle_store = get_certificate_bundles()
-    return _certificate_global_revert_context(operation, bundle_store)
+    _UNSET: Any = object()
+
+    def __init__(self) -> None:
+        self._bundle_store: Any | None = None
+        self._active_revision: Any = self._UNSET
+        self._rollback_sha: dict[str, str] = {}
+
+    def _store(self) -> Any:
+        if self._bundle_store is None:
+            self._bundle_store = get_certificate_bundles()
+        return self._bundle_store
+
+    def _active(self) -> Any | None:
+        if self._active_revision is self._UNSET:
+            try:
+                self._active_revision = self._store().get_active_bundle()
+            except Exception:
+                self._active_revision = None
+        return self._active_revision
+
+    def _sha_for(self, revision_id: object) -> str:
+        key = str(revision_id or "")
+        if key not in self._rollback_sha:
+            self._rollback_sha[key] = _certificate_revision_sha(
+                self._store(), revision_id
+            )
+        return self._rollback_sha[key]
+
+    def context(self, operation: Any) -> dict[str, Any]:
+        if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
+            return {"is_global_certificate_revert": False}
+        current_revision = self._active()
+        rollback_ref = getattr(operation, "rollback_ref", "")
+        rollback_sha = self._sha_for(rollback_ref)
+        current_revision_id = _safe_revision_id(
+            getattr(current_revision, "revision_id", 0)
+        )
+        current_sha = str(getattr(current_revision, "bundle_sha256", "") or "").strip()
+        target_ref = str(getattr(operation, "target_ref", "") or "").strip()
+        request_hash = str(getattr(operation, "request_hash", "") or "").strip()
+        target_matches_active = bool(
+            current_revision_id
+            and target_ref
+            and str(current_revision_id) == target_ref
+            and (not request_hash or (current_sha and request_hash == current_sha))
+        )
+        return {
+            "is_global_certificate_revert": True,
+            "global_revert_current_revision": current_revision_id,
+            "global_revert_current_sha": current_sha,
+            "global_revert_current_short_sha": _short_sha(current_sha),
+            "global_revert_target_revision": target_ref,
+            "global_revert_target_sha": request_hash,
+            "global_revert_target_short_sha": _short_sha(request_hash),
+            "global_revert_rollback_revision": str(rollback_ref or ""),
+            "global_revert_rollback_sha": rollback_sha,
+            "global_revert_rollback_short_sha": _short_sha(rollback_sha),
+            "global_revert_target_matches_active": target_matches_active,
+        }
 
 
 def _registered_certificate_operation_proxy_ids(proxies: Iterable[Any]) -> list[str]:
@@ -961,21 +978,15 @@ def _set_operation_row_attr(row: Any, key: str, value: Any) -> None:
 
 
 def _operation_template_rows(operations: list[Any]) -> list[Any]:
-    bundle_store = None
+    contexts = _CertificateRevertContexts()
     rows = []
     for operation in operations:
         if callable(getattr(operation, "to_dict", None)):
             row = SimpleNamespace(**operation.to_dict())
         else:
             row = operation
-        if str(getattr(row, "rollback_kind", "") or "") == "certificate_revision":
-            if bundle_store is None:
-                bundle_store = get_certificate_bundles()
-            context = _operation_global_certificate_context(row, bundle_store)
-            for key, value in context.items():
-                _set_operation_row_attr(row, key, value)
-        else:
-            _set_operation_row_attr(row, "is_global_certificate_revert", False)
+        for key, value in contexts.context(row).items():
+            _set_operation_row_attr(row, key, value)
         _set_operation_row_attr(
             row,
             "detail",
@@ -998,7 +1009,7 @@ _OPERATION_API_GLOBAL_CERTIFICATE_CONTEXT_FIELDS = {
 
 
 def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
-    bundle_store = None
+    contexts = _CertificateRevertContexts()
     rows: list[dict[str, Any]] = []
     for operation in operations:
         if callable(getattr(operation, "to_dict", None)):
@@ -1011,12 +1022,7 @@ def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
         if "detail" in row:
             row["detail"] = redact_sensitive_text(row.get("detail") or "")
         if str(row.get("rollback_kind") or "") == "certificate_revision":
-            if bundle_store is None:
-                bundle_store = get_certificate_bundles()
-            context = _operation_global_certificate_context(
-                SimpleNamespace(**row),
-                bundle_store,
-            )
+            context = contexts.context(SimpleNamespace(**row))
             row.update(
                 {
                     key: value
@@ -6810,6 +6816,7 @@ def api_operations():
             },
         ), 200
     except Exception as exc:
+        app.logger.exception("Operation ledger API read failed")
         return jsonify(
             {
                 "ok": False,
@@ -6818,7 +6825,7 @@ def api_operations():
                 "counts": {},
                 "error": public_error_message(exc),
             },
-        ), 200
+        ), 503
 
 
 @app.route("/operations/<int:operation_id>/revert", methods=["POST"])

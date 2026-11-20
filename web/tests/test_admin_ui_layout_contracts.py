@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STYLE = REPO_ROOT / "web" / "static" / "style.css"
 TEMPLATES = REPO_ROOT / "web" / "templates"
+STATIC = REPO_ROOT / "web" / "static"
 
 
 def test_card_split_widths_are_opt_in_layouts() -> None:
@@ -478,3 +479,20 @@ def test_static_templates_avoid_duplicate_literal_ids() -> None:
         ids = re.findall(r'id="([^"]+)"', html)
         duplicates = {value for value in ids if ids.count(value) > 1}
         assert duplicates <= allowed_dynamic_duplicates, template.name
+
+
+def test_operation_revert_confirmation_and_timing_match_spa_rows() -> None:
+    html = (TEMPLATES / "operations.html").read_text(encoding="utf-8")
+    js = (STATIC / "spa.js").read_text(encoding="utf-8")
+
+    assert (
+        'data-confirm-message="Revert failed operation #{{ op.operation_id }}?"' in html
+    )
+    assert (
+        'data-confirm-message="Revert global CA from failed operation '
+        '#{{ op.operation_id }} for all registered proxies?"' in html
+    )
+    assert "Created {{ op.created_ts|datetimeformat }}" in html
+    assert "formatUtcTimestamp(operation.created_ts)" in js
+    assert "formatUtcTimestamp(operation.completed_ts)" in js
+    assert "if (!data || data.ok === false) return;" in js

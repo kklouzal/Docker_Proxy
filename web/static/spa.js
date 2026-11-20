@@ -384,6 +384,15 @@
     });
   };
 
+  // Mirrors the server-side ``datetimeformat`` filter (UTC, second precision).
+  const formatUtcTimestamp = (value) => {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) return '';
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 19).replace('T', ' ');
+  };
+
   const renderOperationRow = (operation) => {
     const row = document.createElement('article');
     row.className = 'operation-row';
@@ -427,6 +436,15 @@
       evidence.textContent = ` Failed target revision ${operation.global_revert_target_revision || 'unknown'} (requested hash ${operation.global_revert_target_short_sha || 'unknown'}); current active revision ${operation.global_revert_current_revision || 'unknown'} (current hash ${operation.global_revert_current_short_sha || 'unknown'}); rollback target revision ${operation.global_revert_rollback_revision || 'unknown'} (target hash ${operation.global_revert_rollback_short_sha || 'unknown'}).`;
       warning.append(warningTitle, context, evidence);
       main.appendChild(warning);
+    }
+
+    const created = formatUtcTimestamp(operation.created_ts);
+    if (created) {
+      const completed = formatUtcTimestamp(operation.completed_ts);
+      const timing = document.createElement('p');
+      timing.className = 'small muted';
+      timing.textContent = `Created ${created}${completed ? ` · Completed ${completed}` : ''}`;
+      main.appendChild(timing);
     }
 
     const actions = document.createElement('div');
@@ -522,6 +540,7 @@
       if (!response.ok) return;
       const data = await response.json();
       if (controller.signal.aborted || requestId !== operationPollRequestId || document.hidden) return;
+      if (!data || data.ok === false) return;
       if (String(data.proxy_id || '') !== String(activeProxyId)) return;
       if (String(document.body.dataset.activeProxyId || '') !== String(activeProxyId)) return;
       (data.operations || []).forEach((operation) => noteOperationStatus(operation, { notifyInitial: requestNotifyInitial }));

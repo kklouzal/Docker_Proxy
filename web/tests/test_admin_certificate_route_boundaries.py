@@ -2699,6 +2699,54 @@ def test_operations_api_marks_stale_certificate_revert_for_spa_and_sanitizes_det
     assert "global_revert_rollback_sha" not in row
 
 
+def test_operation_rows_resolve_certificate_revert_lookups_once_per_list(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    calls: list[tuple[str, object]] = []
+
+    class CountingBundles:
+        def get_active_bundle(self):
+            calls.append(("active", None))
+            return SimpleNamespace(revision_id=15, bundle_sha256="newer-sha")
+
+        def get_revision(self, revision_id):
+            calls.append(("revision", revision_id))
+            return SimpleNamespace(bundle_sha256=f"sha-{revision_id}")
+
+    monkeypatch.setattr(loaded.module, "get_certificate_bundles", CountingBundles)
+
+    def op(operation_id: int, rollback_ref: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            operation_id=operation_id,
+            rollback_kind="certificate_revision",
+            rollback_ref=rollback_ref,
+            target_ref="12",
+            request_hash="failed-sha",
+            detail="",
+        )
+
+    operations = [op(1, 9), op(2, 9), op(3, 8), SimpleNamespace(operation_id=4)]
+    for build_rows in (
+        loaded.module._operation_api_rows,
+        loaded.module._operation_template_rows,
+    ):
+        calls.clear()
+        rows = build_rows(operations)
+        assert sorted(calls, key=str) == [
+            ("active", None),
+            ("revision", 8),
+            ("revision", 9),
+        ]
+        flags = [
+            row["is_global_certificate_revert"]
+            if isinstance(row, dict)
+            else row.is_global_certificate_revert
+            for row in rows[:3]
+        ]
+        assert flags == [True, True, True]
+
+
 def test_operation_spa_renderer_preserves_global_certificate_revert_gate() -> None:
     spa_js = (Path(__file__).resolve().parents[1] / "static" / "spa.js").read_text()
 

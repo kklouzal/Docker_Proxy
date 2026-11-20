@@ -722,6 +722,30 @@ def test_operations_api_rejects_invalid_since_cursor_args(
     assert "non-negative integer" in data["error"]
 
 
+def test_operations_api_reports_ledger_failure_as_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class BrokenLedger:
+        def list_operations(self, *_args, **_kwargs):
+            msg = "ledger offline"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", BrokenLedger)
+
+    with admin_app.app.test_request_context("/api/operations"):
+        response, status = admin_app.api_operations()
+
+    # A non-2xx status keeps the SPA poller from replacing the rendered ledger
+    # with an empty "no operations" state during a transient outage.
+    assert status == 503
+    data = response.get_json()
+    assert data["ok"] is False
+    assert data["operations"] == []
+
+
 def test_operations_api_uses_valid_since_cursor_args(monkeypatch, tmp_path) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
 
