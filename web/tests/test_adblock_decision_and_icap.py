@@ -2152,8 +2152,9 @@ def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
     args = _parse_args([])
 
     assert args.port == 14000
-    assert args.cache_ttl == 3600
-    assert args.cache_max == 200000
+    # Malformed cache overrides fall back to the artifact settings / defaults.
+    assert args.cache_ttl is None
+    assert args.cache_max is None
     assert args.rule_cache_max == 50000
     assert args.max_request_bytes == 262144
     assert args.max_body_drain_bytes == 8388608
@@ -2294,3 +2295,49 @@ def test_important_exception_overrides_important_block(tmp_path: Path) -> None:
     plain = engine.decide("https://vip.example/plain")
     assert plain.blocked is True
     assert plain.reason == "important-rule-match"
+
+
+def test_icap_decision_cache_uses_artifact_admin_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from tools.adblock_icap_server import _decision_cache_settings, _parse_args
+
+    db_path = tmp_path / "request_lookup.sqlite"
+    monkeypatch.delenv("ADBLOCK_CACHE_TTL", raising=False)
+    monkeypatch.delenv("ADBLOCK_CACHE_MAX", raising=False)
+
+    # No published settings: built-in defaults.
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        3600,
+        200000,
+    )
+
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"cache_ttl": 120, "cache_max": 4096}),
+        encoding="utf-8",
+    )
+    # The Admin UI values published with the artifact take effect.
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        120,
+        4096,
+    )
+
+    # An explicit operator override still wins.
+    monkeypatch.setenv("ADBLOCK_CACHE_TTL", "30")
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        30,
+        4096,
+    )
+
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"cache_ttl": -5, "cache_max": True}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ADBLOCK_CACHE_TTL")
+    assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
+        3600,
+        200000,
+    )

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
+import json
 import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from services.adblock_hosts import adblock_host_suffix_candidates
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
@@ -19,9 +21,6 @@ from services.adblock_patterns import (
 )
 from services.adblock_patterns import abp_to_regex as _abp_to_regex
 from services.domain_normalization import registrable_domain_start
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _RESOURCE_EXTENSIONS = {
     "font": {".eot", ".otf", ".ttf", ".woff", ".woff2"},
@@ -67,6 +66,40 @@ SUPPORTED_REQUEST_METHODS = frozenset(
         "PUT",
     },
 )
+
+
+# Bounds enforced by AdblockStore.set_shared_settings for the Admin UI values.
+_MAX_ARTIFACT_CACHE_TTL_SECONDS = 7 * 24 * 3600
+_MAX_ARTIFACT_CACHE_ENTRIES = 1_000_000
+
+
+def artifact_decision_cache_settings(
+    db_path: str | Path,
+) -> tuple[int | None, int | None]:
+    """Return the Admin UI cache TTL/size published beside the lookup DB.
+
+    The artifact's ``settings.json`` carries the shared ``cache_ttl`` and
+    ``cache_max`` values; a missing file or value yields ``None`` so callers
+    keep their configured defaults.
+    """
+    settings_path = Path(db_path).parent / "settings.json"
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+
+    def bounded(key: str, maximum: int) -> int | None:
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 0 <= value <= maximum else None
+
+    return (
+        bounded("cache_ttl", _MAX_ARTIFACT_CACHE_TTL_SECONDS),
+        bounded("cache_max", _MAX_ARTIFACT_CACHE_ENTRIES),
+    )
 
 
 @dataclass(frozen=True)
