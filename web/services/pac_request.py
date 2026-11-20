@@ -27,7 +27,7 @@ from services.url_validation import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 PAC_HOST_PLACEHOLDER = "__PAC_PROXY_HOST__"
 
@@ -142,6 +142,35 @@ def calculate_pac_state_sha(
     return digest.hexdigest()
 
 
+def render_pac_manifest_text(manifest: Mapping[str, object]) -> str:
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+
+
+def calculate_pac_manifest_state_sha(
+    manifest: Mapping[str, object],
+    files: Mapping[str, str],
+) -> str:
+    """Return the state SHA for PAC files plus their manifest.
+
+    The manifest is hashed with an empty ``state_sha256`` because the SHA is
+    written into the published manifest afterwards; the renderer and the
+    serving cache both derive the marker through this function.
+    """
+    manifest_for_hash = dict(manifest)
+    manifest_for_hash["state_sha256"] = ""
+    rendered_files = [
+        RenderedPacFile(relative_path=path, content=content)
+        for path, content in files.items()
+    ]
+    rendered_files.append(
+        RenderedPacFile(
+            relative_path=PAC_MANIFEST_FILENAME,
+            content=render_pac_manifest_text(manifest_for_hash),
+        ),
+    )
+    return calculate_pac_state_sha(rendered_files)
+
+
 def _safe_pac_state_relative_path(value: object) -> str:
     candidate = str(value or "").strip().replace("\\", "/")
     if not candidate or candidate.startswith("/"):
@@ -157,12 +186,10 @@ def _safe_pac_state_relative_path(value: object) -> str:
     return rel_path
 
 
-def _safe_manifest_relative_path(value: object) -> str:
-    return _safe_pac_state_relative_path(value)
-
-
 def _manifest_fallback_file(manifest: dict[str, object]) -> str:
-    return _safe_manifest_relative_path(manifest.get("fallback_file")) or "fallback.pac"
+    return (
+        _safe_pac_state_relative_path(manifest.get("fallback_file")) or "fallback.pac"
+    )
 
 
 def _manifest_profile_id(value: object) -> int | None:
@@ -210,7 +237,7 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         if not isinstance(entry, dict):
             continue
         client_cidr = str(entry.get("client_cidr") or "").strip()
-        file_name = _safe_manifest_relative_path(entry.get("file"))
+        file_name = _safe_pac_state_relative_path(entry.get("file"))
         if not file_name:
             continue
         profile_id = _manifest_profile_id(entry.get("profile_id"))
@@ -257,10 +284,6 @@ def substitute_request_host(content: str, request_host: str) -> str:
 
 def _has_unsafe_url_text(value: str) -> bool:
     return has_url_whitespace_or_control_chars(value)
-
-
-def _has_unsafe_query_text(value: str) -> bool:
-    return has_ascii_control_chars(value)
 
 
 _MAX_PERCENT_DECODE_PASSES = 8
@@ -313,7 +336,7 @@ def _safe_repeatedly_decoded_query(query: str) -> bool:
     decoded_query = _bounded_repeated_unquote(query)
     if decoded_query is None:
         return False
-    return "\\" not in decoded_query and not _has_unsafe_query_text(decoded_query)
+    return "\\" not in decoded_query and not has_ascii_control_chars(decoded_query)
 
 
 def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:

@@ -1150,12 +1150,12 @@ def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
         pac_renderer.RenderedPacFile(relative_path="manifest.json", content="changed"),
     )
 
-    assert pac_renderer.calculate_pac_state_sha(
+    assert pac_request.calculate_pac_state_sha(
         files_a
-    ) == pac_renderer.calculate_pac_state_sha(files_b)
-    assert pac_renderer.calculate_pac_state_sha(
+    ) == pac_request.calculate_pac_state_sha(files_b)
+    assert pac_request.calculate_pac_state_sha(
         files_a
-    ) != pac_renderer.calculate_pac_state_sha(files_c)
+    ) != pac_request.calculate_pac_state_sha(files_c)
 
 
 def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback() -> (
@@ -2058,7 +2058,7 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
     monkeypatch.setattr(
         pac_renderer,
         "resolve_proxy_pac_target",
-        lambda _proxy_id=None: pac_renderer.ProxyPacTarget(
+        lambda _proxy_id=None, **_stores: pac_renderer.ProxyPacTarget(
             proxy_id="default",
             public_host="proxy.example",
             pac_scheme="http",

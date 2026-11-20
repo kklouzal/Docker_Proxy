@@ -14,9 +14,9 @@ from services.pac_request import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
-    RenderedPacFile,
     _safe_decoded_path_segments,
-    calculate_pac_state_sha,
+    _safe_pac_state_relative_path,
+    calculate_pac_manifest_state_sha,
     normalize_public_pac_path,
     select_manifest_file,
     substitute_request_host,
@@ -296,27 +296,11 @@ def _request_query_text(query_string: object | None) -> str:
     return str(query_string)
 
 
-def _safe_manifest_file_path(value: object) -> str:
-    candidate = str(value or "").strip().replace("\\", "/")
-    if not candidate or candidate.startswith("/"):
-        return ""
-    parts = candidate.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        return ""
-    first_segment = parts[0]
-    if ":" in first_segment:
-        return ""
-    rel_path = os.path.normpath(candidate).replace("\\", "/")
-    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
-        return ""
-    return rel_path
-
-
 def _safe_manifest_file(
     root: Path,
     rel_path: object,
 ) -> tuple[str, Path] | tuple[str, None]:
-    safe_path = _safe_manifest_file_path(rel_path)
+    safe_path = _safe_pac_state_relative_path(rel_path)
     if not safe_path:
         return "", None
     try:
@@ -326,45 +310,6 @@ def _safe_manifest_file(
     except Exception:
         return "", None
     return safe_path, file_path
-
-
-def _is_rendered_state_sha(value: str) -> bool:
-    candidate = str(value or "").strip().lower()
-    return len(candidate) == 64 and all(ch in "0123456789abcdef" for ch in candidate)
-
-
-def _materialized_state_sha_matches(
-    *,
-    manifest: dict[str, object],
-    files: dict[str, str],
-    state_sha: str,
-) -> bool:
-    # build_proxy_pac_state hashes the manifest before state_sha256 is filled,
-    # then writes the populated manifest and a marker file.  Recompute the same
-    # hash when a real renderer SHA is present so the runtime cache cannot serve
-    # a partially-written or tampered file set just because the marker and
-    # manifest agree with each other.
-    manifest_for_hash = dict(manifest)
-    manifest_for_hash["state_sha256"] = ""
-    manifest_text_for_hash = (
-        json.dumps(
-            manifest_for_hash,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
-    files_for_hash = [
-        RenderedPacFile(relative_path=path, content=content)
-        for path, content in sorted(files.items())
-    ]
-    files_for_hash.append(
-        RenderedPacFile(
-            relative_path=PAC_MANIFEST_FILENAME,
-            content=manifest_text_for_hash,
-        ),
-    )
-    return calculate_pac_state_sha(files_for_hash) == state_sha
 
 
 def default_pac_bytes(request_host: str) -> bytes:
@@ -466,7 +411,7 @@ class LocalPacCache:
     def _manifest_pac_file_candidates(
         self, manifest: dict[str, object]
     ) -> tuple[str, ...]:
-        fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
+        fallback_file = _safe_pac_state_relative_path(manifest.get("fallback_file"))
         if not fallback_file:
             fallback_file = "fallback.pac"
         candidates = {fallback_file}
@@ -475,7 +420,7 @@ class LocalPacCache:
             for entry in profiles:
                 if not isinstance(entry, dict):
                     continue
-                path = _safe_manifest_file_path(entry.get("file"))
+                path = _safe_pac_state_relative_path(entry.get("file"))
                 if path:
                     candidates.add(path)
         return tuple(sorted(candidates))
@@ -574,19 +519,17 @@ class LocalPacCache:
                 state_signatures = final_state_signatures
                 continue
 
-            if _is_rendered_state_sha(
-                state_sha
-            ) and not _materialized_state_sha_matches(
-                manifest=manifest,
-                files=files,
-                state_sha=state_sha,
-            ):
+            # build_proxy_pac_state derives the marker from every rendered
+            # file plus the manifest. Recompute it so a partially written or
+            # altered file set is never served just because the marker and
+            # manifest agree with each other.
+            if calculate_pac_manifest_state_sha(manifest, files) != state_sha:
                 return self._clear_locked(
                     state_signatures=state_signatures,
                     reason="PAC materialized files do not match the state marker.",
                 )
 
-            self._state_sha = state_sha or str(manifest.get("state_sha256") or "")
+            self._state_sha = state_sha
             self._manifest = manifest
             self._files = files
             self._state_signatures = state_signatures
@@ -651,10 +594,12 @@ class LocalPacCache:
         with self._lock:
             if not self._load_locked():
                 return None
-            selected = _safe_manifest_file_path(
+            selected = _safe_pac_state_relative_path(
                 select_manifest_file(self._manifest, client_ip)
             )
-            fallback = _safe_manifest_file_path(self._manifest.get("fallback_file"))
+            fallback = _safe_pac_state_relative_path(
+                self._manifest.get("fallback_file")
+            )
             if not fallback:
                 fallback = "fallback.pac"
             content = self._files.get(selected) or self._files.get(fallback)

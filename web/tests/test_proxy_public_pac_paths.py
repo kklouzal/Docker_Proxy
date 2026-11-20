@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,27 +8,39 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _write_verified_state(
+    pac_dir: Path,
+    manifest: dict[str, object],
+    files: dict[str, str],
+) -> None:
+    from services.pac_request import (  # type: ignore
+        calculate_pac_manifest_state_sha,
+        render_pac_manifest_text,
+    )
+
+    pac_dir.mkdir(exist_ok=True)
+    state_sha = calculate_pac_manifest_state_sha(manifest, files)
+    for rel_path, content in files.items():
+        (pac_dir / rel_path).write_text(content, encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        render_pac_manifest_text({**manifest, "state_sha256": state_sha}),
+        encoding="utf-8",
+    )
+    (pac_dir / ".state-sha256").write_text(state_sha + "\n", encoding="utf-8")
+
+
 def _write_pac_artifacts(
     pac_dir: Path,
     *,
     public_pac_path: str | None = None,
     public_pac_url: str | None = None,
 ) -> None:
-    pac_dir.mkdir()
-    manifest = {
-        "fallback_file": "fallback.pac",
-        "state_sha256": "state-one",
-    }
+    manifest: dict[str, object] = {"fallback_file": "fallback.pac"}
     if public_pac_path is not None:
         manifest["public_pac_path"] = public_pac_path
     if public_pac_url is not None:
         manifest["public_pac_url"] = public_pac_url
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        json.dumps(manifest),
-        encoding="utf-8",
-    )
-    (pac_dir / "fallback.pac").write_text("PAC __PAC_PROXY_HOST__", encoding="utf-8")
+    _write_verified_state(pac_dir, manifest, {"fallback.pac": "PAC __PAC_PROXY_HOST__"})
 
 
 @pytest.fixture
@@ -234,20 +245,21 @@ def test_public_listener_rejects_manifest_backslash_traversal(
         "PAC __PAC_PROXY_HOST__ outside",
         encoding="utf-8",
     )
-    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
-    (pac_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "fallback_file": r"subdir\..\..\escape.pac",
-                "public_pac_path": "/proxy.pac",
-                "state_sha256": "state-one",
-            },
-        ),
-        encoding="utf-8",
+    # The verified state holds only fallback.pac; reading the traversal target
+    # would add a file outside that state and fail verification.
+    _write_verified_state(
+        pac_dir,
+        {
+            "fallback_file": "fallback.pac",
+            "public_pac_path": "/proxy.pac",
+            "profiles": [
+                {"client_cidr": "0.0.0.0/0", "file": r"subdir\..\..\escape.pac"},
+            ],
+        },
+        {"fallback.pac": "PAC __PAC_PROXY_HOST__"},
     )
     client = public_pac_client(pac_dir)
     response = client.get("/proxy.pac", base_url="http://public-proxy.example")
 
     assert response.status_code == 200
-    assert b"outside" not in response.data
-    assert b"FindProxyForURL" in response.data
+    assert response.data == b"PAC public-proxy.example"
