@@ -16,6 +16,7 @@ from services.pac_request import (
     PAC_STATE_SHA_FILENAME,
     _safe_decoded_path_segments,
     _safe_pac_state_relative_path,
+    _valid_proxy_dns_host,
     calculate_pac_manifest_state_sha,
     normalize_public_pac_path,
     select_manifest_file,
@@ -141,30 +142,14 @@ def _valid_authority_port(value: str) -> bool:
     return 1 <= port <= 65535
 
 
-def _valid_dns_host(value: str) -> bool:
-    candidate = value.rstrip(".").lower()
-    if not candidate or len(candidate) > 253:
-        return False
-    labels = candidate.split(".")
-    if len(labels) < 2:
-        return False
-    return not any(
-        not label
-        or len(label) > 63
-        or not ("a" <= label[0] <= "z" or "0" <= label[0] <= "9")
-        or not ("a" <= label[-1] <= "z" or "0" <= label[-1] <= "9")
-        or any(not ("a" <= ch <= "z" or "0" <= ch <= "9" or ch == "-") for ch in label)
-        for label in labels
-    )
-
-
 def _normalize_request_authority_host(value: str) -> str:
     try:
         parsed_ip = ipaddress.ip_address(value)
     except ValueError:
         if (
             is_ambiguous_ipv4_like_host(value)
-            or not _valid_dns_host(value)
+            # Single-label request hosts are rejected deliberately (6f8c67a).
+            or not _valid_proxy_dns_host(value, require_dot=True)
             or _is_reserved_public_dns_host(value)
         ):
             return ""

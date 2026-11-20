@@ -94,14 +94,6 @@ def _normalize_domain(domain: str) -> tuple[str | None, str]:
     return (f"*.{d}" if wildcard else d), ""
 
 
-def _ordered_unique(values: list[str]) -> tuple[str, ...]:
-    ordered: list[str] = []
-    for value in values:
-        if value not in ordered:
-            ordered.append(value)
-    return tuple(ordered)
-
-
 def _normalize_client_cidr(cidr: str) -> tuple[str | None, str]:
     c = (cidr or "").strip()
     if not c:
@@ -480,14 +472,14 @@ class PacProfilesStore:
         ).fetchall()
         return [int(row["id"]) for row in rows]
 
-    def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
-        ordered_ids = self._ordered_backup_proxy_ids(conn, proxy_id)
-        for idx, proxy_id_value in enumerate(ordered_ids, start=1):
+    def _write_backup_proxy_positions(
+        self, conn, proxy_id: str, ordered_ids: list[int]
+    ) -> None:
+        for idx, backup_proxy_id in enumerate(ordered_ids, start=1):
             conn.execute(
                 "UPDATE pac_backup_proxies SET position=%s WHERE id=%s AND proxy_id=%s",
-                (idx, proxy_id_value, proxy_id),
+                (idx, backup_proxy_id, proxy_id),
             )
-        return ordered_ids
 
     def delete_backup_proxy(self, backup_proxy_id: int) -> bool:
         self.init_db()
@@ -506,7 +498,11 @@ class PacProfilesStore:
                     "DELETE FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s",
                     (bid, proxy_id),
                 )
-                self._resequence_backup_proxies(conn, proxy_id)
+                self._write_backup_proxy_positions(
+                    conn,
+                    proxy_id,
+                    self._ordered_backup_proxy_ids(conn, proxy_id),
+                )
                 return True
 
     def move_backup_proxy(self, backup_proxy_id: int, direction: str) -> bool:
@@ -533,11 +529,7 @@ class PacProfilesStore:
                     )
                 else:
                     return False
-                for idx, proxy_id_value in enumerate(ordered_ids, start=1):
-                    conn.execute(
-                        "UPDATE pac_backup_proxies SET position=%s WHERE id=%s AND proxy_id=%s",
-                        (idx, proxy_id_value, proxy_id),
-                    )
+                self._write_backup_proxy_positions(conn, proxy_id, ordered_ids)
                 return True
 
     def set_direct_enabled(self, enabled: bool) -> PacBooleanMutation:
@@ -572,7 +564,6 @@ class PacProfilesStore:
         client_cidr: str,
         direct_domains_text: str,
         direct_dst_nets_text: str,
-        **_ignored: object,
     ) -> PacProfileMutation:
         self.init_db()
 
@@ -615,9 +606,6 @@ class PacProfilesStore:
             if c not in nets:
                 nets.append(c)
 
-        domain_key = _ordered_unique(domains)
-        net_key = _ordered_unique(nets)
-
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
@@ -655,8 +643,8 @@ class PacProfilesStore:
                     changed = not (
                         str(existing["name"] or "") == nm
                         and str(existing["client_cidr"] or "") == (cidr_norm or "")
-                        and tuple(sorted(existing_domains)) == tuple(sorted(domain_key))
-                        and tuple(sorted(existing_nets)) == tuple(sorted(net_key))
+                        and sorted(existing_domains) == sorted(domains)
+                        and sorted(existing_nets) == sorted(nets)
                     )
                     if not changed:
                         return PacProfileMutation(True, "", pid, False)

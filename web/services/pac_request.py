@@ -72,11 +72,13 @@ def _request_host_only(raw_host: str) -> str:
     return candidate
 
 
-def _valid_proxy_dns_host(value: str) -> bool:
+def _valid_proxy_dns_host(value: str, *, require_dot: bool = False) -> bool:
     candidate = value.rstrip(".").lower()
     if not candidate or len(candidate) > 253:
         return False
     labels = candidate.split(".")
+    if require_dot and len(labels) < 2:
+        return False
     return not any(
         not label
         or len(label) > 63
