@@ -51,10 +51,6 @@ def _resolve_host_port_override(
     return resolved_host, resolved_port
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    return security_env_bool(name, default=default)
-
-
 def _proxy_http_port() -> int:
     return resolve_tcp_port(os.environ.get("SQUID_HTTP_PORT") or 3128, 3128)
 
@@ -132,9 +128,9 @@ def check_forwarding_path_health(
         timeout=timeout,
         error_formatter=error_formatter,
     )
-    clamav_required = _env_bool("CLAMAV_REQUIRED") or _env_bool(
-        "FILE_SECURITY_AV_REQUIRED",
-    )
+    clamav_required = security_env_bool(
+        "CLAMAV_REQUIRED", default=False
+    ) or security_env_bool("FILE_SECURITY_AV_REQUIRED", default=False)
     av_icap_ok = bool((av_icap_health or {}).get("ok"))
     status = annotate_service_target(
         result,

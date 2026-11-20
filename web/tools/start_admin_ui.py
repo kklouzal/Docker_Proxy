@@ -17,6 +17,8 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from services.runtime_helpers import normalize_config_bool  # ruff: ignore[module-import-not-at-top-of-file]
+
 DEFAULT_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"
 DEFAULT_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"
 GUNICORN_NUMERIC_DEFAULTS = {
@@ -99,10 +101,6 @@ def resolve_admin_ui_bind(environ: Mapping[str, str]) -> AdminUiBindConfig:
     health_host = "127.0.0.1" if host in {"", BIND_ALL_IPV4, "*"} else host
     gunicorn_host = BIND_ALL_IPV4 if host in {"", "*"} else host
     return AdminUiBindConfig(f"{gunicorn_host}:{port}", health_host, port)
-
-
-def _truthy(value: object | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def _log(message: str) -> None:
@@ -234,7 +232,7 @@ def run_when_mysql_ready[T](
 def _env_https_config(
     environ: Mapping[str, str],
 ) -> AdminUiHttpsRuntimeConfig:
-    enabled = _truthy(environ.get("ADMIN_UI_HTTPS_ENABLED"))
+    enabled = normalize_config_bool(environ.get("ADMIN_UI_HTTPS_ENABLED"))
     certfile = (environ.get("ADMIN_UI_SSL_CERTFILE") or "").strip()
     keyfile = (environ.get("ADMIN_UI_SSL_KEYFILE") or "").strip()
     if enabled:

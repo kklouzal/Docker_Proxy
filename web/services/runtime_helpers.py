@@ -59,6 +59,14 @@ def normalize_icap_worker_count(value: object) -> int:
     return max(1, min(workers, 4))
 
 
+def env_bool(name: str, *, default: bool) -> bool:
+    """Parse an operational environment flag; empty or unknown keeps ``default``.
+
+    Security-mode flags use ``security_env_bool`` instead, which fails closed.
+    """
+    return normalize_config_bool(os.environ.get(name), default=default)
+
+
 def security_env_bool(name: str, *, default: bool) -> bool:
     """Parse a security-mode environment flag without weakening on typos."""
     value = (os.environ.get(name) or "").strip().lower()

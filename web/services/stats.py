@@ -13,9 +13,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import (
+    env_bool,
+    read_bounded_complete_lines,
+    split_squid_tsv,
+)
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
-from services.runtime_helpers import read_bounded_complete_lines, split_squid_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +58,6 @@ class DiskUsage:
     total_bytes: int
     used_bytes: int
     free_bytes: int
-
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    v = (os.environ.get(name, default) or "").strip().lower()
-    return v in {"1", "true", "yes", "on"}
 
 
 def _read_text(path: str) -> str:
@@ -237,7 +236,7 @@ def get_squid_mgr_text(
     # Opt-in: cachemgr polling can be surprisingly expensive and has been observed
     # to trigger forwarding-loop warnings and Squid instability in some setups.
     # Default is disabled; enable explicitly if you want cachemgr-based stats.
-    if not _env_flag("STATS_USE_CACHEMGR", "0"):
+    if not env_bool("STATS_USE_CACHEMGR", default=False):
         return None
 
     if section not in _CACHEMGR_SECTIONS or host not in _CACHEMGR_HOSTS:
