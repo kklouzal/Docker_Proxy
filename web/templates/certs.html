@@ -127,6 +127,15 @@ window.setTimeout(function () {
                 {% if bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
             </div>
             {% endif %}
+            {% if ca_profile_issues %}
+            <div class="surface-note small text-danger" data-ca-profile-issues>
+                <div><strong>This CA does not meet the strict X.509 CA profile.</strong> Python 3.13+ and other strict TLS clients reject every site bumped with it:</div>
+                <ul>
+                    {% for issue in ca_profile_issues %}<li>{{ issue }}</li>{% endfor %}
+                </ul>
+                <div>To fix: generate a new CA below (or upload a compliant PFX), wait until every proxy reports the new revision as applied, then replace the old CA with the new <code class="mono">ca.crt</code> in client trust stores. Clients that only trust the old CA show certificate warnings until they are updated.</div>
+            </div>
+            {% endif %}
             <div class="actions">
                 <form action="{{ url_for('generate_certificate') }}" method="post">
                     {{ csrf_field() }}
