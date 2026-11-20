@@ -304,10 +304,6 @@ def test_adblock_event_insert_and_batch_use_guard_canonical_proxy(monkeypatch) -
         "raw": "raw-line",
     }
 
-    store._insert_event(conn, parsed)
-    assert conn.calls[-1][1][0] == "edge-new"
-
-    conn.calls.clear()
     monkeypatch.setattr(store, "_set_proxy_meta_values", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(store, "_prune_events", lambda *_args, **_kwargs: None)
 
@@ -355,9 +351,6 @@ def test_guarded_service_writes_reject_tombstoned_proxy(monkeypatch) -> None:
     monkeypatch.setattr(pac_store, "_connect", lambda: conn)
     monkeypatch.setattr(pol_store, "init_db", lambda: None)
     monkeypatch.setattr(pol_store, "_connect", lambda: conn)
-
-    with pytest.raises(ProxyLifecycleWriteError):
-        ad_store._insert_event(conn, {"url": "https://ads.example/"})
 
     with pytest.raises(ProxyLifecycleWriteError):
         ad_store._write_cicap_batch(conn, [{"url": "https://ads.example/"}], {})

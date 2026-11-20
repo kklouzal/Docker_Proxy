@@ -491,7 +491,3 @@ def guarded_proxy_rows(
             tuple(row_factory(decision.proxy_id, row)) for row in original_rows
         )
     return GuardedProxyBatch(decision=decision, rows=materialized)
-
-
-def is_duplicate_key_error(exc: BaseException) -> bool:
-    return mysql_error_code(exc) == 1062

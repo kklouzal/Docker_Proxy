@@ -136,15 +136,6 @@ class _AdblockArchiveBudget:
             )
             raise AdblockArtifactArchiveError(msg)
 
-    def add_materialized_bytes(self, byte_count: int) -> None:
-        self.total_declared_bytes += max(0, int(byte_count))
-        if self.total_declared_bytes > self.max_bytes:
-            msg = (
-                "Adblock artifact archive exceeded extract limit "
-                f"({self.max_bytes} bytes)."
-            )
-            raise AdblockArtifactArchiveError(msg)
-
 
 def _run_builder_mysql_operation(operation):
     return run_revision_store_transaction(

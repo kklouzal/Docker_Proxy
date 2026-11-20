@@ -700,17 +700,6 @@ class AdblockStore:
             created_ts,
         )
 
-    def _insert_event(self, conn, row: dict[str, Any]) -> None:
-        with guarded_proxy_write(conn, get_proxy_id()) as guard:
-            conn.execute(
-                """
-                INSERT IGNORE INTO adblock_events(
-                    proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, list_key, rule_id, decision_action, decision_reason, created_ts
-                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                self._event_values(guard.proxy_id, row, _now()),
-            )
-
     def _prune_events(self, conn) -> None:
         days = max(1, int(self.blocklog_retention_days or 30))
         cutoff = _now() - days * 24 * 3600
