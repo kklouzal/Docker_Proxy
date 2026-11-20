@@ -40,10 +40,6 @@ def _transient_control_plane_cause(exc: BaseException) -> BaseException | None:
     return transient_mysql_cause(exc, also=(TimeoutError,))
 
 
-def _is_transient_control_plane_failure(exc: BaseException) -> bool:
-    return _transient_control_plane_cause(exc) is not None
-
-
 def _wait_for_next_cycle(
     delay: float,
     stop_event: threading.Event,

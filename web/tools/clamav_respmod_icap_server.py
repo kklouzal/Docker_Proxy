@@ -639,22 +639,6 @@ class ClamdInstreamSession:
         return _parse_clamd_response(response)
 
 
-def scan_stream_with_clamd(
-    body: bytes,
-    *,
-    host: str,
-    port: int,
-    timeout: float = 30.0,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-) -> ClamdResult:
-    """Send body bytes to clamd using INSTREAM and parse the scan result."""
-    with ClamdInstreamSession(
-        host=host, port=port, timeout=timeout, chunk_size=chunk_size
-    ) as session:
-        session.send_chunk(body)
-        return session.finish()
-
-
 def _icap_response(
     status: str,
     headers: dict[str, str] | None = None,
@@ -684,30 +668,6 @@ def options_response() -> bytes:
             "Transfer-Preview": "*",
             "Encapsulated": "null-body=0",
         },
-    )
-
-
-def clean_response(
-    *,
-    allow_204: bool,
-    http_header: bytes,
-    body: bytes,
-) -> bytes:
-    """Build a small in-memory clean response for compatibility/tests.
-
-    The request handler uses ``_write_replay_response`` for scanned bodies so
-    configured maximum-size objects are never assembled into response bytes.
-    """
-    # Be conservative for RESPMOD clean verdicts: replaying the already-drained
-    # response body avoids Squid's late-204 backup edge cases across Preview,
-    # unknown/chunked framing, and persistent ICAP connection churn.  Fail-open
-    # paths still use 204 only when the body is complete and known backup-safe.
-    encoded = _encode_icap_body_chunk(body)
-    http_header = _http_header_for_body_replay(http_header, len(body))
-    return _icap_response(
-        "200 OK",
-        {"ISTag": ISTAG, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
-        http_header + encoded,
     )
 
 

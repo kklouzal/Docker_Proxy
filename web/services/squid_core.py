@@ -164,18 +164,6 @@ def _clamd_host_is_remote(host: object) -> bool:
     } and not value.startswith("127.")
 
 
-def _file_has_non_comment_lines(path: str) -> bool:
-    try:
-        with Path(path).open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    return True
-    except OSError:
-        return False
-    return False
-
-
 @lru_cache(maxsize=1)
 def _cached_icap_include_path() -> Path:
     return Path(
@@ -666,14 +654,8 @@ class SquidController:
             return text[: match.start()] + wanted + "\n" + text[match.start() :]
         return text.rstrip() + "\n" + wanted + "\n"
 
-    def _forwarding_canary_path(self) -> str:
-        return forwarding_canary_path()
-
-    def _forwarding_canary_port(self) -> int:
-        return forwarding_canary_port()
-
     def _forwarding_canary_access_block(self) -> str:
-        path_regex = re.escape(self._forwarding_canary_path())
+        path_regex = re.escape(forwarding_canary_path())
         return "\n".join(
             [
                 "# BEGIN SQUID-UI MANAGED FORWARDING CANARY",
@@ -682,7 +664,7 @@ class SquidController:
                 "# from using the proxy to fetch that loopback-only endpoint.",
                 "acl docker_proxy_forwarding_canary_src src 127.0.0.1/32 ::1",
                 "acl docker_proxy_forwarding_canary_dst dst 127.0.0.1/32 ::1",
-                f"acl docker_proxy_forwarding_canary_port port {self._forwarding_canary_port()}",
+                f"acl docker_proxy_forwarding_canary_port port {forwarding_canary_port()}",
                 f"acl docker_proxy_forwarding_canary_path urlpath_regex -i ^{path_regex}([?].*)?$",
                 "cache deny docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path",
                 "http_access allow docker_proxy_forwarding_canary_src docker_proxy_forwarding_canary_dst docker_proxy_forwarding_canary_port docker_proxy_forwarding_canary_path",
@@ -1630,9 +1612,6 @@ stdout_logfile_maxbytes=0
             ports.append(int(item.get("port") or 3128))
         return tuple(ports)
 
-    def _http_listener_port(self, config_text: str | None = None) -> int:
-        return self._http_listener_ports(config_text)[0]
-
     def _tcp_listener_accepts(self, port: int) -> bool:
         try:
             with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
@@ -2424,10 +2403,6 @@ stdout_logfile_maxbytes=0
         except Exception as exc:
             return False, "\n".join([*detail_parts, str(exc)]).strip()
 
-    def _get_first_cache_dir_path(self, config_text: str | None = None) -> str:
-        paths = self._get_cache_dir_paths(config_text)
-        return paths[0] if paths else "/var/spool/squid"
-
     def _get_cache_dir_paths(self, config_text: str | None = None) -> tuple[str, ...]:
         text = config_text if config_text is not None else self.get_current_config()
         paths: list[str] = []
@@ -3057,16 +3032,6 @@ stdout_logfile_maxbytes=0
                     Path(new_path).unlink()
             except OSError:
                 pass
-
-    def reload_squid(self):
-        try:
-            ok, detail = self.reconfigure_squid(timeout=15, listener_timeout=20.0)
-            encoded = str(detail or "").encode("utf-8", errors="replace")
-            return (encoded, b"") if ok else (b"", encoded)
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")
 
     def get_status(self):
         try:

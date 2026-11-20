@@ -38,7 +38,6 @@ from services.domain_normalization import (  # ruff: ignore[module-import-not-at
 )
 from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
 from services.download_safety import (  # ruff: ignore[module-import-not-at-top-of-file]
-    is_internal_host,
     open_download_url,
     validate_download_url,
 )
@@ -213,10 +212,6 @@ def _pairs_from_csv_row(
             yield d, c
 
 
-def _is_internal_host(hostname: str) -> bool:
-    return is_internal_host(hostname)
-
-
 def _validate_download_url(url: str):
     return validate_download_url(
         url,
@@ -283,50 +278,6 @@ def _download_max_bytes() -> int:
         minimum=1,
         fallback_on_out_of_range=True,
     )
-
-
-def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    _validate_download_url(url)
-
-    max_bytes = _download_max_bytes()
-
-    tmp = dest.with_suffix(dest.suffix + ".tmp")
-
-    completed = False
-    try:
-        total = 0
-        with _open_download_url(url, timeout=timeout) as r:
-            cl = r.headers.get("Content-Length")
-            if cl is not None:
-                try:
-                    content_length = int(cl)
-                except TypeError, ValueError:
-                    content_length = None
-                if content_length is not None and content_length > max_bytes:
-                    msg = f"Download too large (Content-Length={cl})."
-                    raise ValueError(msg)
-
-            with Path(tmp).open("wb") as f:
-                while True:
-                    chunk = r.read(512 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        msg = f"Download exceeded limit ({max_bytes} bytes)."
-                        raise ValueError(msg)
-                    f.write(chunk)
-
-        tmp.replace(dest)
-        completed = True
-    finally:
-        if not completed:
-            try:
-                if tmp.exists():
-                    tmp.unlink()
-            except Exception:
-                pass
 
 
 def _download_if_changed(
@@ -707,13 +658,6 @@ def _init_db(conn) -> None:
             canonical VARCHAR(128) NOT NULL
         )
         """,
-    )
-
-
-def _upsert_meta(conn, k: str, v: str) -> None:
-    conn.execute(
-        "INSERT INTO webcat_meta(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-        (k, v),
     )
 
 

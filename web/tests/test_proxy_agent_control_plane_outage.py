@@ -216,16 +216,14 @@ def test_loop_backs_off_while_pending_and_wakes_immediately(agent) -> None:
 def test_transient_classification_covers_wrapped_connectivity_and_lock_waits(
     agent,
 ) -> None:
-    assert agent._is_transient_control_plane_failure(_db_down_recovery_error())
-    assert agent._is_transient_control_plane_failure(
-        TimeoutError("Timed out waiting for MySQL advisory lock")
+    cause = agent._transient_control_plane_cause
+    assert cause(_db_down_recovery_error()) is not None
+    assert cause(TimeoutError("Timed out waiting for MySQL advisory lock")) is not None
+    assert (
+        cause(ProxyRecoveryStartupError("recovery bundle/key validation failed"))
+        is None
     )
-    assert not agent._is_transient_control_plane_failure(
-        ProxyRecoveryStartupError("recovery bundle/key validation failed")
-    )
-    assert not agent._is_transient_control_plane_failure(
-        pymysql.OperationalError(1045, "Access denied")
-    )
+    assert cause(pymysql.OperationalError(1045, "Access denied")) is None
 
 
 def test_agent_publishes_control_plane_readiness_only_after_startup(

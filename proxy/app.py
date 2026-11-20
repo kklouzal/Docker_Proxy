@@ -276,10 +276,7 @@ def manage_health() -> Any:
         }
         if full:
             return jsonify(current_runtime.collect_health(force=force)), 200
-        collector = getattr(current_runtime, "collect_navigation_health", None)
-        if collector is not None:
-            return jsonify(collector(force=force)), 200
-        return jsonify(current_runtime.collect_health(force=force)), 200
+        return jsonify(current_runtime.collect_navigation_health(force=force)), 200
     except Exception as exc:
         detail = public_error_message(exc, default="Proxy health collection failed.")
         return jsonify(
@@ -307,10 +304,7 @@ def manage_clamav_health() -> Any:
             "true",
             "yes",
         }
-        collector = getattr(current_runtime, "collect_clamav_health", None)
-        if collector is None:
-            return jsonify(current_runtime.collect_health(force=force)), 200
-        return jsonify(collector(force=force)), 200
+        return jsonify(current_runtime.collect_clamav_health(force=force)), 200
     except Exception as exc:
         detail = public_error_message(
             exc,
@@ -374,9 +368,7 @@ def manage_sync() -> Any:
 @_require_management_auth
 def manage_config_current() -> Any:
     current_runtime = _runtime()
-    reader = getattr(current_runtime, "get_current_config_text", None)
-    raw_config = reader() if callable(reader) else ""
-    config_text = str(raw_config or "")
+    config_text = str(current_runtime.get_current_config_text() or "")
     config_sha256 = ""
     if config_text:
         config_sha256 = hashlib.sha256(
@@ -385,7 +377,7 @@ def manage_config_current() -> Any:
     return jsonify(
         {
             "ok": bool(config_text.strip()),
-            "proxy_id": getattr(current_runtime, "proxy_id", ""),
+            "proxy_id": current_runtime.proxy_id,
             "config_text": config_text,
             "config_sha256": config_sha256,
             "detail": "Running Squid config returned."

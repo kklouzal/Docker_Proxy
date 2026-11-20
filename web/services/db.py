@@ -8,6 +8,7 @@ import random
 import re
 import threading
 import time
+import traceback
 from collections import UserDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
@@ -848,8 +849,45 @@ def _pool_max_idle_seconds() -> float:
     return max(1.0, min(configured, server_bound))
 
 
+def _clear_exception_frames(exc: BaseException) -> None:
+    """Drop the finished frames' locals referenced by exc and its chain.
+
+    A failed pymysql.connect raises an exception whose traceback frames hold
+    the half-built Connection and the exception itself: a reference cycle of
+    about 0.7 MiB that only the cyclic GC can free. Idle processes retrying
+    an unreachable server (reconnect probe, agent loops, ICAP helpers)
+    allocate too few objects to trigger collection, so each attempt's
+    garbage accumulated by tens of MiB during a control-plane outage.
+    Clearing the frames keeps file/line information for logging.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        traceback.clear_frames(current.__traceback__)
+        original = getattr(current, "original_exception", None)
+        pending.extend(
+            (
+                current.__cause__,
+                current.__context__,
+                original if isinstance(original, BaseException) else None,
+            )
+        )
+
+
+def pymysql_connect(**kwargs: Any) -> Any:
+    try:
+        return pymysql.connect(**kwargs)  # type: ignore[call-arg]
+    except BaseException as exc:
+        _clear_exception_frames(exc)
+        raise
+
+
 def _open_native_connection(cfg: DatabaseConfig) -> Any:
-    return pymysql.connect(  # type: ignore[call-arg]
+    return pymysql_connect(
         host=cfg.host,
         port=int(cfg.port),
         user=cfg.user,
@@ -1407,7 +1445,7 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
             return
 
         def _create_database() -> None:
-            native = pymysql.connect(  # type: ignore[call-arg]
+            native = pymysql_connect(
                 host=cfg.host,
                 port=int(cfg.port),
                 user=cfg.user,

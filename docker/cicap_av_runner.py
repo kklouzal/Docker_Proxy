@@ -481,10 +481,6 @@ def _drain_chunked_body(
     return remainder
 
 
-def _valid_chunk_token(value: bytes) -> bool:
-    return bool(value) and all(ch in _CHUNK_TCHARS for ch in value)
-
-
 def _skip_chunk_ows(line: bytes, index: int) -> int:
     while index < len(line) and line[index] in _CHUNK_OWS:
         index += 1
@@ -572,11 +568,6 @@ def _parse_chunk_line(line: bytes) -> tuple[int, set[bytes]]:
         message = "invalid ICAP preview ieof chunk extension"
         raise IcapProtocolError(message)
     return size, extensions
-
-
-def _parse_chunk_size(line: bytes) -> int:
-    size, _extensions = _parse_chunk_line(line)
-    return size
 
 
 def _validate_chunk_trailer(line: bytes) -> None:
@@ -1351,10 +1342,6 @@ def run_unavailable_placeholder(
     with _FailOpenAvServer((listen_host, listen_port), _FailOpenAvHandler) as server:
         server.fail_open = fail_open
         server.serve_forever()
-
-
-def run_fail_open_placeholder(conf_path: str, *, host: str, port: int) -> None:
-    run_unavailable_placeholder(conf_path, host=host, port=port, fail_open=True)
 
 
 def main(argv: list[str]) -> int:

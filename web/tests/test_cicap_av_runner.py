@@ -1097,7 +1097,7 @@ def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
 
     for name, line in cases:
         try:
-            runner._parse_chunk_size(line)
+            runner._parse_chunk_line(line)
         except runner.IcapProtocolError:
             pass
         else:  # pragma: no cover - regression guard should always raise
@@ -1108,8 +1108,8 @@ def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
 def test_parse_chunk_size_preserves_valid_extensions_and_ieof_case() -> None:
     runner = _load_runner()
 
-    assert runner._parse_chunk_size(b'a; foo=bar; flag; quoted="a b;c"') == 10
-    assert runner._parse_chunk_size(b"0;IEOF") == 0
+    assert runner._parse_chunk_line(b'a; foo=bar; flag; quoted="a b;c"')[0] == 10
+    assert runner._parse_chunk_line(b"0;IEOF")[0] == 0
     size, extensions = runner._parse_chunk_line(b"0;IEOF")
     assert size == 0
     assert extensions == {b"ieof"}

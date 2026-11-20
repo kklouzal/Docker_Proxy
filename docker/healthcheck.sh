@@ -1,57 +1,73 @@
 #!/bin/sh
 
-# Healthcheck script for the Squid and Flask services
+# Healthcheck script for the Squid and Flask services.
+#
+# Docker runs this with the container's configured environment, not the
+# entrypoint's: values loaded from /config/app.env and the entrypoint's
+# sanitized/derived settings (worker count, ICAP port allocation, AV/adblock
+# requirement, PAC and canary binds) would otherwise be invisible here. The
+# entrypoint records the values it handed to supervisord in
+# HEALTHCHECK_ENV_FILE, so this script checks the services that were actually
+# started instead of re-deriving them.
+#
+# Cost: one supervisorctl call (its start-up costs more CPU than all other
+# probes combined), one /proc/net listener snapshot and a few small Python
+# probes.
 
 set -eu
 
+HEALTHCHECK_ENV_FILE="${HEALTHCHECK_ENV_FILE:-/run/squid-flask-proxy/healthcheck.env}"
+SUPERVISORD_CONF=/etc/supervisord.conf
+
+if [ ! -r "$HEALTHCHECK_ENV_FILE" ]; then
+    echo "proxy entrypoint has not finished startup (${HEALTHCHECK_ENV_FILE} missing)"
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$HEALTHCHECK_ENV_FILE"
+
+SUPERVISOR_STATUS=""
+LISTEN_PORTS=""
+
+refresh_supervisor_status() {
+    # supervisorctl exits non-zero whenever any program is not RUNNING; the
+    # per-program lines are still complete, so evaluate them individually.
+    SUPERVISOR_STATUS="$(supervisorctl -c "$SUPERVISORD_CONF" status 2>/dev/null || true)"
+}
+
+supervisor_program_running() {
+    printf '%s\n' "$SUPERVISOR_STATUS" | awk -v program="$1" '
+        $1 == program && $2 == "RUNNING" { found = 1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+refresh_listen_ports() {
+    # Uppercase hex local ports of LISTEN (0A) TCP sockets, IPv4 and IPv6.
+    LISTEN_PORTS="$(awk 'FNR > 1 && $4 == "0A" { n = split($2, part, ":"); print part[n] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)"
+}
+
 has_listen_socket() {
-    PORT="$1" python3 - <<'PY'
-import os
-
-port = int(os.environ['PORT'])
-
-def has_listen_socket(path: str, port: int) -> bool:
-    try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            next(f, None)
-            for line in f:
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                local_addr = parts[1]
-                state = parts[3]
-                if state != '0A':
-                    continue
-                _addr, port_hex = local_addr.rsplit(':', 1)
-                if int(port_hex, 16) == port:
-                    return True
-    except FileNotFoundError:
-        return False
-    return False
-
-assert has_listen_socket('/proc/net/tcp', port) or has_listen_socket('/proc/net/tcp6', port)
-PY
+    port_hex="$(printf '%04X' "$1")"
+    printf '%s\n' "$LISTEN_PORTS" | grep -qx "$port_hex"
 }
 
 check_squid_http_listeners() {
-    SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PYHEALTH'
+    python3 - <<'PYHEALTH'
 import os
-from services.squid_listeners import listener_is_present, listening_endpoints, parse_squid_listeners
 
-def coerce_port(value, default):
-    try:
-        parsed = int(str(value or "").strip() or str(default))
-    except Exception:
-        parsed = int(default)
-    return parsed if 1 <= parsed <= 65535 else int(default)
+from services.squid_listeners import (
+    listener_is_present,
+    listening_endpoints,
+    parse_squid_listeners,
+)
 
-config_path = os.environ.get("SQUID_CONFIG_PATH") or "/etc/squid/squid.conf"
 try:
-    with open(config_path, "r", encoding="utf-8", errors="replace") as handle:
+    with open("/etc/squid/squid.conf", encoding="utf-8", errors="replace") as handle:
         text = handle.read()
 except FileNotFoundError:
     text = ""
-listeners = parse_squid_listeners(text, fallback_port=coerce_port(os.environ.get("SQUID_HTTP_PORT"), 3128))
+listeners = parse_squid_listeners(text, fallback_port=int(os.environ["SQUID_HTTP_PORT"]))
 endpoints = listening_endpoints()
 missing = [item for item in listeners if not listener_is_present(item, endpoints)]
 if missing:
@@ -69,189 +85,100 @@ check_icap_readiness() {
         --probe-timeout "${SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS:-0.35}"
 }
 
-forwarding_canary_port() {
+check_http_health_endpoints() {
+    # One interpreter for both listeners, with raw sockets: importing urllib
+    # costs more CPU than the probes themselves.
     python3 - <<'PY'
 import os
+import socket
 
-try:
-    port = int((os.environ.get('FORWARDING_CANARY_PORT') or '18080').strip() or '18080')
-except Exception:
-    port = 18080
-if port < 1 or port > 65535:
-    port = 18080
-print(port)
+pac_host = os.environ["PAC_HTTP_HOST"]
+if pac_host in {"0.0.0.0", "::"}:
+    pac_host = "127.0.0.1"
+targets = (
+    ("Flask management health endpoint", "127.0.0.1", 5000),
+    ("Flask public proxy health endpoint", pac_host, int(os.environ["PAC_HTTP_PORT"])),
+)
+for label, host, port in targets:
+    try:
+        with socket.create_connection((host, port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(
+                b"GET /health HTTP/1.1\r\nHost: localhost\r\n"
+                b"User-Agent: squid-flask-proxy-healthcheck\r\nConnection: close\r\n\r\n"
+            )
+            status_line = sock.recv(64).split(b"\r\n", 1)[0]
+    except OSError as exc:
+        raise SystemExit(f"{label} failed: {exc}") from None
+    parts = status_line.split()
+    if len(parts) < 2 or not parts[0].startswith(b"HTTP/") or parts[1] != b"200":
+        rendered = status_line.decode("ascii", "replace") or "no HTTP status"
+        raise SystemExit(f"{label} failed: {rendered}")
 PY
 }
 
 check_squid_forwarding_path() {
-    SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
-import ipaddress
+    python3 - <<'PY'
 import json
 import os
 import socket
 
+from services.forwarding_canary_config import (
+    forwarding_canary_listener_host,
+    forwarding_canary_port,
+    forwarding_canary_target_url,
+)
+from services.squid_listeners import parse_squid_listeners
 
-def logical_lines(text: str):
-    pending = []
-    for raw in text.splitlines():
-        pending.append(raw)
-        if raw.rstrip().endswith('\\'):
-            continue
-        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
-        pending = []
-    if pending:
-        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
+try:
+    with open("/etc/squid/squid.conf", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+except FileNotFoundError:
+    text = ""
+ports = []
+for listener in parse_squid_listeners(text, fallback_port=int(os.environ["SQUID_HTTP_PORT"])):
+    if listener["mode"] == "explicit" and listener["port"] not in ports:
+        ports.append(listener["port"])
 
-
-def parse_port(token: str):
-    token = (token or '').strip()
-    if token.isdigit():
-        return int(token)
-    if token.startswith('[') and ']:' in token:
-        candidate = token.rsplit(':', 1)[1]
-    elif ':' in token:
-        candidate = token.rsplit(':', 1)[1]
-    else:
-        return None
-    return int(candidate) if candidate.isdigit() else None
-
-
-def response_ports(config_path: str):
+target_url = f"{forwarding_canary_target_url()}?probe=squid-respmod"
+host_header = f"{forwarding_canary_listener_host()}:{forwarding_canary_port()}"
+last_error = "no explicit http_port listener"
+for port in ports:
     try:
-        with open(config_path, 'r', encoding='utf-8', errors='replace') as handle:
-            text = handle.read()
-    except FileNotFoundError:
-        text = ''
-    ports = []
-    for logical in logical_lines(text):
-        stripped = logical.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        lower = stripped.lower()
-        if not lower.startswith('http_port '):
-            continue
-        parts = stripped.split()
-        if len(parts) < 2:
-            continue
-        modes = {part.strip().lower() for part in parts[2:]}
-        if {'intercept', 'tproxy'} & modes:
-            continue
-        port = parse_port(parts[1])
-        if port and 1 <= port <= 65535 and port not in ports:
-            ports.append(port)
-    try:
-        fallback = int((os.environ.get('SQUID_HTTP_PORT') or '3128').strip() or '3128')
-    except Exception:
-        fallback = 3128
-    if fallback < 1 or fallback > 65535:
-        fallback = 3128
-    return ports or [fallback]
-
-
-def forwarding_canary_url() -> str:
-    host = (os.environ.get('FORWARDING_CANARY_HOST') or '127.0.0.1').strip() or '127.0.0.1'
-    normalized_host = host.strip('[]')
-    if normalized_host.lower() == 'localhost':
-        host = 'localhost'
-    else:
-        try:
-            address = ipaddress.ip_address(normalized_host)
-        except ValueError:
-            address = None
-        if not (address is not None and address.version == 4 and address.is_loopback):
-            host = '127.0.0.1'
-        else:
-            host = normalized_host
-    display_host = f'[{host}]' if ':' in host and not host.startswith('[') else host
-    try:
-        port = int((os.environ.get('FORWARDING_CANARY_PORT') or '18080').strip() or '18080')
-    except Exception:
-        port = 18080
-    if port < 1 or port > 65535:
-        port = 18080
-    path = os.environ.get('FORWARDING_CANARY_PATH') or '/__docker_proxy_forwarding_canary'
-    if (
-        not path.startswith('/')
-        or '?' in path
-        or '#' in path
-        or '\\' in path
-        or '//' in path
-        or any(
-            char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-            for char in path
-        )
-    ):
-        path = '/__docker_proxy_forwarding_canary'
-    return f'http://{display_host}:{port}{path}?probe=squid-respmod'
-
-
-target_url = forwarding_canary_url()
-last_error = ''
-for port in response_ports(os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/squid.conf'):
-    try:
-        with socket.create_connection(('127.0.0.1', int(port)), timeout=2.0) as sock:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=2.0) as sock:
             sock.settimeout(2.0)
             sock.sendall(
                 (
-                    f'GET {target_url} HTTP/1.1\r\n'
-                    'Host: 127.0.0.1:18080\r\n'
-                    'User-Agent: squid-flask-proxy-forwarding-health\r\n'
-                    'Accept: application/json, */*;q=0.1\r\n'
-                    'Cache-Control: no-cache\r\n'
-                    'Pragma: no-cache\r\n'
-                    'Connection: close\r\n\r\n'
-                ).encode('ascii', errors='replace')
+                    f"GET {target_url} HTTP/1.1\r\n"
+                    f"Host: {host_header}\r\n"
+                    "User-Agent: squid-flask-proxy-forwarding-health\r\n"
+                    "Accept: application/json, */*;q=0.1\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Pragma: no-cache\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("ascii", errors="replace")
             )
-            data = b''
+            data = b""
             while len(data) < 4096:
                 chunk = sock.recv(min(512, 4096 - len(data)))
                 if not chunk:
                     break
                 data += chunk
-        status = data.split(b'\r\n', 1)[0].split(b'\n', 1)[0].decode('ascii', errors='replace')
+        status = data.split(b"\r\n", 1)[0].split(b"\n", 1)[0].decode("ascii", errors="replace")
         parts = status.split()
-        code = int(parts[1]) if len(parts) > 1 else 0
-        if status.startswith('HTTP/') and 200 <= code < 400:
-            body = data.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in data else b''
-            payload = json.loads(body.decode('utf-8'))
-            if payload.get('ok') is True and payload.get('service') == 'docker-proxy-forwarding-canary' and payload.get('probe') == 'squid-respmod':
+        code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        if status.startswith("HTTP/") and 200 <= code < 400:
+            body = data.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in data else b""
+            payload = json.loads(body.decode("utf-8"))
+            if payload.get("ok") is True and payload.get("service") == "docker-proxy-forwarding-canary" and payload.get("probe") == "squid-respmod":
                 raise SystemExit(0)
-            last_error = f'port {port}: canary body did not confirm ok'
+            last_error = f"port {port}: canary body did not confirm ok"
             continue
-        last_error = f'port {port}: {status or "no HTTP status"}'
+        last_error = f"port {port}: {status or 'no HTTP status'}"
     except Exception as exc:
-        last_error = f'port {port}: {exc}'
-raise SystemExit(f'Squid explicit forwarding path failed for local canary target {target_url}: {last_error}')
+        last_error = f"port {port}: {exc}"
+raise SystemExit(f"Squid explicit forwarding path failed for local canary target {target_url}: {last_error}")
 PY
-}
-
-supervisor_program_running() {
-    program="$1"
-    supervisorctl -c /etc/supervisord.conf status "$program" 2>/dev/null | grep -q "RUNNING"
-}
-
-env_enabled() {
-    case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
-        1|true|yes|on|enabled|required|strict) return 0 ;;
-        0|false|no|off|disabled|optional|'') return 1 ;;
-        *) [ "${2:-0}" = "1" ] ;;
-    esac
-}
-
-clamav_required() {
-    env_enabled "${CLAMAV_REQUIRED:-}" 1 || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}" 1
-}
-
-adblock_icap_required() {
-    env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1
-}
-
-clamd_host_is_remote() {
-    normalized="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr '[:upper:]' '[:lower:]')"
-    case "$normalized" in
-        ''|localhost|127.*|::1|\[::1\]) return 1 ;;
-        *) return 0 ;;
-    esac
 }
 
 remote_clamd_responding() {
@@ -259,98 +186,24 @@ remote_clamd_responding() {
 import os
 import socket
 
+from services.clamd_protocol import (
+    CLAMD_PING_MAX_REPLY_BYTES,
+    CLAMD_PING_REQUEST,
+    ping_reply_is_pong,
+    recv_terminated_reply,
+)
 
-def recv_clamd_reply(sock: socket.socket, max_bytes: int = 64) -> bytes:
-    data = bytearray()
-    while len(data) < max_bytes:
-        chunk = sock.recv(max_bytes - len(data))
-        if not chunk:
-            break
-        data.extend(chunk)
-        if b"\n" in chunk or b"\0" in chunk:
-            break
-    return bytes(data)
-
-
-def clamd_ping_reply_is_pong(data: bytes) -> bool:
-    if data.endswith(b"\r\n"):
-        payload = data[:-2]
-    elif data.endswith((b"\n", b"\0")):
-        payload = data[:-1]
-    else:
-        return False
-    return payload == b"PONG"
-
-
-host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-port = int((os.environ.get("CLAMD_PORT") or "3310").strip())
-with socket.create_connection((host, port), 1.5) as sock:
+address = (os.environ["CLAMD_HOST"], int(os.environ["CLAMD_PORT"]))
+with socket.create_connection(address, 1.5) as sock:
     sock.settimeout(1.5)
-    sock.sendall(b"PING\n")
-    reply = recv_clamd_reply(sock)
-if not clamd_ping_reply_is_pong(reply):
+    sock.sendall(CLAMD_PING_REQUEST)
+    reply = recv_terminated_reply(sock, max_bytes=CLAMD_PING_MAX_REPLY_BYTES)
+if not ping_reply_is_pong(reply):
     raise SystemExit(1)
 PY
 }
 
-clamp_workers() {
-    raw="${1:-1}"
-    case "$raw" in
-        ''|*[!0-9]*) raw=1 ;;
-    esac
-    if [ "$raw" -lt 1 ]; then
-        raw=1
-    elif [ "$raw" -gt 4 ]; then
-        raw=4
-    fi
-    printf '%s' "$raw"
-}
-
-extract_squid_workers_from_file() {
-    file_path="${1:-}"
-    if [ ! -f "$file_path" ]; then
-        return 0
-    fi
-    awk 'tolower($1)=="workers" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$file_path" 2>/dev/null || true
-}
-
-icap_base_port() {
-    raw="${1:-}"
-    default="${2:-}"
-    case "$raw" in
-        ''|*[!0-9]*) raw="$default" ;;
-    esac
-    if [ "$raw" -lt 1 ]; then
-        raw="$default"
-    elif [ "$raw" -gt 65535 ]; then
-        raw="$default"
-    fi
-    printf '%s' "$raw"
-}
-
-icap_av_base_port() {
-    adblock_base="$1"
-    av_base="$2"
-    workers="$3"
-    if [ "$av_base" -lt $((adblock_base + workers)) ] && [ "$adblock_base" -lt $((av_base + workers)) ]; then
-        av_base=$((adblock_base + workers))
-    fi
-    printf '%s' "$av_base"
-}
-
-icap_av_resp_base_port() {
-    adblock_base="$1"
-    av_base="$2"
-    resp_base="$3"
-    workers="$4"
-    if [ "$resp_base" -lt $((adblock_base + workers)) ] && [ "$adblock_base" -lt $((resp_base + workers)) ]; then
-        resp_base=$((av_base + workers))
-    fi
-    if [ "$resp_base" -lt $((av_base + workers)) ] && [ "$av_base" -lt $((resp_base + workers)) ]; then
-        resp_base=$((av_base + workers))
-    fi
-    printf '%s' "$resp_base"
-}
+refresh_supervisor_status
 
 # Check Squid liveness (internal check)
 if ! supervisor_program_running squid; then
@@ -377,48 +230,31 @@ if ! listener_detail="$(check_squid_http_listeners 2>&1)"; then
     exit 1
 fi
 
-# Check Flask liveness (avoid curl to keep image smaller)
-if ! supervisor_program_running proxy_api; then
-    echo "supervisor reports proxy_api is not RUNNING"
-    exit 1
-fi
+for program in proxy_api proxy_public proxy_agent forwarding_canary; do
+    if ! supervisor_program_running "$program"; then
+        echo "supervisor reports ${program} is not RUNNING"
+        exit 1
+    fi
+done
 
-if ! supervisor_program_running proxy_public; then
-    echo "supervisor reports proxy_public is not RUNNING"
-    exit 1
-fi
+refresh_listen_ports
 
-if ! supervisor_program_running proxy_agent; then
-    echo "supervisor reports proxy_agent is not RUNNING"
-    exit 1
-fi
-
-if ! supervisor_program_running forwarding_canary; then
-    echo "supervisor reports forwarding_canary is not RUNNING"
-    exit 1
-fi
-
-if ! has_listen_socket "$(forwarding_canary_port)" >/dev/null 2>&1; then
+if ! has_listen_socket "$FORWARDING_CANARY_PORT"; then
     echo "forwarding_canary is not accepting loopback connections"
     exit 1
 fi
 
-if ! python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2).read()" >/dev/null 2>&1; then
-    echo "Flask management health endpoint failed"
-    exit 1
-fi
-
-if ! has_listen_socket "${PAC_HTTP_PORT:-80}" >/dev/null 2>&1; then
+if ! has_listen_socket "$PAC_HTTP_PORT"; then
     echo "Flask public PAC/WPAD listener is not accepting connections"
     exit 1
 fi
 
-if ! python3 -c "import os, urllib.request; host=(os.environ.get('PAC_HTTP_HOST') or '127.0.0.1').strip() or '127.0.0.1'; host='127.0.0.1' if host in {'0.0.0.0','::','[::]'} else host; host=f'[{host}]' if ':' in host and not host.startswith('[') else host; port=(os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80'; urllib.request.urlopen(f'http://{host}:{port}/health', timeout=2).read()" >/dev/null 2>&1; then
-    echo "Flask public proxy health endpoint failed"
+if ! http_detail="$(check_http_health_endpoints 2>&1)"; then
+    echo "${http_detail:-Flask health endpoint failed}"
     exit 1
 fi
 
-if clamav_required || env_enabled "${PROXY_HEALTHCHECK_FORWARDING_REQUIRED:-}"; then
+if [ "$CLAMAV_REQUIRED" = "1" ] || [ "$PROXY_HEALTHCHECK_FORWARDING_REQUIRED" = "1" ]; then
     if ! forwarding_detail="$(check_squid_forwarding_path 2>&1)"; then
         echo "${forwarding_detail:-Squid explicit forwarding path failed}"
         exit 1
@@ -428,25 +264,19 @@ fi
 # Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders
 # adblock ICAP with bypass=on, so the container healthcheck must not turn an
 # adblock helper outage into data-plane downtime unless explicitly required.
-ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
-ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"
-ICAP_ADBLOCK_BASE="$(icap_base_port "${CICAP_PORT:-}" 14000)"
-ICAP_AV_BASE="$(icap_av_base_port "$ICAP_ADBLOCK_BASE" "$(icap_base_port "${CICAP_AV_PORT:-}" 14001)" "$ICAP_WORKERS")"
-ICAP_AV_RESP_BASE="$(icap_av_resp_base_port "$ICAP_ADBLOCK_BASE" "$ICAP_AV_BASE" "$(icap_base_port "${CICAP_AV_RESP_PORT:-}" $((ICAP_AV_BASE + ICAP_WORKERS)))" "$ICAP_WORKERS")"
-
 i=0
-while [ "$i" -lt "$ICAP_WORKERS" ]; do
+while [ "$i" -lt "$SQUID_WORKERS" ]; do
     instance=$((i + 1))
     adblock_program="cicap_adblock_${instance}"
-    adblock_port=$((ICAP_ADBLOCK_BASE + i))
+    adblock_port=$((CICAP_PORT + i))
     if ! supervisor_program_running "$adblock_program"; then
-        if adblock_icap_required; then
+        if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
             echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
             exit 1
         fi
         echo "supervisor reports ${adblock_program} is not RUNNING; Squid adblock ICAP is fail-open"
-    elif ! has_listen_socket "$adblock_port" >/dev/null 2>&1; then
-        if adblock_icap_required; then
+    elif ! has_listen_socket "$adblock_port"; then
+        if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
             echo "ADBLOCK_ICAP_REQUIRED is set but ${adblock_program} is not listening on port ${adblock_port}"
             exit 1
         fi
@@ -455,30 +285,30 @@ while [ "$i" -lt "$ICAP_WORKERS" ]; do
     i=$((i + 1))
 done
 
-if clamav_required; then
+if [ "$CLAMAV_REQUIRED" = "1" ]; then
     i=0
-    while [ "$i" -lt "$ICAP_WORKERS" ]; do
+    while [ "$i" -lt "$SQUID_WORKERS" ]; do
         instance=$((i + 1))
         av_program="cicap_av_${instance}"
-        av_port=$((ICAP_AV_BASE + i))
+        av_port=$((CICAP_AV_PORT + i))
         if ! supervisor_program_running "$av_program"; then
             echo "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING"
             exit 1
         fi
 
-        if ! has_listen_socket "$av_port" >/dev/null 2>&1; then
+        if ! has_listen_socket "$av_port"; then
             echo "CLAMAV_REQUIRED is set but ${av_program} is not listening on port ${av_port}"
             exit 1
         fi
 
-        if clamd_host_is_remote; then
+        if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
             resp_program="clamav_respmod_${instance}"
-            resp_port=$((ICAP_AV_RESP_BASE + i))
+            resp_port=$((CICAP_AV_RESP_PORT + i))
             if ! supervisor_program_running "$resp_program"; then
                 echo "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING"
                 exit 1
             fi
-            if ! has_listen_socket "$resp_port" >/dev/null 2>&1; then
+            if ! has_listen_socket "$resp_port"; then
                 echo "CLAMAV_REQUIRED is set but ${resp_program} is not listening on port ${resp_port}"
                 exit 1
             fi

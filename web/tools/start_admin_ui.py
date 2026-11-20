@@ -155,11 +155,10 @@ def _probe_mysql_server() -> None:
     of a burst of per-attempt retry warnings. It does not select the database,
     which the migration step may still need to create.
     """
-    import pymysql
-    from services.db import resolve_database_config
+    from services.db import pymysql_connect, resolve_database_config
 
     cfg = resolve_database_config()
-    pymysql.connect(  # type: ignore[call-arg]
+    pymysql_connect(
         host=cfg.host,
         port=int(cfg.port),
         user=cfg.user,

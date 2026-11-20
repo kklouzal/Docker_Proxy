@@ -28,7 +28,6 @@ from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import (
     CertManager,
-    certificate_material_paths,
     materialize_certificate_bundle,
     restore_certificate_material_snapshot,
     snapshot_certificate_material,
@@ -92,6 +91,8 @@ from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
 from services.version_status import current_component_metadata
+
+from proxy.process_memory import cgroup_memory, supervisor_program_memory
 
 logger = logging.getLogger(__name__)
 
@@ -172,10 +173,6 @@ def _operation_requests_force(operation: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "force"}
     return bool(value)
-
-
-def _operations_request_force(operations: list[Any] | None) -> bool:
-    return any(_operation_requests_force(operation) for operation in operations or [])
 
 
 def _operation_requests_reconciliation_force(operation: Any) -> bool:
@@ -1333,9 +1330,6 @@ class ProxyRuntime:
         except Exception:
             return ""
 
-    def _certificate_material_paths(self) -> tuple[str, ...]:
-        return certificate_material_paths(self.cert_manager.ca_dir)
-
     def _snapshot_certificate_material(self) -> dict[str, bytes | None]:
         return snapshot_certificate_material(self.cert_manager.ca_dir)
 
@@ -1735,6 +1729,11 @@ class ProxyRuntime:
             if detail_parts
             else "supervisor programs running",
             "programs": statuses,
+            # Diagnostics only: never part of the ok verdict.
+            "memory": {
+                "programs_kib": supervisor_program_memory(lines),
+                "cgroup_bytes": cgroup_memory(),
+            },
         }
 
     def _squid_transaction_health(self) -> dict[str, Any]:

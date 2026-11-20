@@ -741,8 +741,13 @@ def test_cicap_av_runner_optional_fallback_answers_options(
     conf.write_text(f"Port 127.0.0.1:{port}\n", encoding="utf-8")
 
     thread = threading.Thread(
-        target=runner.run_fail_open_placeholder,
-        kwargs={"conf_path": str(conf), "host": "clamd", "port": 3310},
+        target=runner.run_unavailable_placeholder,
+        kwargs={
+            "conf_path": str(conf),
+            "host": "clamd",
+            "port": 3310,
+            "fail_open": True,
+        },
         daemon=True,
     )
     thread.start()

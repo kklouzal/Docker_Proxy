@@ -9,7 +9,6 @@ import pathlib
 import re
 from typing import Any
 
-from services.logutil import log_exception_throttled
 from services.squid_config_forms import (
     DEFAULT_CACHE_POLICY_RULES,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
@@ -17,7 +16,6 @@ from services.squid_config_forms import (
     coerce_config_bool,
 )
 from services.squid_core import SquidController as _CoreSquidController
-from services.squid_core import _exclusive_squid_lifecycle_lock
 
 logger = logging.getLogger(__name__)
 
@@ -1181,33 +1179,6 @@ class SquidController(_CoreSquidController):
     def _read_file(self, path: str) -> str:
         with pathlib.Path(path).open(encoding="utf-8") as handle:
             return handle.read()
-
-    def _replace_or_append_line(self, text: str, key: str, new_line: str) -> str:
-        pattern = re.compile(rf"^(\s*{re.escape(key)}\s+).*$", re.MULTILINE)
-        if pattern.search(text):
-            return pattern.sub(new_line, text, count=1)
-        return text.rstrip() + "\n" + new_line + "\n"
-
-    def _replace_cache_dir_line(self, text: str, new_line: str) -> str:
-        pattern = re.compile(r"^\s*cache_dir\s+\w+\s+\S+.*$", re.MULTILINE)
-        if pattern.search(text):
-            return pattern.sub(new_line, text, count=1)
-        return text.rstrip() + "\n" + new_line + "\n"
-
-    def _replace_http_port_option(
-        self,
-        text: str,
-        option_name: str,
-        option_value: str,
-    ) -> str:
-        pattern = re.compile(rf"({re.escape(option_name)}=)(\S+)", re.IGNORECASE)
-        if pattern.search(text):
-            return pattern.sub(
-                lambda match: f"{match.group(1)}{option_value}",
-                text,
-                count=1,
-            )
-        return text
 
     def _coerce_port(self, value: Any, default: int) -> int:
         try:
@@ -2637,62 +2608,3 @@ class SquidController(_CoreSquidController):
         )
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
-
-    def start_squid(self):
-        with _exclusive_squid_lifecycle_lock():
-            return self._start_squid_locked()
-
-    def _start_squid_locked(self):
-        try:
-            proc = self._run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
-                capture_output=True,
-                timeout=12,
-            )
-            if proc.returncode == 0:
-                return proc.stdout or b"", proc.stderr or b""
-        except FileNotFoundError:
-            pass
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "squidctl.start_squid.supervisor",
-                interval_seconds=300.0,
-                message="supervisorctl start squid failed",
-            )
-
-        try:
-            proc = self._run(
-                ["squid", "-f", self.squid_conf_path],
-                capture_output=True,
-                timeout=12,
-            )
-            return proc.stdout or b"", proc.stderr or b""
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")
-
-    def stop_squid(self):
-        with _exclusive_squid_lifecycle_lock():
-            return self._stop_squid_locked()
-
-    def _stop_squid_locked(self):
-        try:
-            proc = self._run(
-                ["squid", "-k", "shutdown"],
-                capture_output=True,
-                timeout=12,
-            )
-            stdout = proc.stdout or b""
-            stderr = proc.stderr or b""
-            if proc.returncode != 0 and not stderr:
-                stderr = f"squid shutdown failed rc={proc.returncode}".encode()
-            return stdout, stderr
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")
-
-    def update_config(self, config_text: str) -> None:
-        self.apply_config_text(config_text)
