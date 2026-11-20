@@ -22,6 +22,7 @@ from services.domain_normalization import (
 from services.domain_normalization import (
     normalize_domain as _norm_domain,
 )
+from services.domain_normalization import parent_domain_suffixes
 from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
 from services.policy_requests import normalize_client_ip as _normalize_client_ip
@@ -184,17 +185,8 @@ def _strip_comment(line: str) -> str:
     return (line or "").split("#", 1)[0].strip()
 
 
-def _parent_domains(domain: str, *, max_levels: int = 6) -> list[str]:
-    normalized = _norm_domain(domain)
-    if not normalized:
-        return []
-    parts = [part for part in normalized.split(".") if part]
-    if len(parts) < 2:
-        return [normalized]
-    out: list[str] = [
-        ".".join(parts[index:]) for index in range(min(len(parts) - 1, max_levels))
-    ]
-    return out
+def _parent_domains(domain: str) -> list[str]:
+    return parent_domain_suffixes(_norm_domain(domain))
 
 
 def _default_webfilter_helpers() -> int:

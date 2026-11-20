@@ -23,6 +23,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
 )
 from services.domain_normalization import normalize_domain as _norm_domain
+from services.domain_normalization import registrable_domain_start
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable
 from services.runtime_helpers import env_int as _env_int
@@ -50,7 +51,6 @@ _VALID_THREAT_TYPES = {
     "POTENTIALLY_HARMFUL_APPLICATION",
 }
 _IGNORED_THREAT_ATTRIBUTES = {"THREAT_ATTRIBUTE_UNSPECIFIED", "CANARY", "FRAME_ONLY"}
-_COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 logger = logging.getLogger(__name__)
 
 
@@ -384,30 +384,6 @@ def _is_ip_literal(host: str) -> bool:
         return False
 
 
-def _etld_plus_one_index(parts: list[str]) -> int:
-    if len(parts) <= 2:
-        return 0
-    # Prefer a PSL library when present; keep a deterministic fallback for the
-    # common second-level public suffixes used by the docs and many ccTLDs.
-    host = ".".join(parts)
-    try:  # pragma: no cover - optional dependency path
-        from publicsuffix2 import get_sld  # type: ignore
-
-        sld = get_sld(host)
-        if sld:
-            sld_parts = sld.split(".")
-            return max(0, len(parts) - len(sld_parts))
-    except Exception:
-        pass
-    if (
-        len(parts) >= 3
-        and len(parts[-1]) == 2
-        and parts[-2] in _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES
-    ):
-        return len(parts) - 3
-    return len(parts) - 2
-
-
 def _host_suffixes(host: str) -> list[str]:
     host = _normalize_host(host)
     if not host:
@@ -418,7 +394,7 @@ def _host_suffixes(host: str) -> list[str]:
     if not parts:
         return []
     exact = ".".join(parts)
-    etld1_index = _etld_plus_one_index(parts)
+    etld1_index = registrable_domain_start(parts)
     # Google's examples order the exact host first, then up to four suffixes
     # from the last five hostname components, stopping at eTLD+1.
     start = max(0, etld1_index - 3, len(parts) - 5)

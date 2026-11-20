@@ -514,11 +514,13 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
     assert (
         engine._rule_matches(
             fallback_host_rule,
-            "https://host.example:8443/ads.js",
-            method="GET",
-            resource_type="other",
-            source_url="",
-            third_party_hint=None,
+            engine._request_context(
+                "https://host.example:8443/ads.js",
+                method="GET",
+                resource_type="other",
+                source_url="",
+                third_party_hint=None,
+            ),
         )
         is False
     )
@@ -2217,3 +2219,14 @@ def test_proxy_payload_includes_sqlite_adblock_runtime() -> None:
 
 if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def test_domain_option_matches_bracketed_ipv6_source_literally() -> None:
+    from services.adblock_decision import _domain_matches, _host_suffix_set
+
+    host = "[2001:db8::1]"
+    suffixes = _host_suffix_set(host)
+    # fnmatch would read "[2001:db8::1]" as a one-character class.
+    assert _domain_matches(host, suffixes, "[2001:db8::1]") is True
+    assert _domain_matches("1", _host_suffix_set("1"), "[2001:db8::1]") is False
+    assert _domain_matches("ads.example", _host_suffix_set("ads.example"), "*.example")

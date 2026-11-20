@@ -10,7 +10,10 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import quote, unquote_to_bytes, urljoin, urlparse
 
-from services.domain_normalization import is_ambiguous_ipv4_like_host
+from services.domain_normalization import (
+    is_ambiguous_ipv4_like_host,
+    is_valid_dns_hostname,
+)
 from services.runtime_helpers import authority_has_empty_explicit_port
 from services.url_validation import (
     has_ascii_control_chars,
@@ -71,20 +74,6 @@ def _canonical_download_hostname(hostname: str) -> str:
         raise ValueError(msg) from exc
 
 
-def _is_valid_download_dns_hostname(hostname: str) -> bool:
-    if not hostname or len(hostname) > 253:
-        return False
-    labels = hostname.split(".")
-    return all(
-        label
-        and len(label) <= 63
-        and label[0].isalnum()
-        and label[-1].isalnum()
-        and all(ch.isalnum() or ch == "-" for ch in label)
-        for label in labels
-    )
-
-
 _DOWNLOAD_PATH_SAFE = "/:%@!$&'()*+,;=%"
 _DOWNLOAD_PARAMS_SAFE = ":%@!$&'()*+,;=%"
 _DOWNLOAD_QUERY_SAFE = "/?:%@!$&'()*+,;=%"
@@ -128,7 +117,7 @@ def is_internal_host(hostname: str) -> bool:
         return True
     if "." not in h:
         return True
-    if not _is_valid_download_dns_hostname(h):
+    if not is_valid_dns_hostname(h):
         return True
 
     try:
