@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -45,6 +45,12 @@ from services.adblock_decision import (  # ruff: ignore[module-import-not-at-top
     AdblockDecision,
     AdblockDecisionEngine,
     artifact_decision_cache_settings,
+)
+from services.adblock_icap_status import (  # ruff: ignore[module-import-not-at-top-of-file]
+    WorkerLoadStatus,
+    clear_worker_statuses,
+    status_dir,
+    write_worker_status,
 )
 from services.helper_runtime import HelperStats  # ruff: ignore[module-import-not-at-top-of-file]
 from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
@@ -681,6 +687,63 @@ class _Connection:
         self.writing = False
 
 
+class _EngineReloader:
+    """Load the decision engine and take SIGHUP reload requests.
+
+    The runtime sends SIGHUP after it materializes a new artifact or when an
+    operator flushes the decision cache. Every worker swaps in a freshly loaded
+    engine (new lookup database, settings.json cache limits, empty caches)
+    between ICAP events, so the listening socket and Squid's connections stay
+    up and no request is bypassed. A load that fails keeps the previous engine
+    serving. Each load is reported to the status directory
+    (services.adblock_icap_status) so the runtime can confirm every worker.
+    """
+
+    def __init__(
+        self,
+        load_engine: Callable[[], AdblockDecisionEngine],
+        *,
+        status_directory: str,
+        helper_pid: int,
+        processes: int,
+    ) -> None:
+        self._load_engine = load_engine
+        self.status_directory = status_directory
+        self.helper_pid = helper_pid
+        self.processes = processes
+        # Set by the signal handler, consumed by the serving loop.
+        self.pending = False
+        self.children: list[int] = []
+
+    def load(self) -> AdblockDecisionEngine:
+        return self._load_engine()
+
+    def handle_signal(self, _signum: int, _frame: Any) -> None:
+        self.pending = True
+        if os.getpid() == self.helper_pid:
+            for pid in self.children:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGHUP)
+
+    def publish(self, *, worker: int, generation: int, error: str = "") -> None:
+        try:
+            write_worker_status(
+                self.status_directory,
+                WorkerLoadStatus(
+                    helper_pid=self.helper_pid,
+                    worker=worker,
+                    processes=self.processes,
+                    generation=generation,
+                    ok=not error,
+                    error=error,
+                ),
+            )
+        except OSError as exc:
+            # The runtime then times out waiting for this worker and restarts
+            # the helper; serving continues meanwhile.
+            sys.stderr.write(f"adblock ICAP status write failed: {exc}\n")
+
+
 class _AdblockIcapServer(socketserver.TCPServer):
     """Single-threaded, event-driven adblock REQMOD service.
 
@@ -712,8 +775,13 @@ class _AdblockIcapServer(socketserver.TCPServer):
         stats: HelperStats | None = None,
         reuse_port: bool = False,
         parent_pid: int | None = None,
+        reloader: _EngineReloader | None = None,
+        worker: int = 1,
     ) -> None:
         self.engine = engine
+        self._reloader = reloader
+        self._worker = worker
+        self._generation = 0
         # Only a multi-process helper shares its port; a single helper keeps
         # failing to bind if a stray instance still holds it.
         self.allow_reuse_port = reuse_port
@@ -749,6 +817,10 @@ class _AdblockIcapServer(socketserver.TCPServer):
                         self._accept_ready()
                     elif conn.sock.fileno() >= 0:
                         self._guarded(self._ready, conn)
+                reloader = self._reloader
+                if reloader is not None and reloader.pending:
+                    reloader.pending = False
+                    self._reload_engine(reloader)
                 now = time.monotonic()
                 if now >= next_sweep:
                     next_sweep = now + self._deadline_sweep_seconds
@@ -762,6 +834,33 @@ class _AdblockIcapServer(socketserver.TCPServer):
                 self._close(conn)
             selector.unregister(self.socket)
             self._stopped.set()
+
+    def publish_loaded(self) -> None:
+        """Report the engine this worker serves with (startup load)."""
+        if self._reloader is not None:
+            self._reloader.publish(worker=self._worker, generation=self._generation)
+
+    def _reload_engine(self, reloader: _EngineReloader) -> None:
+        self._generation += 1
+        try:
+            engine = reloader.load()
+        except Exception as exc:
+            self.increment_stat("reload_failed")
+            detail = f"{type(exc).__name__}: {exc}"
+            sys.stderr.write(
+                f"adblock ICAP worker {self._worker} kept its previous artifact; "
+                f"reload failed: {detail}\n"
+            )
+            reloader.publish(
+                worker=self._worker,
+                generation=self._generation,
+                error=detail or "reload failed",
+            )
+            return
+        previous, self.engine = self.engine, engine
+        previous.close()
+        self.increment_stat("reloads")
+        reloader.publish(worker=self._worker, generation=self._generation)
 
     def request_stop(self) -> None:
         """Ask serve_forever to return; safe from a signal handler."""
@@ -1126,16 +1225,44 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=env_int("ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS", 1000),
     )
+    parser.add_argument(
+        "--status-dir",
+        default=status_dir(),
+        help="Directory for per-worker load status (see SIGHUP reload).",
+    )
     return parser.parse_args(argv)
+
+
+def _load_engine(args: argparse.Namespace) -> AdblockDecisionEngine:
+    cache_ttl, cache_max = _decision_cache_settings(args)
+    engine = AdblockDecisionEngine(
+        args.db,
+        cache_ttl_seconds=cache_ttl,
+        cache_max=cache_max,
+        rule_cache_max=args.rule_cache_max,
+    )
+    try:
+        # Refuse an unsupported lookup database: at startup the runtime
+        # retries the helper and keeps its last applied artifact; on reload
+        # the previous engine keeps serving.
+        engine.lookup.check_schema()
+        # Load the in-memory candidate indexes now, not on the first request
+        # Squid sends.
+        engine.lookup.load_indexes()
+    except BaseException:
+        engine.close()
+        raise
+    return engine
 
 
 def _serve_process(
     args: argparse.Namespace,
-    engine: AdblockDecisionEngine,
+    engines: list[AdblockDecisionEngine],
     *,
     worker: int,
     reuse_port: bool,
     parent_pid: int | None,
+    reloader: _EngineReloader,
     on_server: Any = None,
 ) -> None:
     stats = HelperStats("adblock_icap")
@@ -1151,9 +1278,11 @@ def _serve_process(
         max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
     )
     try:
+        # Popped, not kept in a frame: after a reload nothing else holds the
+        # startup engine, so its memory is released.
         with _AdblockIcapServer(
             (args.host, int(args.port)),
-            engine=engine,
+            engine=engines.pop(),
             access_log_path=args.access_log,
             max_request_bytes=max(8192, int(args.max_request_bytes)),
             max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
@@ -1162,9 +1291,12 @@ def _serve_process(
             stats=stats,
             reuse_port=reuse_port,
             parent_pid=parent_pid,
+            reloader=reloader,
+            worker=worker,
         ) as server:
             if on_server is not None:
                 on_server(server)
+            server.publish_loaded()
             sys.stdout.write(
                 f"adblock sqlite ICAP worker {worker} listening on "
                 f"{args.host}:{args.port} using {args.db}\n",
@@ -1178,23 +1310,29 @@ def _serve_process(
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     processes = max(1, int(args.processes))
-
-    cache_ttl, cache_max = _decision_cache_settings(args)
-    engine = AdblockDecisionEngine(
-        args.db,
-        cache_ttl_seconds=cache_ttl,
-        cache_max=cache_max,
-        rule_cache_max=args.rule_cache_max,
+    reloader = _EngineReloader(
+        lambda: _load_engine(args),
+        status_directory=args.status_dir,
+        helper_pid=os.getpid(),
+        processes=processes,
     )
-    # Refuse to serve an unsupported lookup database: the runtime retries the
-    # helper and keeps its last applied artifact instead of matching against
-    # tables this reader does not know.
-    engine.lookup.check_schema()
-    # Load the in-memory candidate indexes before listening, not on the first
-    # request Squid sends.
-    engine.lookup.load_indexes()
+    # Before anything slow, and inherited by the forked workers: SIGHUP's
+    # default action would kill the process.
+    signal.signal(signal.SIGHUP, reloader.handle_signal)
+    try:
+        clear_worker_statuses(args.status_dir)
+    except OSError as exc:
+        sys.stderr.write(f"adblock ICAP status directory unavailable: {exc}\n")
+    engines = [_load_engine(args)]
     if processes == 1:
-        _serve_process(args, engine, worker=1, reuse_port=False, parent_pid=None)
+        _serve_process(
+            args,
+            engines,
+            worker=1,
+            reuse_port=False,
+            parent_pid=None,
+            reloader=reloader,
+        )
         return 0
 
     # Several workers share the port through SO_REUSEPORT (the kernel spreads
@@ -1203,10 +1341,10 @@ def main(argv: list[str] | None = None) -> int:
     # Supervisor manages this process: stopasgroup reaches every worker, a
     # worker exits when this process is gone, and this process exits non-zero
     # when a worker dies so supervisor restarts the whole set.
-    engine.lookup.close_thread_connection()
+    engines[0].lookup.close_thread_connection()
     gc.freeze()
     parent_pid = os.getpid()
-    children: list[int] = []
+    children = reloader.children
     for worker in range(2, processes + 1):
         pid = os.fork()
         if pid == 0:
@@ -1214,10 +1352,11 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 _serve_process(
                     args,
-                    engine,
+                    engines,
                     worker=worker,
                     reuse_port=True,
                     parent_pid=parent_pid,
+                    reloader=reloader,
                 )
             except BaseException:
                 traceback.print_exc()
@@ -1246,10 +1385,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _serve_process(
             args,
-            engine,
+            engines,
             worker=1,
             reuse_port=True,
             parent_pid=None,
+            reloader=reloader,
             on_server=stop_on_worker_exit,
         )
     finally:

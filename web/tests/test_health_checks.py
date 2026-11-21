@@ -1548,34 +1548,27 @@ def test_remote_clamd_av_health_checks_upload_and_download_icap_ports(
 
     result = proxy_health.check_av_icap_health(timeout=0.4)
 
+    # One AV helper pair serves every Squid worker.
     assert calls == [
-        ("av-proxy", 24003, "/avrespmod"),
-        ("av-proxy", 24006, "/avrespmod"),
+        ("av-proxy", 24001, "/avrespmod"),
+        ("av-proxy", 24002, "/avrespmod"),
     ]
     assert result["ok"] is True
     assert result["host"] == "av-proxy"
-    assert result["port"] == 24006
-    assert result["components"]["upload_av_icap"]["port"] == 24003
-    assert result["components"]["download_av_icap"]["port"] == 24006
+    assert result["port"] == 24002
+    assert result["components"]["upload_av_icap"]["port"] == 24001
+    assert result["components"]["download_av_icap"]["port"] == 24002
 
 
-@pytest.mark.parametrize(
-    ("raw_workers", "upload_port", "download_port"),
-    [
-        (" ", 24001, 24002),
-        ("malformed", 24001, 24002),
-        ("0", 24001, 24002),
-        ("2", 24002, 24004),
-        ("99", 24004, 24008),
-    ],
-)
-def test_remote_clamd_health_selection_uses_shared_worker_normalization(
-    monkeypatch, raw_workers: str, upload_port: int, download_port: int
+@pytest.mark.parametrize("raw_workers", [" ", "malformed", "0", "2", "99"])
+def test_remote_clamd_health_ports_do_not_depend_on_squid_workers(
+    monkeypatch, raw_workers: str
 ) -> None:
     proxy_health = _proxy_health_module()
     calls: list[int] = []
     monkeypatch.setenv("CICAP_PORT", "24000")
     monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.delenv("CICAP_AV_RESP_PORT", raising=False)
     monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
     monkeypatch.setenv("SQUID_WORKERS", raw_workers)
     monkeypatch.setattr(
@@ -1585,7 +1578,7 @@ def test_remote_clamd_health_selection_uses_shared_worker_normalization(
     )
 
     assert proxy_health.check_av_icap_health()["ok"] is True
-    assert calls == [upload_port, download_port]
+    assert calls == [24001, 24002]
 
 
 def test_remote_clamd_av_health_fails_when_download_respmod_is_down(

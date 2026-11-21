@@ -476,3 +476,32 @@ def test_directory_fsync_reports_real_errors_and_tolerates_unsupported(
         assert info.value.errno == err
     else:
         module._fsync_directory(tmp_path)
+
+
+def test_startup_journal_covers_current_and_legacy_icap_runtime_files(
+    tmp_path, monkeypatch
+) -> None:
+    from services import squid_transaction  # type: ignore
+
+    supervisor_dir = tmp_path / "supervisor.d"
+    cicap_dir = tmp_path / "c-icap"
+    supervisor_dir.mkdir()
+    cicap_dir.mkdir()
+    names = [
+        "cicap_adblock.conf",
+        "cicap_av.conf",
+        "clamav_respmod.conf",
+        "cicap_adblock_2.conf",
+        "clamav_respmod_1.conf",
+    ]
+    for name in names:
+        (supervisor_dir / name).write_text("x\n", encoding="utf-8")
+    for name in ("c-icap-av.conf", "c-icap-av-2.conf"):
+        (cicap_dir / name).write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
+    monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
+
+    paths = set(squid_transaction._runtime_paths_from_environment())
+
+    assert {supervisor_dir / name for name in names} <= paths
+    assert {cicap_dir / "c-icap-av.conf", cicap_dir / "c-icap-av-2.conf"} <= paths

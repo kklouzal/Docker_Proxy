@@ -7,10 +7,8 @@ import pytest
 from services.squid_core import SquidController  # type: ignore
 
 _REPO = Path(__file__).resolve().parents[2]
-_LOOP_START = (
-    'i=0\nwhile [ "$i" -lt "$WORKERS" ]; do\n    instance=$((i + 1))\n    adblock_port='
-)
-_LOOP_END = '\n{\n    adblock_services=""'
+_LOOP_START = 'av_conf="/etc/c-icap/c-icap-av.conf"\n'
+_LOOP_END = '\n{\n    echo "icap_service adblock_req '
 
 
 def _entrypoint_supervisor_loop() -> str:
@@ -21,26 +19,31 @@ def _entrypoint_supervisor_loop() -> str:
 
 
 @pytest.mark.parametrize(
-    ("clamd_host", "remote", "workers"),
-    [("clamd.example.internal", "1", 1), ("127.0.0.1", "0", 2)],
+    ("clamd_host", "remote", "squid_workers"),
+    [("clamd.example.internal", "1", "1"), ("127.0.0.1", "0", "2")],
 )
 def test_runtime_icap_supervisor_files_match_entrypoint_bytes(
     tmp_path: Path,
     monkeypatch,
     clamd_host: str,
     remote: str,
-    workers: int,
+    squid_workers: str,
 ) -> None:
     # Byte drift between the boot-time files and the runtime renderer makes the
     # first ICAP reconciliation after every boot pause and restart Squid.
     entry_dir = tmp_path / "entrypoint"
     entry_dir.mkdir()
-    script = _entrypoint_supervisor_loop().replace("/etc/supervisor.d", str(entry_dir))
+    script = (
+        _entrypoint_supervisor_loop()
+        .replace("/etc/supervisor.d", str(entry_dir))
+        # Skip the c-icap config copy; only the supervisor programs compare.
+        .replace("/etc/c-icap/c-icap.conf", str(tmp_path / "missing.conf"))
+    )
     env = {
         "PATH": "/usr/bin:/bin",
-        "WORKERS": str(workers),
         "CICAP_PORT": "14000",
-        "CICAP_AV_RESP_PORT": "14002" if workers == 1 else "14004",
+        "CICAP_AV_PORT": "14001",
+        "CICAP_AV_RESP_PORT": "14002",
         "CLAMD_HOST": clamd_host,
         "CLAMD_PORT": "3310",
         "CLAMAV_REQUIRED": "0",
@@ -56,16 +59,14 @@ def test_runtime_icap_supervisor_files_match_entrypoint_bytes(
     monkeypatch.setenv("CICAP_PORT", "14000")
     monkeypatch.delenv("CICAP_AV_PORT", raising=False)
     monkeypatch.delenv("CICAP_AV_RESP_PORT", raising=False)
+    monkeypatch.setenv("SQUID_WORKERS", squid_workers)
     monkeypatch.setenv("CLAMD_HOST", clamd_host)
     monkeypatch.setenv("CLAMD_PORT", "3310")
     monkeypatch.delenv("CLAMD_TIMEOUT", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_MAX_SCANS", raising=False)
-    rendered = SquidController()._render_icap_supervisor_files(
-        workers=workers,
-        config_text="",
-    )
+    rendered = SquidController()._render_icap_supervisor_files(config_text="")
     rendered_programs = {
         path.name: content
         for path, content in rendered.items()
@@ -92,25 +93,25 @@ def test_supervisor_squid_stop_timeout_covers_squid_stopwaitsecs() -> None:
     assert stopwaitsecs < squid_core.SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS
 
 
-def test_entrypoint_keeps_materialized_adblock_artifact_at_boot(tmp_path: Path) -> None:
-    from services import adblock_artifacts  # type: ignore
-
+def test_entrypoint_never_compiles_adblock_lists_at_boot(tmp_path: Path) -> None:
+    # The Admin UI builder compiles artifacts; boot only provides an empty
+    # lookup database when no artifact has been materialized yet.
     text = (_REPO / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "adblock_compile.py" not in text
     start = text.index("# Adblock request lookup state.")
     block = text[start : text.index("\nfi\n", start) + 4]
     compiled = tmp_path / "compiled"
-    compiled.mkdir()
     calls = tmp_path / "calls"
-    script = "CONTROL_PLANE_DB_REACHABLE=1\n" + block.replace(
+    script = block.replace(
         "/var/lib/squid-flask-proxy/adblock/compiled", str(compiled)
-    ).replace("python3 /app/tools/adblock_compile.py", f"echo compiled >> {calls}")
+    ).replace("python3 -", f"sh -c 'cat >/dev/null; echo empty-db >> {calls}'")
 
-    # A materialized artifact owns the lookup DB: boot must not recompile it.
-    (compiled / adblock_artifacts._ARTIFACT_SHA_FILENAME).write_text("a" * 64)
+    subprocess.run(["sh", "-eu", "-c", script], check=True)
+    assert calls.read_text() == "empty-db\n"
+
+    # A materialized lookup database is left alone.
+    calls.unlink()
+    (compiled / "request_lookup.sqlite").write_bytes(b"artifact")
     subprocess.run(["sh", "-eu", "-c", script], check=True)
     assert not calls.exists()
-
-    # Without an artifact the legacy local-list compile still runs.
-    (compiled / adblock_artifacts._ARTIFACT_SHA_FILENAME).unlink()
-    subprocess.run(["sh", "-eu", "-c", script], check=True)
-    assert calls.read_text().startswith("compiled --lists-dir ")
+    assert (compiled / "request_lookup.sqlite").read_bytes() == b"artifact"

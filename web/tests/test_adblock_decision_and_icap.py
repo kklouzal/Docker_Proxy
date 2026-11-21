@@ -4,6 +4,7 @@ import gc
 import os
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -2900,7 +2901,11 @@ def _free_port() -> int:
 
 
 def _start_helper_processes(
-    tmp_path: Path, db_path: Path, processes: int
+    tmp_path: Path,
+    db_path: Path,
+    processes: int,
+    *,
+    status_dir: Path | None = None,
 ) -> tuple[subprocess.Popen[str], int, Path]:
     port = _free_port()
     log_path = tmp_path / "cicap-access.log"
@@ -2917,6 +2922,8 @@ def _start_helper_processes(
             str(log_path),
             "--processes",
             str(processes),
+            "--status-dir",
+            str(status_dir or tmp_path / "status"),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -3002,4 +3009,96 @@ def test_adblock_icap_workers_exit_when_the_helper_is_killed(tmp_path: Path) -> 
     finally:
         if helper.poll() is None:
             helper.kill()
+            helper.wait(timeout=5.0)
+
+
+def _blocked_on(sock: socket.socket, url: str) -> bool:
+    """Send one REQMOD on a persistent connection; True when it was blocked."""
+    sock.sendall(_reqmod(url))
+    data = _recv_icap_head(sock)
+    if data.startswith(b"ICAP/1.0 204"):
+        return False
+    assert data.startswith(b"ICAP/1.0 200"), data[:80]
+    while not data.endswith(b"\r\n0\r\n\r\n"):
+        chunk = sock.recv(65536)
+        assert chunk, "connection closed inside a block response"
+        data += chunk
+    return True
+
+
+def _wait_for_generation(status_dir: Path, processes: int, generation: int) -> dict:
+    from services.adblock_icap_status import read_worker_statuses
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        statuses = read_worker_statuses(str(status_dir))
+        if len(statuses) == processes and all(
+            status.generation >= generation for status in statuses.values()
+        ):
+            return statuses
+        time.sleep(0.05)
+    pytest.fail(f"workers did not report load generation {generation}")
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="worker supervision proof needs procfs"
+)
+def test_adblock_icap_sighup_reloads_every_worker_without_dropping_connections(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    status_dir = tmp_path / "status"
+    helper, port, _log_path = _start_helper_processes(
+        tmp_path, db_path, 2, status_dir=status_dir
+    )
+    sockets: list[socket.socket] = []
+    try:
+        startup = _wait_for_generation(status_dir, 2, 0)
+        assert {status.helper_pid for status in startup.values()} == {helper.pid}
+        assert all(status.ok for status in startup.values())
+        # Persistent connections spread over both workers.
+        sockets = [
+            socket.create_connection(("127.0.0.1", port), timeout=5.0)
+            for _ in range(16)
+        ]
+        for sock in sockets:
+            assert _blocked_on(sock, "http://ads.example/a.js") is True
+            assert _blocked_on(sock, "http://tracker.example/t.js") is False
+
+        # Materialize a new artifact, then reload in process.
+        (tmp_path / "next").mkdir()
+        new_db = _build_lookup_db(tmp_path / "next", ["||tracker.example^"])
+        new_db.replace(db_path)
+        os.kill(helper.pid, signal.SIGHUP)
+        reloaded = _wait_for_generation(status_dir, 2, 1)
+        assert all(status.ok for status in reloaded.values())
+
+        # The same connections now see the new rules: nothing was closed.
+        for sock in sockets:
+            assert _blocked_on(sock, "http://ads.example/a.js") is False
+            assert _blocked_on(sock, "http://tracker.example/t.js") is True
+
+        # An artifact the reader cannot use is refused; the workers keep
+        # serving the previous engine and report the error.
+        (tmp_path / "bad").mkdir()
+        bad_db = _build_lookup_db(tmp_path / "bad", ["||ads.example^"])
+        conn = sqlite3.connect(str(bad_db))
+        try:
+            conn.execute("UPDATE metadata SET value='3' WHERE key='schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+        bad_db.replace(db_path)
+        os.kill(helper.pid, signal.SIGHUP)
+        rejected = _wait_for_generation(status_dir, 2, 2)
+        assert not any(status.ok for status in rejected.values())
+        assert all("schema version 3" in status.error for status in rejected.values())
+        for sock in sockets:
+            assert _blocked_on(sock, "http://tracker.example/t.js") is True
+        assert helper.poll() is None
+    finally:
+        for sock in sockets:
+            sock.close()
+        if helper.poll() is None:
+            helper.terminate()
             helper.wait(timeout=5.0)

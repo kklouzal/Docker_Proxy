@@ -24,6 +24,8 @@ from services.adblock_artifacts import (
     materialize_archive_to_directory,
     read_materialized_artifact_sha,
 )
+from services.adblock_icap_status import read_worker_statuses
+from services.adblock_icap_status import status_dir as adblock_icap_status_dir
 from services.adblock_lookup import lookup_schema_error
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
@@ -78,7 +80,7 @@ from services.proxy_registry import (
     local_proxy_registration_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
-from services.runtime_helpers import normalize_config_bool, normalize_icap_worker_count
+from services.runtime_helpers import normalize_config_bool
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_core import (
     SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
@@ -139,17 +141,6 @@ def _adblock_icap_self_heal_restart_cooldown_seconds() -> float:
     except Exception:
         value = _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS
     return max(0.0, min(value, 3600.0))
-
-
-def _icap_supervisor_programs(base_name: str) -> tuple[str, ...]:
-    name = str(base_name or "").strip()
-    if name in {"cicap_adblock", "cicap_av"}:
-        raw_workers = os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS")
-        if raw_workers is None:
-            return (name,)
-        workers = normalize_icap_worker_count(raw_workers)
-        return tuple(f"{name}_{index}" for index in range(1, workers + 1))
-    return (name,) if name else ()
 
 
 def _int_or_none(value: object) -> int | None:
@@ -286,25 +277,17 @@ def _incompatible_operation_targets(operations: list[Any] | None) -> list[str]:
     )
 
 
-def _operation_target_kind_present(
-    operations: list[Any] | None,
-    *,
-    operation_type: str,
-    target_kind: str,
-) -> bool:
-    return any(
-        _operation_type(operation) == operation_type
-        and _operation_target_kind(operation) == target_kind
-        for operation in operations or []
+def _is_adblock_artifact_build_operation(operation: Any) -> bool:
+    return (
+        _operation_type(operation) == "adblock_refresh"
+        and _operation_target_kind(operation) == "adblock_artifact_build"
     )
 
 
-def _operations_request_adblock_artifact_build(operations: list[Any] | None) -> bool:
-    return _operation_target_kind_present(
-        operations,
-        operation_type="adblock_refresh",
-        target_kind="adblock_artifact_build",
-    )
+# How long an adblock_artifact_build operation waits for the Admin UI builder
+# (list downloads plus compile) before it fails. The proxy never compiles; it
+# keeps serving its active artifact and applies later builds on regular syncs.
+_ADBLOCK_BUILD_WAIT_SECONDS = 1800
 
 
 def _operation_requests_config_force(operation: Any) -> bool:
@@ -1513,14 +1496,6 @@ class ProxyRuntime:
                 return False, f"PAC materialized file is stale: {rel}"
         return True, ""
 
-    @staticmethod
-    def _logical_supervisor_program_prefix(program_name: str) -> str:
-        if program_name == "cicap_adblock" or program_name.startswith("cicap_adblock_"):
-            return "cicap_adblock_"
-        if program_name == "cicap_av" or program_name.startswith("cicap_av_"):
-            return "cicap_av_"
-        return ""
-
     def _supervisor_status_lines(
         self,
         *,
@@ -1563,41 +1538,7 @@ class ProxyRuntime:
             )
         return status.returncode == 0 and not duplicate_names, detail, lines
 
-    def _resolve_supervisor_program_names(
-        self,
-        program_name: str,
-        *,
-        timeout_seconds: int = 10,
-    ) -> tuple[list[str], str]:
-        prefix = self._logical_supervisor_program_prefix(program_name)
-        if not prefix:
-            return [program_name], ""
-        configured = list(_icap_supervisor_programs(program_name))
-        _ok, detail, lines = self._supervisor_status_lines(
-            timeout_seconds=timeout_seconds
-        )
-        matches = sorted(
-            name for name in lines if name == program_name or name.startswith(prefix)
-        )
-        duplicate_status = "Duplicate supervisor status entries:" in detail
-        if configured != [program_name]:
-            missing = sorted(set(configured) - set(matches))
-            unexpected = sorted(set(matches) - set(configured))
-            if duplicate_status or missing or unexpected:
-                problems = []
-                if missing:
-                    problems.append(
-                        f"missing configured programs: {', '.join(missing)}"
-                    )
-                if unexpected:
-                    problems.append(f"unexpected programs: {', '.join(unexpected)}")
-                return [], "; ".join(problems + ([detail] if detail else []))
-            return configured, detail
-        if matches == [program_name] and not duplicate_status:
-            return [program_name], detail
-        return [], detail or f"{program_name} status unavailable."
-
-    def _supervisor_program_status_exact(
+    def _supervisor_program_status(
         self,
         program_name: str,
         *,
@@ -1612,60 +1553,11 @@ class ProxyRuntime:
         for line in lines.values():
             parts = line.split(None, 2)
             if parts and parts[0] == program_name:
-                return len(parts) > 1 and parts[1] in accepted_states, detail
+                # Duplicate entries for one program are joined: never accepted.
+                return (
+                    len(parts) > 1 and parts[1] in accepted_states and "\n" not in line
+                ), detail
         return False, detail
-
-    def _supervisor_program_status(
-        self,
-        program_name: str,
-        *,
-        timeout_seconds: int = 10,
-        accepted_states: tuple[str, ...] = ("RUNNING",),
-    ) -> tuple[bool, str]:
-        prefix = self._logical_supervisor_program_prefix(program_name)
-        configured = list(_icap_supervisor_programs(program_name))
-        if prefix:
-            status_ok, detail, lines = self._supervisor_status_lines(
-                timeout_seconds=timeout_seconds
-            )
-            matching_names = sorted(
-                name
-                for name in lines
-                if name == program_name or name.startswith(prefix)
-            )
-            expected_names = sorted(configured)
-            matching = [lines[name] for name in matching_names]
-            if matching_names:
-                complete = matching_names == expected_names
-                ok = (
-                    status_ok
-                    and complete
-                    and all(
-                        len(parts := line.split(None, 2)) > 1
-                        and parts[1] in accepted_states
-                        for line in matching
-                    )
-                )
-                if not complete:
-                    missing = sorted(set(expected_names) - set(matching_names))
-                    unexpected = sorted(set(matching_names) - set(expected_names))
-                    problems = []
-                    if missing:
-                        problems.append(
-                            f"missing configured programs: {', '.join(missing)}"
-                        )
-                    if unexpected:
-                        problems.append(f"unexpected programs: {', '.join(unexpected)}")
-                    return False, "; ".join(problems + matching)
-                return ok, "\n".join(matching)
-            if configured != [program_name] and detail:
-                return False, detail
-
-        return self._supervisor_program_status_exact(
-            program_name,
-            timeout_seconds=timeout_seconds,
-            accepted_states=accepted_states,
-        )
 
     def _supervisor_programs_health(self) -> dict[str, Any]:
         programs = (
@@ -1693,34 +1585,13 @@ class ProxyRuntime:
             }
 
         for program in programs:
-            prefix = self._logical_supervisor_program_prefix(program)
-            matched_names = sorted(
-                name
-                for name in lines
-                if name == program or (prefix and name.startswith(prefix))
-            )
-            if not matched_names:
+            line = lines.get(program)
+            if line is None:
                 continue
-            expected_names = (
-                sorted(_icap_supervisor_programs(program)) if prefix else [program]
-            )
-            matched = [lines[name] for name in matched_names]
-            complete = matched_names == expected_names
-            missing = sorted(set(expected_names) - set(matched_names))
-            unexpected = sorted(set(matched_names) - set(expected_names))
-            problems = []
-            if missing:
-                problems.append(f"missing configured programs: {', '.join(missing)}")
-            if unexpected:
-                problems.append(f"unexpected programs: {', '.join(unexpected)}")
+            parts = line.split(None, 2)
             statuses[program] = {
-                "ok": ok_status
-                and complete
-                and all(
-                    len(parts := line.split(None, 2)) > 1 and parts[1] == "RUNNING"
-                    for line in matched
-                ),
-                "detail": "; ".join([*problems, "\n".join(matched)]),
+                "ok": ok_status and len(parts) > 1 and parts[1] == "RUNNING",
+                "detail": line,
             }
 
         detail_parts = [
@@ -1874,22 +1745,11 @@ class ProxyRuntime:
         def remaining_timeout() -> float:
             return max(0.0, deadline - time.monotonic())
 
-        programs, resolve_detail = self._resolve_supervisor_program_names(
-            program,
-            timeout_seconds=max(0.001, remaining_timeout()),
-        )
-        details = [str(resolve_detail or "").strip()] if resolve_detail else []
-        ok = bool(programs)
-        if not programs and not details:
-            details.append(f"Failed to resolve supervisor programs for {program}.")
-        for supervisor_program in programs:
-            command_timeout = remaining_timeout()
-            if command_timeout <= 0:
-                ok = False
-                details.append(
-                    f"Timed out before {requested_action} {supervisor_program}."
-                )
-                break
+        command_timeout = remaining_timeout()
+        if command_timeout <= 0:
+            ok = False
+            detail = f"Timed out before {requested_action} {program}."
+        else:
             try:
                 proc = subprocess.run(
                     [
@@ -1897,29 +1757,23 @@ class ProxyRuntime:
                         "-c",
                         "/etc/supervisord.conf",
                         requested_action,
-                        supervisor_program,
+                        program,
                     ],
                     capture_output=True,
                     timeout=command_timeout,
                 )
             except Exception as exc:
                 ok = False
-                details.append(
-                    public_error_message(
-                        exc,
-                        default=f"Failed to {requested_action} {supervisor_program}.",
-                    )
+                detail = public_error_message(
+                    exc,
+                    default=f"Failed to {requested_action} {program}.",
                 )
-                continue
-            details.append(
-                _decode_completed(proc).strip()
-                or f"{supervisor_program} {requested_action} requested."
-            )
-            ok = ok and proc.returncode == 0
-        detail = (
-            "\n".join(part for part in details if part)
-            or f"{program} {requested_action} requested."
-        )
+            else:
+                ok = proc.returncode == 0
+                detail = (
+                    _decode_completed(proc).strip()
+                    or f"{program} {requested_action} requested."
+                )
         if requested_action == "start" and ok:
             status_timeout = remaining_timeout()
             if status_timeout <= 0:
@@ -1953,108 +1807,13 @@ class ProxyRuntime:
                 "supervisor", _SUPERVISOR_CONTROL_LOCK
             )
             with lock_context:
-                return self._restart_supervisor_program_locked(
+                return self._restart_supervisor_program_unlocked(
                     program_name,
                     timeout_seconds=timeout_seconds,
                     stop_on_failure=stop_on_failure,
                 )
         except _RuntimeLockError as exc:
             return False, str(exc)
-
-    def _restart_supervisor_program_locked(
-        self,
-        program_name: str,
-        *,
-        timeout_seconds: int,
-        stop_on_failure: bool,
-    ) -> tuple[bool, str]:
-        deadline = time.monotonic() + max(0.001, float(timeout_seconds))
-
-        def remaining_timeout() -> float:
-            return max(0.001, deadline - time.monotonic())
-
-        prefix = self._logical_supervisor_program_prefix(program_name)
-        configured_programs = list(_icap_supervisor_programs(program_name))
-        if prefix and configured_programs != [program_name]:
-            programs, resolve_detail = self._resolve_supervisor_program_names(
-                program_name,
-                timeout_seconds=remaining_timeout(),
-            )
-            scaled_programs = [
-                program for program in programs if program != program_name
-            ]
-            if not scaled_programs:
-                return False, resolve_detail or (
-                    f"Unable to resolve scaled supervisor programs for {program_name}."
-                )
-            return self._restart_resolved_supervisor_programs_unlocked(
-                scaled_programs,
-                resolve_detail=resolve_detail,
-                stop_on_failure=stop_on_failure,
-                deadline=deadline,
-            )
-
-        ok, detail = self._restart_supervisor_program_unlocked(
-            program_name,
-            timeout_seconds=remaining_timeout(),
-            stop_on_failure=stop_on_failure,
-            deadline=deadline,
-        )
-        if ok or not prefix:
-            return ok, detail
-        if "no such process" not in str(detail or "").lower():
-            return ok, detail
-
-        programs, resolve_detail = self._resolve_supervisor_program_names(
-            program_name,
-            timeout_seconds=remaining_timeout(),
-        )
-        scaled_programs = [program for program in programs if program != program_name]
-        if not scaled_programs:
-            return ok, detail
-        return self._restart_resolved_supervisor_programs_unlocked(
-            scaled_programs,
-            resolve_detail="\n".join(
-                part for part in (detail, resolve_detail) if str(part or "").strip()
-            ),
-            stop_on_failure=stop_on_failure,
-            deadline=deadline,
-        )
-
-    def _restart_resolved_supervisor_programs_unlocked(
-        self,
-        program_names: list[str],
-        *,
-        resolve_detail: str,
-        stop_on_failure: bool,
-        deadline: float,
-    ) -> tuple[bool, str]:
-        def remaining_timeout() -> float:
-            return max(0.001, deadline - time.monotonic())
-
-        results = [
-            self._restart_supervisor_program_unlocked(
-                program,
-                timeout_seconds=remaining_timeout(),
-                stop_on_failure=False,
-                deadline=deadline,
-            )
-            for program in program_names
-        ]
-        all_restarted = all(result_ok for result_ok, _detail in results)
-        detail_parts = [str(resolve_detail or "").strip()]
-        detail_parts.extend(
-            str(result_detail or "").strip() for _ok, result_detail in results
-        )
-        if not all_restarted and stop_on_failure:
-            _stopped_ok, stop_detail = (
-                self._fail_safe_stop_supervisor_programs_unlocked(
-                    tuple(program_names),
-                    deadline=deadline,
-                )
-            )
-            detail_parts.append(stop_detail)
-        return all_restarted, "\n".join(part for part in detail_parts if part)
 
     def _wait_for_supervisor_program_stopped(
         self,
@@ -2148,16 +1907,11 @@ class ProxyRuntime:
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
         if not stopped_ok:
-            status_checker = (
-                self._supervisor_program_status_exact
-                if self._logical_supervisor_program_prefix(program_name)
-                else self._supervisor_program_status
-            )
             command_timeout = remaining_timeout()
             if command_timeout is None:
                 details.append(f"Timed out restarting {program_name}.")
                 return False, "\n".join(part for part in details if part).strip()
-            status_ok, status_detail = status_checker(
+            status_ok, status_detail = self._supervisor_program_status(
                 program_name, timeout_seconds=command_timeout
             )
             if status_detail and status_detail not in details:
@@ -2210,7 +1964,7 @@ class ProxyRuntime:
             command_timeout = remaining_timeout()
             if command_timeout is None:
                 break
-            status_ok, status_detail = self._supervisor_program_status_exact(
+            status_ok, status_detail = self._supervisor_program_status(
                 program_name,
                 timeout_seconds=command_timeout,
                 accepted_states=("RUNNING", "STARTING"),
@@ -2419,31 +2173,124 @@ class ProxyRuntime:
             False,
         )
 
-    def _refresh_adblock_service_without_squid_restart(self) -> tuple[bool, str]:
-        """Refresh adblock ICAP helpers without touching Squid listeners.
+    def _reload_adblock_service(self) -> tuple[str, str]:
+        """SIGHUP the adblock helper and confirm that every worker reloaded.
 
-        Squid is configured to bypass unavailable ICAP helpers, so changed adblock
-        artifacts and explicit cache flushes can restart/roll helpers under the
-        Squid lifecycle lock while keeping existing client tunnels and listener
-        sockets intact.
+        Returns ("reloaded", detail) once each worker reports a load newer than
+        the signal, ("rejected", detail) when a worker could not load the
+        materialized artifact (it keeps serving its previous engine), or
+        ("unconfirmed", detail) when the helper is not running, the signal
+        failed or no confirmation arrived in time.
+        """
+        directory = adblock_icap_status_dir()
+        before = read_worker_statuses(directory)
+        try:
+            proc = subprocess.run(
+                [
+                    "supervisorctl",
+                    "-c",
+                    "/etc/supervisord.conf",
+                    "signal",
+                    "HUP",
+                    "cicap_adblock",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            return "unconfirmed", public_error_message(
+                exc, default="Failed to signal the adblock ICAP helper."
+            )
+        signal_detail = _decode_completed(proc).strip()
+        if proc.returncode != 0 or "ERROR" in signal_detail:
+            return "unconfirmed", (
+                signal_detail or "The adblock ICAP helper could not be signalled."
+            )
+
+        def reloaded(status: Any) -> bool:
+            previous = before.get(status.worker)
+            # A helper started after the snapshot loaded the materialized
+            # artifact at startup.
+            return (
+                previous is None
+                or previous.helper_pid != status.helper_pid
+                or status.generation > previous.generation
+            )
+
+        deadline = time.monotonic() + 15.0
+        pending = "no worker load status"
+        while True:
+            statuses = read_worker_statuses(directory)
+            main = statuses.get(1)
+            if main is not None:
+                workers = [
+                    statuses.get(worker) for worker in range(1, main.processes + 1)
+                ]
+                waiting = [
+                    str(worker)
+                    for worker, status in enumerate(workers, start=1)
+                    if status is None
+                    or status.helper_pid != main.helper_pid
+                    or not reloaded(status)
+                ]
+                if not waiting:
+                    errors = [
+                        f"worker {status.worker}: {status.error}"
+                        for status in workers
+                        if status is not None and not status.ok
+                    ]
+                    if errors:
+                        return "rejected", (
+                            "adblock ICAP helper kept its previous artifact: "
+                            + "; ".join(errors)
+                        )
+                    return "reloaded", (
+                        f"adblock ICAP helper reloaded in process "
+                        f"({main.processes} worker(s))."
+                    )
+                pending = f"waiting for worker(s) {', '.join(waiting)}"
+            if time.monotonic() >= deadline:
+                return "unconfirmed", (
+                    f"adblock ICAP helper reload was not confirmed: {pending}."
+                )
+            time.sleep(0.05)
+
+    def _refresh_adblock_service_without_squid_restart(self) -> tuple[bool, str]:
+        """Make the adblock helper serve the materialized artifact.
+
+        Artifact changes and cache flushes reload the helper in process, so
+        Squid keeps its ICAP connections and never bypasses adblock for them.
+        Only a helper that is not running or does not confirm the reload is
+        restarted (the self-heal recovery). Runs under the Squid lifecycle lock
+        so materialization and reload are not interleaved with other changes.
         """
         with _exclusive_squid_lifecycle_lock():
             try:
-                ok, detail = self._restart_adblock_service()
+                outcome, detail = self._reload_adblock_service()
+                if outcome == "reloaded":
+                    return True, detail
+                if outcome == "rejected":
+                    return False, detail
+                ok, restart_detail = self._restart_adblock_service()
+                detail = "\n".join(
+                    part
+                    for part in (
+                        detail,
+                        "Restarting the adblock ICAP helper instead.",
+                        str(restart_detail or "").strip(),
+                    )
+                    if part
+                )
             except Exception as exc:
                 return False, public_error_message(
                     exc,
                     default="Failed during adblock ICAP refresh gate.",
                 )
-            return bool(ok), str(detail or "").strip()
+            return bool(ok), detail
 
-    def _reload_for_policy_update(
-        self,
-        *,
-        wait_for_adblock_icap: bool = True,
-    ) -> tuple[bool, str]:
-        # Policy materialization changes included ACL files, external ACL inputs,
-        # and the local adblock ICAP service revision. A full Squid process restart is too
+    def _reload_for_policy_update(self) -> tuple[bool, str]:
+        # Policy materialization changes included ACL files, external ACL inputs
+        # and the generated ICAP include. A full Squid process restart is too
         # disruptive during live policy churn: Squid drains helper children slowly
         # under active proxied traffic, supervisor eventually SIGKILLs it, and the
         # proxy/admin test stack can hang behind half-closed sockets. Reconfigure is
@@ -2478,27 +2325,6 @@ class ProxyRuntime:
                 )
                 detail = "\n".join(
                     part for part in (detail, probe_detail) if str(part or "").strip()
-                ).strip()
-        if ok and wait_for_adblock_icap:
-            # Squid can accept TCP connections before ICAP OPTIONS/helper state has
-            # fully converged after rapid policy/adblock churn. Wait for the local
-            # adblock ICAP service too so the sync API does not hand traffic back to
-            # callers while first requests can still bypass or hang on adaptation.
-            deadline = time.monotonic() + 15.0
-            last_icap: dict[str, Any] = {}
-            while time.monotonic() < deadline:
-                last_icap = _check_icap_adblock(timeout=1.0, error_formatter=str)
-                if bool(last_icap.get("ok")):
-                    break
-                time.sleep(0.5)
-            else:
-                ok = False
-                icap_detail = str(
-                    last_icap.get("detail")
-                    or "adblock ICAP health check did not pass after policy reload.",
-                )
-                detail = "\n".join(
-                    part for part in (detail, icap_detail) if str(part or "").strip()
                 ).strip()
         if ok:
             success_detail = "Squid reconfigured for policy update."
@@ -2774,7 +2600,7 @@ class ProxyRuntime:
         )
         status_starting = any(
             len(parts := line.split(None, 2)) > 1
-            and (parts[0] == "cicap_adblock" or parts[0].startswith("cicap_adblock_"))
+            and parts[0] == "cicap_adblock"
             and parts[1] == "STARTING"
             for line in str(status_detail or "").splitlines()
         )
@@ -3349,65 +3175,6 @@ class ProxyRuntime:
             "degraded": not snapshot_ok,
         }
 
-    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any] | None:
-        """Honor a pending operator refresh; None means no request is pending.
-
-        Only the observed request token is cleared, so a refresh requested while
-        the build runs stays pending for the next build.
-        """
-
-        def failure(exc: Exception, default: str) -> dict[str, Any]:
-            return {
-                "ok": False,
-                "changed": False,
-                "detail": public_error_message(exc, default=default),
-                "revision_id": None,
-                "adblock_settings_version": None,
-                "artifact_sha256": "",
-                "download_pending": False,
-            }
-
-        try:
-            refresh_requested = int(self.adblock_store.get_refresh_requested())
-        except Exception as exc:
-            return failure(exc, "Adblock refresh request could not be read.")
-        if not refresh_requested:
-            return None
-        try:
-            result = self.adblock_artifacts.build_active_artifact(
-                refresh_lists=True,
-                created_by="proxy-runtime",
-                source_kind="background",
-            )
-        except Exception as exc:
-            return failure(exc, "Adblock artifact build failed.")
-        revision = result.get("revision")
-        if bool(result.get("ok")) and not bool(result.get("download_pending")):
-            try:
-                self.adblock_store.clear_refresh_requested(refresh_requested)
-            except Exception:
-                # The build result stands; the uncleared request only causes
-                # one redundant rebuild later.
-                log_exception_throttled(
-                    logger,
-                    "proxy.runtime.adblock_refresh_clear",
-                    interval_seconds=300.0,
-                    message="Failed to clear the honored adblock refresh request",
-                )
-        return {
-            "ok": bool(result.get("ok")),
-            "changed": bool(result.get("changed")),
-            "detail": str(result.get("detail") or "").strip(),
-            "revision_id": _int_or_none(getattr(revision, "revision_id", None)),
-            "adblock_settings_version": _int_or_none(
-                getattr(revision, "settings_version", None),
-            ),
-            "artifact_sha256": str(
-                getattr(revision, "artifact_sha256", "") or "",
-            ).strip(),
-            "download_pending": bool(result.get("download_pending")),
-        }
-
     def sync_adblock_state(
         self,
         *,
@@ -3474,9 +3241,9 @@ class ProxyRuntime:
 
         # Force sync should refresh policy/config/PAC state, but it must not churn the
         # adblock ICAP helper when the active artifact is already materialized. Live
-        # policy workflows can issue many forced syncs in quick succession; restarting
-        # cicap_adblock on every no-op sync can starve Squid/admin requests and leave
-        # traffic probes hanging. Cache flush remains an explicit restart trigger.
+        # policy workflows can issue many forced syncs in quick succession; reloading
+        # cicap_adblock on every no-op sync would rebuild its engines and empty its
+        # decision caches for nothing. Cache flush remains an explicit reload trigger.
         artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
         integrity_detail = ""
         if (
@@ -4716,6 +4483,11 @@ class ProxyRuntime:
                 "executed_operation_types": [],
                 "unsupported_operation_types": [],
             }
+        deferred_notes: list[str] = []
+        if ledger is not None and claimed_operations:
+            claimed_operations, deferred_notes = (
+                self._defer_adblock_builds_awaiting_admin(ledger, claimed_operations)
+            )
         try:
             result = self._sync_from_db_unlocked(
                 force=bool(
@@ -4757,8 +4529,122 @@ class ProxyRuntime:
                     interval_seconds=300.0,
                     message="Failed to record claimed operation results; stale-claim recovery will requeue them",
                 )
+        if deferred_notes:
+            result = {
+                **result,
+                "detail": "\n".join(
+                    part
+                    for part in (
+                        str(result.get("detail") or "").strip(),
+                        *deferred_notes,
+                    )
+                    if part
+                ),
+            }
         self._capture_recovery_bundle_after_sync(result)
         return result
+
+    def _adblock_build_wait_detail(self, operation: Any) -> str:
+        """Why the artifact an adblock build operation targets is not built yet.
+
+        The Admin UI builder downloads the lists and compiles every artifact;
+        the operation is ready once the active artifact has the queued settings
+        version (or a newer one, which supersedes it) and the operator's list
+        refresh request has been consumed by a build. Returns "" when ready or
+        when the target is invalid (the completion check then fails it).
+        """
+        target = _int_or_none(getattr(operation, "target_ref", None))
+        if target is None:
+            return ""
+        try:
+            refresh_requested = int(self.adblock_store.get_refresh_requested())
+            active = self.adblock_artifacts.get_active_artifact_metadata()
+            active_version = (
+                None if active is None else _int_or_none(active.settings_version)
+            )
+            if active_version is not None and (
+                active_version > target
+                or (active_version == target and not refresh_requested)
+            ):
+                return ""
+            build_status = self.adblock_store.get_artifact_build_status()
+        except Exception as exc:
+            return (
+                "Waiting for the Admin UI adblock builder; its state could not "
+                "be read: "
+                + public_error_message(exc, default="adblock store unavailable.")
+            )
+        waiting_for = []
+        if active_version is None or active_version < target:
+            waiting_for.append(
+                f"an artifact for settings version {target} (active: "
+                f"{'none' if active_version is None else active_version})"
+            )
+        if refresh_requested:
+            waiting_for.append("the requested list refresh")
+        detail = "Waiting for the Admin UI adblock builder to publish " + " and ".join(
+            waiting_for
+        )
+        last_build = str(build_status.get("detail") or "").strip()
+        if last_build:
+            outcome = "ok" if build_status.get("ok") else "failed"
+            detail = f"{detail}. Last build ({outcome}): {last_build}"
+        return f"{detail}."
+
+    def _defer_adblock_builds_awaiting_admin(
+        self,
+        ledger: Any,
+        operations: list[Any],
+    ) -> tuple[list[Any], list[str]]:
+        """Return claimed build operations whose artifact is not built yet.
+
+        Such an operation goes back to pending (it is claimed again on the next
+        sync, every PROXY_SYNC_INTERVAL_SECONDS or sooner after a nudge) and is
+        failed once it waited _ADBLOCK_BUILD_WAIT_SECONDS. Releasing it keeps it
+        out of the ledger's stale-applying recovery. Returns the operations to
+        reconcile now and a note per deferred operation.
+        """
+        remaining: list[Any] = []
+        notes: list[str] = []
+        now = time.time()
+        for operation in operations:
+            if not _is_adblock_artifact_build_operation(operation):
+                remaining.append(operation)
+                continue
+            wait_detail = self._adblock_build_wait_detail(operation)
+            if not wait_detail:
+                remaining.append(operation)
+                continue
+            operation_id = getattr(operation, "operation_id", 0)
+            age = now - float(getattr(operation, "created_ts", 0) or 0)
+            if age >= _ADBLOCK_BUILD_WAIT_SECONDS:
+                status = "failed"
+                detail = (
+                    "The Admin UI adblock builder did not publish the artifact "
+                    f"within {_ADBLOCK_BUILD_WAIT_SECONDS // 60} minutes. The proxy "
+                    "keeps serving its active artifact and applies later builds "
+                    f"on regular syncs.\n{wait_detail}"
+                )
+            else:
+                status = "pending"
+                detail = wait_detail
+            try:
+                _mark_claimed_operation_status(
+                    ledger, operation, status=status, detail=detail
+                )
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.defer_adblock_build",
+                    interval_seconds=300.0,
+                    message="Failed to release a waiting adblock build operation; stale-claim recovery will requeue it",
+                )
+            notes.append(
+                f"Adblock build operation #{operation_id} "
+                + ("failed: " if status == "failed" else "is pending: ")
+                + detail
+            )
+        return remaining, notes
 
     def _mark_claimed_operations(
         self,
@@ -4919,55 +4805,6 @@ class ProxyRuntime:
             policy_result["detail"] = detail
             return policy_result
 
-        if _operations_request_adblock_artifact_build(operations):
-            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
-            if adblock_build_result is None:
-                detail_parts.append(
-                    "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
-                )
-            else:
-                if str(adblock_build_result.get("detail") or "").strip():
-                    detail_parts.append(str(adblock_build_result["detail"]).strip())
-                if not bool(adblock_build_result.get("ok")):
-                    detail = (
-                        "\n".join(detail_parts).strip()
-                        or "Adblock artifact build failed."
-                    )
-                    self.registry.mark_apply_result(
-                        self.proxy_id,
-                        ok=False,
-                        detail=detail,
-                        current_config_sha=self._current_config_sha(),
-                    )
-                    return {
-                        "ok": False,
-                        "detail": detail,
-                        "changed": bool(
-                            cert_changed
-                            or policy_changed
-                            or bool(adblock_build_result.get("changed"))
-                        ),
-                        "cache_cleared": False,
-                        "certificate_changed": cert_changed,
-                        "policy_changed": policy_changed,
-                        "adblock_changed": bool(adblock_build_result.get("changed")),
-                        "pac_changed": False,
-                        "config_changed": False,
-                        "current_config_sha": self._current_config_sha(),
-                        **cert_evidence,
-                        **policy_evidence,
-                        "adblock_revision_id": _int_or_none(
-                            adblock_build_result.get("revision_id"),
-                        ),
-                        "adblock_settings_version": _int_or_none(
-                            adblock_build_result.get("adblock_settings_version"),
-                        ),
-                        "artifact_sha256": str(
-                            adblock_build_result.get("artifact_sha256") or "",
-                        ),
-                        **operation_evidence,
-                    }
-
         adblock_result = _call_sync_with_operations(
             self.sync_adblock_state,
             force=artifact_force_value,
@@ -5086,19 +4923,6 @@ class ProxyRuntime:
             )
 
         controller = getattr(self, "controller", None)
-        set_adblock_icap_revision_token = getattr(
-            controller,
-            "set_adblock_icap_revision_token",
-            None,
-        )
-        if callable(set_adblock_icap_revision_token):
-            set_adblock_icap_revision_token(
-                str(
-                    adblock_result.get("artifact_sha256")
-                    or self._current_adblock_artifact_sha()
-                    or "",
-                )[:16],
-            )
         adblock_enabled = self._current_adblock_enabled()
         adblock_evidence["adblock_runtime_enabled"] = "1" if adblock_enabled else "0"
         set_adblock_enabled = getattr(controller, "set_adblock_enabled", None)
@@ -5209,7 +5033,6 @@ class ProxyRuntime:
             )
             return bool(
                 policy_reload_required
-                or adblock_changed
                 or (clamav_runtime_changed and not clamav_restart_already_applied)
             )
 
@@ -5217,9 +5040,7 @@ class ProxyRuntime:
         if revision_meta is None:
             reload_ok = True
             if reload_required_after_runtime_materialization():
-                reload_ok, reload_detail = self._reload_for_policy_update(
-                    wait_for_adblock_icap=adblock_changed,
-                )
+                reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = (
@@ -5292,9 +5113,7 @@ class ProxyRuntime:
         if normalized_config_current:
             reload_ok = True
             if reload_required_after_runtime_materialization():
-                reload_ok, reload_detail = self._reload_for_policy_update(
-                    wait_for_adblock_icap=adblock_changed,
-                )
+                reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = "Proxy is already using the active config revision."
@@ -5407,9 +5226,7 @@ class ProxyRuntime:
         ):
             reload_ok = True
             if reload_required_after_runtime_materialization():
-                reload_ok, reload_detail = self._reload_for_policy_update(
-                    wait_for_adblock_icap=adblock_changed,
-                )
+                reload_ok, reload_detail = self._reload_for_policy_update()
                 if reload_detail:
                     detail_parts.append(reload_detail)
             detail = "Proxy is already using the active config revision."
@@ -5526,9 +5343,7 @@ class ProxyRuntime:
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         if ok and reload_required_after_runtime_materialization():
-            policy_reload_ok, policy_reload_detail = self._reload_for_policy_update(
-                wait_for_adblock_icap=adblock_changed,
-            )
+            policy_reload_ok, policy_reload_detail = self._reload_for_policy_update()
             ok = bool(policy_reload_ok)
             if policy_reload_detail.strip():
                 detail_parts.append(policy_reload_detail.strip())

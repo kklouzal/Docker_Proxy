@@ -42,10 +42,9 @@ def _entrypoint_healthcheck_env_writer() -> str:
 def _write_healthcheck_env(tmp_path: Path, **env: str) -> dict[str, str]:
     env_file = tmp_path / "run" / "healthcheck.env"
     resolved = {
-        "WORKERS": "2",
         "CICAP_PORT": "14000",
-        "CICAP_AV_PORT": "14002",
-        "CICAP_AV_RESP_PORT": "14004",
+        "CICAP_AV_PORT": "14001",
+        "CICAP_AV_RESP_PORT": "14002",
         "CLAMD_HOST": "clamd.example",
         "CLAMD_PORT": "3310",
         "CLAMD_HOST_IS_REMOTE": "1",
@@ -99,10 +98,10 @@ def test_entrypoint_records_resolved_values_for_the_healthcheck(tmp_path) -> Non
         SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS="0.5",
     )
 
-    assert values["SQUID_WORKERS"] == "2"
+    assert "SQUID_WORKERS" not in values
     assert values["SQUID_HTTP_PORT"] == "3128"
-    assert values["CICAP_AV_PORT"] == "14002"
-    assert values["CICAP_AV_RESP_PORT"] == "14004"
+    assert values["CICAP_AV_PORT"] == "14001"
+    assert values["CICAP_AV_RESP_PORT"] == "14002"
     assert values["CLAMD_HOST"] == "clamd.example"
     assert values["CLAMD_HOST_IS_REMOTE"] == "1"
     assert values["CLAMAV_REQUIRED"] == "1"
