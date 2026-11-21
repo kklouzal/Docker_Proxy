@@ -1045,6 +1045,16 @@ a.brand:hover{
 }
 
 /* Web filtering category tiles */
+/* Short value + action tables: no 560-640px minimum, so the Remove button
+   stays on screen on phones without horizontal scrolling. */
+.table-wrap .table.policy-rule-table{
+  min-width: 0;
+}
+
+.policy-rule-table td.mono{
+  overflow-wrap: anywhere;
+}
+
 .error-token-guidance > .grid{
   padding: 0 16px 16px;
 }

@@ -9,7 +9,7 @@
 
 {% macro policy_table(items, policy, kind, value_name) -%}
   <div class="table-note">Current ({{ items|length }}):</div>
-  <div class="table-wrap"><table class="table">
+  <div class="table-wrap"><table class="table policy-rule-table">
     <thead><tr><th>{{ value_name }}</th><th class="num">Action</th></tr></thead>
     <tbody>
       {% for item in items %}
