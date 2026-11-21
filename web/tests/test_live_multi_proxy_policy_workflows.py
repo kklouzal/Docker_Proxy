@@ -434,17 +434,3 @@ def test_live_remote_webfilter_save_updates_only_selected_proxy(
             ),
             timeout_seconds=90.0,
         )
-
-
-def test_live_remote_adblock_flush_marks_selected_proxy_only(
-    multi_proxy_admin: LiveStackClient,
-) -> None:
-    response = multi_proxy_admin.admin_post_form(
-        with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
-        {"action": "flush_cache"},
-        csrf_path=with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
-        timeout_seconds=90.0,
-    )
-    assert response.status == 200
-    assert query_params(response.url).get("proxy_id") == [LIVE_CONFIG.remote_proxy_id]
-    assert query_params(response.url).get("cache_flushed") == ["1"]

@@ -792,7 +792,6 @@ class FakeAdblockStore:
             )
         ]
         self.refresh_requested = 0
-        self.cache_flush_requested = 0
         self.settings_version = 1
 
     def init_db(self) -> None:
@@ -831,9 +830,6 @@ class FakeAdblockStore:
 
     def get_settings_version(self) -> int:
         return self.settings_version
-
-    def request_cache_flush(self) -> None:
-        self.cache_flush_requested += 1
 
     def get_artifact_build_status(self) -> dict[str, Any]:
         return {}

@@ -4183,9 +4183,6 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
@@ -4269,9 +4266,6 @@ def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrit
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
@@ -4333,9 +4327,6 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
     class Store:
         def init_db(self) -> None:
             pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return False
 
     restarts = []
     runtime = _runtime_shell()
@@ -4421,9 +4412,6 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
@@ -4507,9 +4495,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
     class Store:
         def init_db(self) -> None:
             pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return False
 
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
@@ -4619,9 +4604,6 @@ def test_sync_adblock_state_changed_artifact_reloads_helper_in_process(
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     class Controller:
         def restart_squid(self, **_kwargs) -> NoReturn:
             msg = "changed adblock artifact must not restart Squid"
@@ -4684,103 +4666,6 @@ def test_sync_adblock_state_changed_artifact_reloads_helper_in_process(
     ]
 
 
-def test_sync_adblock_state_cache_flush_refreshes_helpers_without_squid_stop(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    recorded: list[dict[str, object]] = []
-    supervisor_calls: list[list[str]] = []
-    started: set[str] = set()
-    monkeypatch.delenv("SQUID_WORKERS", raising=False)
-    monkeypatch.delenv("WORKERS", raising=False)
-
-    class Artifacts:
-        def get_active_artifact_metadata(self):
-            return SimpleNamespace(revision_id=44, artifact_sha256="same-sha")
-
-        def get_active_artifact(self) -> NoReturn:
-            msg = "cache flush should not fetch the active artifact archive"
-            raise AssertionError(msg)
-
-        def record_apply_result(self, proxy_id, revision_id, **kwargs):
-            recorded.append(
-                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
-            )
-            return SimpleNamespace(application_id=44)
-
-    class Store:
-        def init_db(self) -> None:
-            pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return True
-
-        def mark_cache_flushed(self) -> None:
-            recorded.append({"cache_flushed": True})
-
-    class Controller:
-        def restart_squid(self, **_kwargs) -> NoReturn:
-            msg = "adblock cache flush must not restart Squid"
-            raise AssertionError(msg)
-
-        def _restart_squid_locked(self, **_kwargs) -> NoReturn:
-            msg = "adblock cache flush must not restart Squid"
-            raise AssertionError(msg)
-
-        def _run(self, args, **_kwargs) -> NoReturn:
-            msg = f"adblock cache flush must not stop Squid: {args}"
-            raise AssertionError(msg)
-
-    def fake_run(args, **_kwargs):
-        supervisor_calls.append(list(args))
-        action = args[3]
-        program = args[4] if len(args) > 4 else None
-        assert program != "squid"
-        if action == "status" and program is None:
-            return _cp(0, stdout="")
-        if action == "stop":
-            started.discard(program)
-            return _cp(0, stdout=f"{program}: stopped")
-        if action == "status":
-            state = (
-                "RUNNING pid 42, uptime 0:00:01"
-                if program in started
-                else "STOPPED Jul 25 10:25 PM"
-            )
-            return _cp(0, stdout=f"{program} {state}\n")
-        if action == "start":
-            started.add(program)
-            return _cp(0, stdout=f"{program}: started")
-        raise AssertionError(args)
-
-    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
-    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        runtime_module,
-        "_check_icap_adblock",
-        lambda **_kwargs: {"ok": True, "detail": "adblock ICAP healthy"},
-    )
-
-    runtime = _runtime_shell()
-    runtime.controller = Controller()
-    runtime.services = SimpleNamespace(
-        current_adblock_sha_reader=lambda: "same-sha",
-        adblock_service_restarter=None,
-    )
-    runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
-
-    result = runtime.sync_adblock_state(force=False)
-
-    assert result["ok"] is True
-    assert result["artifact_changed"] is False
-    assert result["cache_flushed"] is True
-    assert recorded[-1]["ok"] is True
-    assert not any(call[3:] == ["stop", "squid"] for call in supervisor_calls)
-    assert not any("squid" in call for call in supervisor_calls)
-
-
 def test_adblock_materialization_integrity_rejects_corrupt_lookup_without_rule_count(
     tmp_path,
 ) -> None:
@@ -4841,9 +4726,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_corrupt_wit
     class Store:
         def init_db(self) -> None:
             pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return False
 
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
@@ -4908,9 +4790,6 @@ def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
@@ -4967,9 +4846,6 @@ def test_sync_adblock_state_refreshes_stale_apply_for_current_artifact() -> None
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
@@ -5008,9 +4884,6 @@ def test_sync_adblock_state_reports_missing_apply_record_failure() -> None:
         def init_db(self) -> None:
             pass
 
-        def get_cache_flush_requested(self) -> bool:
-            return False
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
@@ -5022,143 +4895,6 @@ def test_sync_adblock_state_reports_missing_apply_record_failure() -> None:
     assert result["revision_id"] == 42
     assert result["artifact_sha256"] == "same-sha"
     assert result["detail"] == "Failed to record adblock artifact application."
-
-
-def test_sync_adblock_state_reports_cache_flush_as_runtime_change() -> None:
-    recorded = []
-
-    class Artifacts:
-        def get_active_artifact_metadata(self):
-            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
-
-        def get_active_artifact(self):
-            return SimpleNamespace(
-                revision_id=42, artifact_sha256="same-sha", archive_blob=b""
-            )
-
-        def record_apply_result(self, proxy_id, revision_id, **kwargs):
-            recorded.append(
-                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
-            )
-            return SimpleNamespace(application_id=7)
-
-    class Store:
-        def init_db(self) -> None:
-            pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return True
-
-        def mark_cache_flushed(self) -> None:
-            recorded.append({"cache_flushed": True})
-
-    runtime = _runtime_shell()
-    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
-    runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
-    runtime._restart_adblock_service = lambda: (True, "restarted")
-
-    result = runtime.sync_adblock_state(force=False)
-
-    assert result["ok"] is True
-    assert result["changed"] is True
-    assert result["adblock_changed"] is True
-    assert result["artifact_changed"] is False
-    assert result["cache_flushed"] is True
-    assert recorded[-1]["ok"] is True
-
-
-def test_sync_adblock_state_cache_flush_does_not_fetch_current_artifact_archive() -> (
-    None
-):
-    recorded = []
-
-    class Artifacts:
-        def get_active_artifact_metadata(self):
-            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
-
-        def get_active_artifact(self) -> NoReturn:
-            msg = "cache flush should not require fetching the active artifact archive"
-            raise AssertionError(msg)
-
-        def record_apply_result(self, proxy_id, revision_id, **kwargs):
-            recorded.append(
-                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
-            )
-            return SimpleNamespace(application_id=9)
-
-    class Store:
-        def init_db(self) -> None:
-            pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return True
-
-        def mark_cache_flushed(self) -> None:
-            recorded.append({"cache_flushed": True})
-
-    runtime = _runtime_shell()
-    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
-    runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
-    runtime._restart_adblock_service = lambda: (True, "restarted")
-
-    result = runtime.sync_adblock_state(force=False)
-
-    assert result["ok"] is True
-    assert result["changed"] is True
-    assert result["artifact_changed"] is False
-    assert result["cache_flushed"] is True
-    assert result["revision_id"] == 42
-    assert result["artifact_sha256"] == "same-sha"
-    assert recorded[-1]["ok"] is True
-
-
-def test_sync_adblock_state_reports_cache_flush_marker_failure() -> None:
-    recorded = []
-
-    class Artifacts:
-        def get_active_artifact_metadata(self):
-            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
-
-        def get_active_artifact(self):
-            return SimpleNamespace(
-                revision_id=42, artifact_sha256="same-sha", archive_blob=b""
-            )
-
-        def record_apply_result(self, proxy_id, revision_id, **kwargs):
-            recorded.append(
-                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
-            )
-            return SimpleNamespace(application_id=8)
-
-    class Store:
-        def init_db(self) -> None:
-            pass
-
-        def get_cache_flush_requested(self) -> bool:
-            return True
-
-        def mark_cache_flushed(self) -> None:
-            msg = "db unavailable"
-            raise RuntimeError(msg)
-
-    runtime = _runtime_shell()
-    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
-    runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
-    runtime._restart_adblock_service = lambda: (True, "restarted")
-
-    result = runtime.sync_adblock_state(force=False)
-
-    assert result["ok"] is False
-    assert result["changed"] is True
-    assert result["adblock_changed"] is True
-    assert result["artifact_changed"] is False
-    assert result["cache_flushed"] is False
-    assert "restarted" in result["detail"]
-    assert "Failed to clear adblock cache flush request" in result["detail"]
-    assert recorded[-1]["ok"] is False
 
 
 def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
