@@ -360,6 +360,7 @@ a.brand:hover{
 
 .nav-menu a{
   padding: 10px 10px;
+  font-size: 14px;
   border-radius: 10px;
   color: var(--muted);
   border: 1px solid rgba(255,255,255,.06);

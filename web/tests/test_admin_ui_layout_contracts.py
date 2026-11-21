@@ -164,7 +164,7 @@ def test_layout_uses_docker_proxy_visible_branding_and_titles() -> None:
 def test_operations_template_uses_shared_shell_and_ledger_classes() -> None:
     html = (TEMPLATES / "operations.html").read_text(encoding="utf-8")
 
-    assert "Operations | Docker Proxy" in html
+    assert "Operations · Docker Proxy" in html
     assert 'class="page-hero-copy"' in html
     assert 'class="stats-grid compact-stats operation-counts"' in html
     assert 'class="card operations-ledger-card"' in html
