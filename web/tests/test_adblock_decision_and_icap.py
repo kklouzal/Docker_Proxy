@@ -2528,6 +2528,15 @@ def test_top_level_navigation_is_its_own_context(tmp_path: Path) -> None:
     assert blocked("https://nav1p.example/", frame) is False
     script = {"Sec-Fetch-Dest": "script", **opener}
     assert blocked("https://nav3p.example/a.js", script) is True
+    # With fetch metadata only Sec-Fetch-Dest marks a navigation: a no-cors
+    # fetch asking for HTML is a subresource of its page.
+    html_fetch = {
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "no-cors",
+        "Accept": "text/html",
+        **opener,
+    }
+    assert blocked("https://nav3p.example/beacon", html_fetch) is True
 
 
 def test_sec_fetch_site_decides_party_over_referer_heuristic(

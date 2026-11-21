@@ -271,8 +271,16 @@ def infer_resource_type(
         "ping" in content_type and normalized_method == "POST"
     ):
         return "ping"
-    # A navigation's Accept also lists image types, so test it first.
-    if "text/html" in accept and normalized_method in {"GET", "HEAD"}:
+    # A navigation's Accept also lists image types, so test it first. Only a
+    # request without fetch metadata is inferred to be a navigation: a browser
+    # sends Sec-Fetch-Dest on every navigation (document, or a frame type
+    # above), so with a different destination (e.g. a no-cors fetch that asks
+    # for HTML) the request is a subresource and keeps its initiator context.
+    if (
+        "text/html" in accept
+        and normalized_method in {"GET", "HEAD"}
+        and not fetch_dest
+    ):
         return "document"
     if "text/css" in accept:
         return "stylesheet"
