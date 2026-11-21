@@ -749,7 +749,7 @@ a.brand:hover{
 
 .config-tabs{
   display: grid !important;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) !important;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)) !important;
   gap: 10px;
   width: 100% !important;
 }

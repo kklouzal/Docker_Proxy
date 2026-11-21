@@ -777,11 +777,6 @@ def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -
 @pytest.mark.parametrize(
     ("path", "data", "expected_location_fragment"),
     [
-        (
-            "/squid/config",
-            {"action": "apply", "config_text": "http_port 3128\n"},
-            "error=1",
-        ),
         ("/clamav/toggle", {"action": "disable"}, "error=1"),
         ("/sslfilter", {"action": "apply_policy"}, "apply_ok=0"),
         ("/reload", {}, "#status"),
@@ -980,3 +975,25 @@ def test_webfilter_rejected_whitelist_entry_is_kept_for_correction(
     page = client.get(location).get_data(as_text=True)
     assert 'value="bad host"' in page
     assert loaded.operation_ledger.operations == []
+
+
+def test_raw_config_apply_failure_keeps_editor_text(monkeypatch, tmp_path) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+    edited = "http_port 3128\n# unsaved <edit>\n"
+
+    response = _post(
+        client, "/squid/config", {"action": "apply", "config_text": edited}
+    )
+
+    # Rendered in place: a redirect would reload the saved config and drop
+    # the operator's edit.
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert "Config validation/apply failed; previous config kept." in text
+    assert "# unsaved &lt;edit&gt;" in text

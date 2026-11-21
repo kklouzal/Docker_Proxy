@@ -9834,6 +9834,7 @@ def squid_config():
     )
 
     validation = None
+    apply_error = None
     posted_config = None
     if request.method == "POST":
         action = _form_action(default="apply", lower=True)
@@ -9862,7 +9863,9 @@ def squid_config():
                 )
                 if ok:
                     return _redirect_config(tab, ok=True, msg=details)
-                return _redirect_config(tab, error=True, msg=details)
+                # Re-render with the submitted text so a rejected edit is
+                # not lost to a redirect that reloads the saved config.
+                apply_error = (details or "").strip()
         except Exception as exc:
             detail = public_error_message(exc)
             log_exception_throttled(
@@ -9882,7 +9885,7 @@ def squid_config():
             if action == "validate":
                 validation = {"ok": False, "detail": detail}
             else:
-                return _redirect_config(tab, error=True, msg=detail)
+                apply_error = detail
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=max_squid_workers())
@@ -9911,7 +9914,6 @@ def squid_config():
         + len(getattr(sslfilter_rules, "no_cache_domains", []) or [])
         + len(getattr(sslfilter_rules, "no_bump_src_nets", []) or [])
         + len(getattr(sslfilter_rules, "no_cache_src_nets", []) or [])
-        + (1 if bool(getattr(sslfilter_rules, "exclude_private_nets", False)) else 0)
     )
     summary = {
         "workers": tunables.get("workers") if tunables else None,
@@ -9945,6 +9947,7 @@ def squid_config():
         summary=summary,
         config_runtime_state=config_runtime_state,
         validation=validation,
+        apply_error=apply_error,
         config_sections=config_sections,
         config_field_map=get_config_ui_field_map(),
         active_section=active_section,
@@ -10008,6 +10011,13 @@ def apply_safe_caching():
             audit_kind="config_apply_template",
         )
     except Exception as exc:
+        if not isinstance(exc, ValueError):
+            log_exception_throttled(
+                app.logger,
+                "web.app.apply_safe_caching",
+                interval_seconds=30.0,
+                message="Failed to apply managed Squid settings",
+            )
         return _redirect_config(form_kind, error=True, msg=public_error_message(exc))
 
     return _redirect_config(form_kind, ok=ok, error=not ok, msg=detail)
@@ -10041,6 +10051,13 @@ def apply_cache_overrides():
             overrides=overrides,
         )
     except Exception as exc:
+        if not isinstance(exc, ValueError):
+            log_exception_throttled(
+                app.logger,
+                "web.app.apply_cache_overrides",
+                interval_seconds=30.0,
+                message="Failed to apply Squid cache overrides",
+            )
         return _redirect_config(
             "caching",
             subtab="overrides",

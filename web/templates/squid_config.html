@@ -8,14 +8,14 @@
         <div class="page-hero-copy">
             <span class="page-eyebrow">Proxy tuning</span>
             <h1 class="page-title">Squid Configuration</h1>
-            <p class="page-subtitle">Manage the saved desired <span class="mono">squid.conf</span> revision, runtime apply state, and schema-backed Squid 7.x tuning for {{ active_proxy.display_name }}.</p>
+            <p class="page-subtitle">Edit and apply <span class="mono">squid.conf</span> for {{ active_proxy.display_name }}, as raw text or through the grouped Squid 7.x settings.</p>
             <div class="hero-badges">
                 {% if summary.workers %}<span class="badge">{{ summary.workers }} worker{{ '' if summary.workers == 1 else 's' }}</span>{% endif %}
                 {% if summary.explicit_proxy_port %}<span class="badge ok">Explicit {{ summary.explicit_proxy_port }}</span>{% endif %}
                 <span class="badge {{ 'warn' if summary.intercept_enabled else '' }}">Intercept {{ summary.intercept_port if summary.intercept_enabled else 'off' }}</span>
                 {% if summary.cache_dir_size_mb %}<span class="badge">{{ summary.cache_dir_size_mb }} MB disk cache</span>{% endif %}
                 <span class="badge {{ 'warn' if summary.overrides_on else 'ok' }}">Overrides {{ 'on' if summary.overrides_on else 'off' }}</span>
-                <span class="badge">{{ summary.sslfilter_count }} SSL filtering</span>
+                <span class="badge">{{ summary.sslfilter_count }} SSL filter rule{{ '' if summary.sslfilter_count == 1 else 's' }}</span>
                 {% if config_runtime_state %}
                     <span class="badge {{ 'ok' if config_runtime_state.state == 'reconciled' else 'warn' }}">{{ config_runtime_state.label }}</span>
                 {% endif %}
@@ -29,15 +29,15 @@
 </section>
 
 {% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
-<div>Navigation and form submissions here are pinned to this proxy, so a different tab switching proxies will not accidentally retarget these changes.</div>
+<div>Changes here stay pinned to this proxy even if another browser tab switches proxies.</div>
 {% endcall %}
 
 {% if config_runtime_state %}
 <section class="card">
     <div class="card-header">
         <div>
-            <h2 class="card-title">Desired vs running state</h2>
-            <div class="small">Saved config revisions are desired state; the selected proxy runtime must reconcile before they are truly running.</div>
+            <h2 class="card-title">Saved vs running config</h2>
+            <div class="small">A saved revision takes effect once {{ active_proxy.display_name }} applies it.</div>
         </div>
         <span class="badge {{ 'ok' if config_runtime_state.state == 'reconciled' else 'warn' }}">{{ config_runtime_state.label }}</span>
     </div>
@@ -77,8 +77,7 @@
 
 <section class="card">
     <div class="card-header">
-        <h2 class="card-title">Saved configuration snapshot</h2>
-        <span class="badge">selected tab {{ 'Config' if tab == 'config' else (active_section.label if active_section else tab|title) }}</span>
+        <h2 class="card-title">Saved configuration summary</h2>
     </div>
     <div class="card-body">
         <div class="summary-grid">
@@ -103,11 +102,11 @@
                 <div class="stat-v">{{ summary.cache_mem_mb if summary.cache_mem_mb is not none else 'n/a' }}</div>
             </div>
             <div class="stat compact-stat">
-                <div class="stat-k">SSL Filtering</div>
+                <div class="stat-k">SSL filter rules</div>
                 <div class="stat-v">{{ summary.sslfilter_count }}</div>
             </div>
         </div>
-        <div class="surface-note small">Use the raw <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, and the grouped tabs for safer schema-backed Squid 7.x tuning with sane defaults.</div>
+        <div class="surface-note small">Use the <span class="mono">Config</span> tab for exact <span class="mono">squid.conf</span> edits, or the grouped tabs for validated settings with defaults.</div>
     </div>
 </section>
 
@@ -124,8 +123,8 @@
     <div class="banner error"><span class="badge danger">Rebuild failed</span><div class="banner-copy"><span class="small">Saved settings could not be rebuilt and applied to {{ active_proxy.display_name }}; previous config kept.</span>{% if request.args.get('apply_all_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_all_msg') }}</pre>{% endif %}</div></div>
 {% elif request.args.get('ok') %}
     <div class="banner success"><span class="badge ok">Apply queued</span><div class="banner-copy"><span class="small">Config validated, saved as desired state, and queued for {{ active_proxy.display_name }} to apply.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
-{% elif request.args.get('error') %}
-    <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/apply failed; previous config kept.</span>{% if request.args.get('apply_msg') %}<pre class="small pre-wrap">{{ request.args.get('apply_msg') }}</pre>{% endif %}</div></div>
+{% elif apply_error is not none or request.args.get('error') %}
+    <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Config validation/apply failed; previous config kept.{% if apply_error is not none %} Your edits are still in the editor below.{% endif %}</span>{% set fail_msg = apply_error if apply_error is not none else request.args.get('apply_msg') %}{% if fail_msg %}<pre class="small pre-wrap">{{ fail_msg }}</pre>{% endif %}</div></div>
 {% endif %}
 
 {% if validation %}
@@ -147,7 +146,7 @@
             <div class="card-header">
                 <div>
                     <h2 class="card-title">squid.conf</h2>
-                    <div class="small">Raw editor with server-side validation, reload safety checks, and local dirty-state tracking.</div>
+                    <div class="small">The full config is validated before it is saved and applied.</div>
                 </div>
                 <div class="config-toolbar">
                     <span class="badge ok" data-config-dirty-indicator-for="raw-config-form">No local changes</span>
@@ -330,32 +329,12 @@
             <section class="card config-overview-card">
                 <div class="card-header">
                     <div>
-                        <h2 class="card-title">{{ active_section.label }} tuning</h2>
-                        <div class="small">Schema-backed controls with live dependency handling, dirty-state tracking, and quick links into each directive group.</div>
+                        <h2 class="card-title">{{ active_section.label }} settings</h2>
+                        <div class="small">{{ section_ns.field_total }} setting{{ '' if section_ns.field_total == 1 else 's' }}, written to a managed block in <span class="mono">squid.conf</span>.</div>
                     </div>
-                    <span class="badge ok">Template-backed</span>
                 </div>
                 <div class="card-body">
-                    <div class="summary-grid">
-                        <div class="stat compact-stat">
-                            <div class="stat-k">Groups</div>
-                            <div class="stat-v">{{ active_section.groups|length }}</div>
-                        </div>
-                        <div class="stat compact-stat">
-                            <div class="stat-k">Fields</div>
-                            <div class="stat-v">{{ section_ns.field_total }}</div>
-                        </div>
-                        <div class="stat compact-stat">
-                            <div class="stat-k">Snapshot lines</div>
-                            <div class="stat-v">{{ running_line_count }}</div>
-                        </div>
-                        <div class="stat compact-stat">
-                            <div class="stat-k">Mode</div>
-                            <div class="stat-v">Managed</div>
-                        </div>
-                    </div>
                     <div class="surface-note small">{{ active_section.description }}</div>
-                    <div class="surface-note small">The values below come from the Squid 7.x directive inventory and are rendered back into a managed block inside <span class="mono">squid.conf</span>.</div>
                     <div class="config-group-nav">
                         <div class="small">Jump to group</div>
                         <div class="page-tabs config-group-tabs">
@@ -371,7 +350,7 @@
                 <div class="card-header">
                     <div>
                         <h2 class="card-title">Apply {{ active_section.label }}</h2>
-                        <div class="small">Changes are tracked locally until you save them back into the managed <span class="mono">squid.conf</span> block.</div>
+                        <div class="small">Changes stay in this page until you save and apply them.</div>
                     </div>
                     <div class="config-toolbar">
                         <span class="badge ok" data-config-dirty-indicator-for="safe-config-form">No local changes</span>
