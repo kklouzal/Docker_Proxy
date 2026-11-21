@@ -1398,6 +1398,35 @@ def test_icap_parse_reads_x_infection_found_threat(
     assert row["av_threat"] == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Verbatim icap.log rows from Squid 7.8 (Alpine edge) with the ClamAV
+        # RESPMOD helper: an EICAR block page, a clean response and an EICAR
+        # body detected after partial delivery (aborted, no verdict header).
+        (
+            r"1795274975\t53\t127.0.0.1\tGET\thttp://127.0.0.1:8080/eicar.com.txt\t3\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t3\t2\t606\t397\tType=0;%20Resolution=2;%20Threat=Eicar-Signature;",
+            "Eicar-Signature",
+        ),
+        (
+            r"1795274975\t57\t127.0.0.1\tGET\thttp://127.0.0.1:8080/clean.txt\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t1\t0\t545\t347\t-",
+            "",
+        ),
+        (
+            r"1795274975\t60\t127.0.0.1\tGET\thttp://127.0.0.1:8080/big-eicar.bin\t1\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t31\t8\t2098282\t1835814\t-",
+            "",
+        ),
+    ],
+)
+def test_icap_parse_native_squid_rows(line: str, expected: str) -> None:
+    row = DiagnosticStore()._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["icap_service"] == "av_resp"
+    assert row["icap_outcome"] == "ICAP_MOD"
+    assert row["av_threat"] == expected
+
+
 def test_icap_parse_keeps_lines_without_the_infection_field() -> None:
     """Lines written before the field was added (22 fields) still parse."""
     line = (

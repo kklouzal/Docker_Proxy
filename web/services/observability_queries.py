@@ -982,7 +982,7 @@ class ObservabilityQueries:
             "adblock_rows": adblock_rows,
             "webfilter_rows": webfilter_rows,
             "notes": [
-                "AV detections are the threats the scanner reported when it blocked a response or upload (ICAP X-Infection-Found). A download already streaming to the client when the scanner finds a threat is cut off instead and is not listed here; the ClamAV helper log records it.",
+                'AV detections are the threats the scanner reported when it blocked a response or upload (ICAP X-Infection-Found). A response already streaming to the client when the scanner finds a threat is cut off instead and is not listed here; the proxy container log records it as "blocked infected response after partial delivery".',
                 "Ad-block and web-filter rows come from the explicit block logs, so they are direct evidence of enforcement.",
             ],
         }

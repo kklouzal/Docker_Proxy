@@ -4590,7 +4590,7 @@ def test_observability_overview_merges_partial_payload_defaults(
 
     assert response.status_code == 200
     assert "Cache hit rate" in text
-    assert "Potential AV findings" in text
+    assert "AV detections" in text
 
 
 def test_policy_requests_page_renders_empty_state_when_store_unavailable(
