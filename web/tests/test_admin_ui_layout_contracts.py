@@ -55,7 +55,7 @@ def test_pages_with_sidebars_declare_their_layout_intent() -> None:
 def test_observability_data_tables_use_balanced_pairs() -> None:
     html = (TEMPLATES / "observability.html").read_text(encoding="utf-8")
 
-    assert html.count('class="grid data-pair-layout"') == 4
+    assert html.count('class="grid data-pair-layout"') == 2
     assert "Top clients" in html
     assert "Slowest ICAP events" in html
 
@@ -172,7 +172,7 @@ def test_operations_template_uses_shared_shell_and_ledger_classes() -> None:
 def test_policy_requests_template_uses_shared_shell_and_table_classes() -> None:
     html = (TEMPLATES / "requests.html").read_text(encoding="utf-8")
 
-    assert "Policy Requests | Docker Proxy" in html
+    assert "Policy Requests · Docker Proxy" in html
     assert 'class="page-hero-copy"' in html
     assert 'class="card-title"' in html
     assert 'class="card-body"' in html

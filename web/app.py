@@ -3079,8 +3079,7 @@ def _empty_observability_payload(
             "cache_reasons": [],
             "ssl": ssl_payload,
             "security": security_payload,
-            "performance": performance_payload,
-            "remediation": remediation_payload,
+            "slow_requests": [],
         }
     if pane in {"destinations", "clients", "cache"}:
         return {"rows": []}
@@ -3095,7 +3094,11 @@ def _empty_observability_payload(
     if pane == "reports":
         return {
             "summary": base_summary,
-            "cache_savings": {"estimated_saved_bytes": 0, "byte_hit_pct": 0.0},
+            "cache_savings": {
+                "total_bytes": 0,
+                "estimated_saved_bytes": 0,
+                "byte_hit_pct": 0.0,
+            },
             "top_users": [],
             "top_blocked_categories": [],
             "top_malware_attempts": [],
@@ -7442,6 +7445,9 @@ def observability():
     privacy = _observability_privacy_from_request()
 
     queries = None
+    # Set when a query fails so the page says so instead of rendering the
+    # empty defaults as if the window had no activity.
+    load_error = False
     if pane == "settings":
         summary = _empty_observability_summary()
     else:
@@ -7464,6 +7470,7 @@ def observability():
                 message="Failed to load observability summary; rendering empty state",
             )
             summary = _empty_observability_summary()
+            load_error = True
     summary = {
         **_empty_observability_summary(),
         **(summary if isinstance(summary, dict) else {}),
@@ -7665,6 +7672,7 @@ def observability():
             interval_seconds=30.0,
             message="Failed to load observability pane; rendering empty state",
         )
+        load_error = True
         if pane == "remediation":
             pane_payload = _database_remediation_payload(exc, summary=summary)
         else:
@@ -7691,6 +7699,7 @@ def observability():
         privacy=privacy,
         summary=summary,
         pane_payload=pane_payload,
+        load_error=load_error,
     )
 
 
@@ -7947,31 +7956,18 @@ def observability_export():
             )
             total_requests = int(summary_data.get("request_records") or 0)
         if pane == "overview":
-            overview = queries.overview_bundle(
-                since=since_ts,
-                search=search,
-                limit=min(limit, 10),
-                resolve_hostnames=resolve_hostnames,
-                summary=summary_data or {},
-            )
-            summary = overview["summary"]
-            headers = ["metric", "value"]
+            # The overview export is the window summary only; it never needed
+            # the overview pane's tables.
+            summary = summary_data or {}
             data_rows = (
                 [metric, summary.get(metric, 0)]
-                for metric in (
-                    "request_records",
-                    "cache_hits",
-                    "cache_misses",
-                    "cache_hit_pct",
-                    "clients",
-                    "destinations",
-                    "transactions",
-                    "icap_events",
-                    "av_icap_events",
-                    "adblock_icap_events",
-                )
+                for metric in _OBSERVABILITY_OVERVIEW_EXPORT_METRICS
             )
-            return _observability_export_response(headers, data_rows, export_format)
+            return _observability_export_response(
+                _OBSERVABILITY_EMPTY_EXPORT_HEADERS["overview"],
+                data_rows,
+                export_format,
+            )
 
         if pane == "reports":
             payload = queries.reporting_overview(
@@ -8621,7 +8617,7 @@ def _observability_metrics_response():
                 proxy_id,
                 window_i,
             ),
-            lambda: queries.security_overview(since=since_ts, limit=10),
+            lambda: queries.security_summary(since=since_ts),
         ),
     )
     if isinstance(security, dict):
@@ -8913,7 +8909,7 @@ def policy_requests():
             proxy_id=proxy_id,
         )
         recent_requests = store.list_requests(
-            limit=200,
+            limit=50,
             proxy_id=proxy_id,
             order_by="updated",
         )

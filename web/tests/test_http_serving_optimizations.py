@@ -114,7 +114,7 @@ class CountingObservabilityQueries:
     def cache_savings(self, **_kwargs):
         return {"estimated_saved_bytes": 0}
 
-    def security_overview(self, **_kwargs):
+    def security_summary(self, **_kwargs):
         return {"summary": {"combined_blocks": 0, "potential_findings": 0}}
 
 
@@ -648,10 +648,10 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     metrics = client.get("/observability/metrics?window=3600")
 
     assert page.status_code == 200
-    assert b"Top users by bandwidth" in page.data
-    assert b"Generate report" in page.data
-    assert b"Report presets" in page.data
-    assert b"Saved manual presets" in page.data
+    assert b"Top clients by traffic" in page.data
+    assert b"Export this view" in page.data
+    assert b"Export presets" in page.data
+    assert b"Export now" in page.data or b"No export presets saved yet." in page.data
     assert export.status_code == 200
     assert export.headers.get("Content-Type", "").startswith("application/json")
     assert b'"mode":"pseudonymized"' in export.data
@@ -815,7 +815,7 @@ def test_observability_report_schedule_generic_save_error_stays_generic(
 
     assert rendered.status_code == 200
     assert (
-        b"Report preset was not saved. Check Admin UI logs for the database error."
+        b"Export preset was not saved. Check Admin UI logs for the database error."
         in rendered.data
     )
     assert raw_error.encode() not in rendered.data

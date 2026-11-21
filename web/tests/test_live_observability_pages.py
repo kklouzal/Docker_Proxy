@@ -51,8 +51,8 @@ def test_live_observability_overview_destinations_and_clients_reflect_real_proxy
         "/observability?pane=overview&window=3600&q=traffic-fixture",
         "traffic-fixture",
     )
-    assert "Largest signals" in overview.text
-    assert "Security and enforcement overview" in overview.text
+    assert "Key figures" in overview.text
+    assert "Security leaders" in overview.text
 
     destinations = wait_for_admin_contains(
         admin_client,
@@ -77,9 +77,9 @@ def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(
     cache_page = wait_for_admin_contains(
         admin_client,
         "/observability?pane=cache&window=3600",
-        "Cache miss / bypass reasons",
+        "Why requests were not cached",
     )
-    assert "Cache miss / bypass reasons" in cache_page.text
+    assert "Why requests were not cached" in cache_page.text
 
     performance_page = wait_for_admin_contains(
         admin_client,
@@ -118,7 +118,7 @@ def test_live_observability_security_pane_renders_real_sections(
     )
     assert response.status == 200
     body = response.text
-    assert "Security and enforcement overview" in body
+    assert "Security and enforcement" in body
     assert "Potential AV findings" in body
-    assert "Ad-blocking blocks" in body
-    assert "Content-filtering blocks" in body
+    assert "Ad-block blocks" in body
+    assert "Web-filter blocks" in body

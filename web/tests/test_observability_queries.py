@@ -1631,9 +1631,10 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
         def __exit__(self, *_args):
             return None
 
-        def execute(self, sql, _params):
+        def execute(self, sql, params):
             normalized = " ".join(sql.split())
             if "SELECT ts, src_ip, method, url" in normalized:
+                recent_limits.append(params[-1])
                 return Result(
                     [
                         (
@@ -1647,10 +1648,11 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
                             "",
                             "",
                         )
-                        for index in range(20)
+                        for index in range(min(20, params[-1]))
                     ]
                 )
             if "SELECT ts, src_ip, url, category" in normalized:
+                recent_limits.append(params[-1])
                 return Result(
                     [
                         (
@@ -1659,7 +1661,7 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
                             f"https://blocked{index}.example/",
                             "blocked",
                         )
-                        for index in range(20)
+                        for index in range(min(20, params[-1]))
                     ]
                 )
             if "COUNT(" in normalized:
@@ -1667,6 +1669,7 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
             return Result([])
 
     correlated_lengths: list[int] = []
+    recent_limits: list[int] = []
 
     def correlate(_store, rows, **_kwargs):
         correlated_lengths.append(len(rows))
@@ -1685,6 +1688,8 @@ def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> N
 
     payload = queries.security_overview(since=900, limit=5)
 
+    # Only the visible page is fetched (SQL LIMIT) and correlated.
+    assert recent_limits == [5, 5]
     assert correlated_lengths == [5, 5]
     assert len(payload["adblock_rows"]) == 5
     assert len(payload["webfilter_rows"]) == 5
@@ -1734,42 +1739,30 @@ def test_observability_overview_bundle_reuses_precomputed_summary(
     )
     monkeypatch.setattr(
         queries,
-        "security_overview",
+        "security_summary",
         lambda **_kwargs: {
             "summary": {},
-            "av_rows": [],
             "av_top_targets": [],
-            "adblock_rows": [],
             "adblock_top_domains": [],
-            "webfilter_rows": [],
             "webfilter_top_categories": [],
             "webfilter_top_domains": [],
-            "notes": [],
-        },
-    )
-    monkeypatch.setattr(
-        queries,
-        "performance_overview",
-        lambda **_kwargs: {
-            "summary": {},
-            "slow_requests": [],
-            "slow_icap_events": [],
-            "top_user_agents": [],
-            "top_bump_modes": [],
-            "top_tls_server_versions": [],
-            "top_policy_tags": [],
-            "av_icap_summary": {},
-            "adblock_icap_summary": {},
         },
     )
 
-    remediation_summaries: list[object] = []
+    def _not_rendered_by_overview(**_kwargs):
+        msg = "the overview pane must not compute specialist-pane payloads"
+        raise AssertionError(msg)
 
-    def _remediation(**kwargs):
-        remediation_summaries.append(kwargs.get("summary"))
-        return {"summary": {}, "rows": []}
+    for name in ("security_overview", "performance_overview", "remediation_overview"):
+        monkeypatch.setattr(queries, name, _not_rendered_by_overview)
 
-    monkeypatch.setattr(queries, "remediation_overview", _remediation)
+    class SlowRequestStore:
+        def slowest_requests(self, *, since, limit):
+            assert since == 2800
+            assert limit == 5
+            return []
+
+    monkeypatch.setattr(observability_queries, "get_diagnostic_store", SlowRequestStore)
 
     precomputed = _summary()
     payload = queries.overview_bundle(
@@ -1778,7 +1771,7 @@ def test_observability_overview_bundle_reuses_precomputed_summary(
 
     assert summary_calls["count"] == 1
     assert payload["summary"]["request_records"] == 7
-    assert remediation_summaries == [precomputed]
+    assert payload["slow_requests"] == []
 
 
 def test_observability_performance_overview_reuses_precomputed_summary(
@@ -2508,6 +2501,9 @@ def test_windowed_request_aggregates_pin_the_proxy_ts_range(monkeypatch) -> None
                 def fetchone(self):
                     return (0, 0, 0, 0, 0)
 
+                def fetchall(self):
+                    return []
+
             return Result()
 
     monkeypatch.setattr(diagnostic_store, "get_proxy_id", lambda: "edge-a")
@@ -2528,6 +2524,17 @@ def test_windowed_request_aggregates_pin_the_proxy_ts_range(monkeypatch) -> None
     statements.clear()
     queries.summary(since=100)
     assert hint in statements[0]
+    statements.clear()
+    queries.top_cache_reasons(since=100)
+    queries.cache_savings(since=100)
+    store.slowest_requests(since=100)
+    store.top_request_dimension("user_agent", since=100)
+    assert len(statements) == 4
+    assert all(hint in statement for statement in statements)
+    statements.clear()
+    # Covering (proxy_id, <column>, ..., ts) indexes beat the pinned ts range.
+    store.top_request_dimension("bump_mode", since=100)
+    assert "FORCE INDEX" not in statements[0]
 
 
 def test_audit_activity_reports_unavailable_instead_of_no_activity(
@@ -2548,3 +2555,115 @@ def test_audit_activity_reports_unavailable_instead_of_no_activity(
     assert payload["error"]
     assert payload["top_kinds"] == []
     assert "could not read audit activity" in caplog.text
+
+
+def test_security_and_ssl_totals_cover_the_whole_window(tmp_path, monkeypatch) -> None:
+    configure_test_mysql_env(tmp_path / "observability-window-totals")
+    register_test_proxies()
+
+    from services import observability_queries  # type: ignore
+    from services.adblock_store import AdblockStore  # type: ignore
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.ssl_errors_store import SslErrorsStore  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    ssl_store = SslErrorsStore()
+    ssl_store.init_db()
+    AdblockStore(lists_dir=str(tmp_path / "adblock-lists")).init_db()
+    WebFilterStore().init_db()
+    queries = observability_queries.ObservabilityQueries()
+
+    # One older finding behind 30 newer clean scans: the findings list and the
+    # leader badges must still show it (they used to sample the newest 20 scans).
+    _insert_icap(
+        diag_store,
+        _icap_line(
+            ts=2000,
+            master_xaction="tx-finding",
+            client_ip="192.0.2.50",
+            method="GET",
+            url="https://dropper.example/file.exe",
+            icap_time_ms=12,
+            adapt_summary="virus_scan RESPMOD Eicar FOUND",
+            adapt_details="",
+        ),
+    )
+    for index in range(30):
+        _insert_icap(
+            diag_store,
+            _icap_line(
+                ts=2100 + index,
+                master_xaction=f"tx-clean-{index}",
+                client_ip="192.0.2.51",
+                method="GET",
+                url=f"https://clean{index}.example/",
+                icap_time_ms=3,
+                adapt_summary="av_resp 3",
+                adapt_details="",
+            ),
+        )
+
+    with ssl_store._connect() as conn:
+        for index in range(15):
+            domain = f"tls{index}.example" if index else ""
+            conn.execute(
+                """
+                INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    ssl_store._row_key("default", domain, "CERT_VERIFY", "x"),
+                    "default",
+                    domain,
+                    "CERT_VERIFY",
+                    "certificate verify failed",
+                    index + 1,
+                    1900,
+                    2000 + index,
+                    "",
+                ),
+            )
+
+    monkeypatch.setattr(
+        observability_queries, "get_diagnostic_store", lambda: diag_store
+    )
+    monkeypatch.setattr(
+        observability_queries, "get_ssl_errors_store", lambda: ssl_store
+    )
+
+    security = queries.security_overview(since=1500, limit=10)
+    assert security["summary"]["av_events"] == 31
+    assert security["summary"]["potential_findings"] == 1
+    assert [row["master_xaction"] for row in security["av_rows"]] == ["tx-finding"]
+    assert security["av_top_targets"] == [
+        {"label": "dropper.example", "full_label": "dropper.example", "count": 1}
+    ]
+    assert queries.security_summary(since=1500)["av_top_targets"][0]["count"] == 1
+
+    ssl_payload = queries.ssl_overview(since=1500, limit=10)
+    assert len(ssl_payload["rows"]) == 10
+    assert ssl_payload["summary"]["bucket_count"] == 15
+    assert ssl_payload["summary"]["total_events"] == sum(range(1, 16))
+    assert ssl_payload["summary"]["known_domains"] == 14
+    assert ssl_payload["summary"]["unknown_target_buckets"] == 1
+
+
+def test_policy_event_correlation_failure_is_logged_and_flagged(caplog) -> None:
+    from services import observability_queries  # type: ignore
+
+    class FailingStore:
+        def list_request_candidates_for_policy_events(self, _events, **_kwargs):
+            msg = "candidate lookup failed"
+            raise RuntimeError(msg)
+
+    rows = [{"ts": 10, "url": "https://ads.example/", "src_ip": "192.0.2.1"}]
+    with caplog.at_level("ERROR"):
+        observability_queries._correlate_policy_events_with_requests(
+            FailingStore(), rows, window_seconds=600, service="adblock"
+        )
+
+    assert rows[0]["correlated_candidates"] == []
+    assert rows[0]["correlation_unavailable"] is True
+    assert "could not match policy events" in caplog.text
