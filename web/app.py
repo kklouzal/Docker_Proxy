@@ -4389,8 +4389,6 @@ def inject_now():
             return ""
 
     return {
-        # Use timezone-aware UTC to avoid deprecation warnings.
-        "current_year": datetime.now(UTC).year,
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
         "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
@@ -6584,12 +6582,13 @@ def index():
             "status": proxy.status if proxy else "offline",
             "proxy_status": clean_text(redact_sensitive_text(exc), max_len=1000),
             "stats": {},
-            "services": {
-                "icap": {"ok": False, "detail": "unavailable"},
-                "clamav": {"ok": False, "detail": "unavailable"},
-            },
+            "services": {},
+            "_unavailable_cached": True,
         }
 
+    # No health report reached the Admin UI: the template shows one
+    # "unreachable" notice instead of repeating the error on every service row.
+    proxy_unreachable = bool(health.get("_unavailable_cached"))
     proxy_detail = str(health.get("proxy_status") or health.get("detail") or "")
     proxy_ok = bool(health.get("ok"))
     stats = health.get("stats") or {}
@@ -6650,6 +6649,7 @@ def index():
         "index.html",
         proxy_status=proxy_detail,
         proxy_ok=proxy_ok,
+        proxy_unreachable=proxy_unreachable,
         stats=stats,
         trends=trends,
         icap_health=icap_health,
@@ -7014,17 +7014,29 @@ def proxies():
 def operations_status():
     proxy_id = get_proxy_id()
     ledger = get_operation_ledger()
+    ledger_error = ""
     try:
         operations = ledger.list_operations(proxy_id, limit=OPERATION_HISTORY_LIMIT)
         operation_counts = ledger.counts_by_status(proxy_id)
-    except Exception:
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.operations_status",
+            interval_seconds=60.0,
+            message="Operations page could not read the operation ledger",
+        )
+        ledger_error = public_error_message(
+            exc,
+            default="The operation ledger could not be read.",
+        )
         operations = []
-        operation_counts = {"pending": 0, "applying": 0, "applied": 0, "failed": 0}
+        operation_counts = {}
     operations = _operation_template_rows(operations)
     return render_template(
         "operations.html",
         operations=operations,
         operation_counts=operation_counts,
+        ledger_error=ledger_error,
     )
 
 
@@ -10162,14 +10174,18 @@ def api_timeseries():
 def reload_squid():
     ok, detail = _trigger_proxy_sync(force=True)
     _record_audit_event("proxy_sync", ok=ok, detail=detail)
-    return redirect(_endpoint_url("index") + "#status")
+    return redirect(
+        _endpoint_url("index", ok="1" if ok else "0", msg=detail) + "#status"
+    )
 
 
 @app.route("/cache/clear", methods=["POST"])
 def clear_caches():
     ok, detail = _trigger_proxy_cache_clear()
     _record_audit_event("cache_clear", ok=ok, detail=detail)
-    return redirect(_endpoint_url("index") + "#status")
+    return redirect(
+        _endpoint_url("index", ok="1" if ok else "0", msg=detail) + "#status"
+    )
 
 
 @app.route("/certs", methods=["GET"])

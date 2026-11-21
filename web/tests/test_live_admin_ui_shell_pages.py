@@ -59,7 +59,7 @@ def test_live_login_page_uses_updated_auth_shell(
     assert 'class="auth-shell"' in body
     assert "Default credentials" not in body
     assert "admin / admin" not in body
-    assert "Admin UI port" in body
+    assert "protect the Admin UI only" in body
 
 
 def test_live_admin_ui_pac_endpoints_are_removed(admin_client: LiveStackClient) -> None:

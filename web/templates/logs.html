@@ -1,5 +1,4 @@
 {% extends "layout.html" %}
-{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Logs · Docker Proxy{% endblock %}
 
@@ -8,21 +7,13 @@
     <div class="page-hero-copy">
         <span class="page-eyebrow">Status</span>
         <h1 class="page-title">Logs</h1>
-        <p class="page-subtitle">Raw current log-file tail for {{ active_proxy.display_name }}.</p>
+        <p class="page-subtitle">The end of the current log files on {{ active_proxy.display_name }}, read live through its management API. Logs are not stored by the Admin UI; Squid and the container's logrotate policy own rotation.</p>
         <div class="hero-badges">
             <span class="badge {{ 'ok' if log_payload.ok else 'warn' }}">{{ log_payload.status }}</span>
             <span class="badge" id="log-tail-badge">Last {{ (log_payload.max_bytes or 0) // 1024 }} KiB</span>
         </div>
     </div>
-    <div class="page-actions">
-        <a class="btn ghost" href="{{ url_for('index') }}">Status home</a>
-        <a class="btn ghost" href="{{ url_for('observability') }}">Observability</a>
-    </div>
 </section>
-
-{% call scope_notice('proxy', 'Selected proxy only', 'This page reads current allowlisted log files directly from ' ~ active_proxy.display_name ~ ' through its management API. Logs are not stored in the database.') %}
-<div>Refresh reads the current file tail only. Rotation remains owned by Squid and the container logrotate policy.</div>
-{% endcall %}
 
 <section class="card">
     <div class="card-header">
@@ -31,24 +22,31 @@
     </div>
     <div class="card-body stack-list">
         <form class="filter-bar" id="log-viewer-form" action="{{ url_for('logs_status') }}" method="get" data-no-spa data-api-url="{{ url_for('api_logs_status') }}" data-default-max-bytes="{{ max_log_tail_bytes }}">
-            <label for="log-key">Log file</label>
-            <select id="log-key" name="log">
-                {% for log in logs %}
-                <option value="{{ log.key }}" {{ 'selected' if log.key == log_payload.key else '' }}>
-                    {{ log.label }}{% if not log.available %} (missing){% endif %}
-                </option>
-                {% endfor %}
-            </select>
-            <label for="log-max-bytes">Tail size</label>
-            <select id="log-max-bytes" name="max_bytes">
-                {% for bytes, label in log_tail_size_options %}
-                <option value="{{ bytes }}" {{ 'selected' if bytes == log_payload.max_bytes else '' }}>{{ label }}</option>
-                {% endfor %}
-            </select>
+            <div class="form-row">
+                <label for="log-key">Log file</label>
+                <select id="log-key" name="log">
+                    {% for log in logs %}
+                    <option value="{{ log.key }}" {{ 'selected' if log.key == log_payload.key else '' }}>
+                        {{ log.label }}{% if not log.available %} (missing){% endif %}
+                    </option>
+                    {% else %}
+                    {# The proxy did not list its logs; keep the requested one selectable so Refresh can retry it. #}
+                    <option value="{{ log_payload.key }}" selected>{{ log_payload.label or log_payload.key }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-row">
+                <label for="log-max-bytes">Tail size</label>
+                <select id="log-max-bytes" name="max_bytes">
+                    {% for bytes, label in log_tail_size_options %}
+                    <option value="{{ bytes }}" {{ 'selected' if bytes == log_payload.max_bytes else '' }}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <button class="btn primary" id="log-refresh" type="submit">Refresh</button>
         </form>
 
-        <div class="surface-note small" id="log-detail">
+        <div class="surface-note small" id="log-detail" role="status">
             {{ log_payload.detail }}
             {% if log_payload.truncated %} Showing the last {{ (log_payload.max_bytes or 0) // 1024 }} KiB.{% endif %}
         </div>

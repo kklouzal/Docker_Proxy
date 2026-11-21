@@ -3230,4 +3230,4 @@ def test_generate_ca_form_confirms_and_rejects_duplicate_submits(
 
     page = client.get("/certs").get_data(as_text=True)
     assert 'name="expected_active_revision" value="1"' in page
-    assert "Generate New CA" in page
+    assert "Generate new CA" in page

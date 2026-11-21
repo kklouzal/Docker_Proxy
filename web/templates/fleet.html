@@ -8,22 +8,18 @@
     <div class="page-hero-copy">
         <span class="page-eyebrow">Proxy inventory</span>
         <h1 class="page-title">Proxies</h1>
-        <p class="page-subtitle">Registered proxy runtimes and their direct management status.</p>
-        <div class="hero-badges">
-            <span class="badge">{{ proxies|length }} total</span>
-            {% if active_proxy_id %}<span class="badge ok">Pinned to {{ active_proxy_id }}</span>{% endif %}
-        </div>
+        <p class="page-subtitle">Every registered proxy, its health, and its management actions.</p>
     </div>
 </section>
 
-{% call scope_notice('global', 'Registered proxy inventory and targeting', 'This page shows every registered proxy and lets you deliberately switch the active proxy for subsequent UI pages.') %}
-<div>Selecting a proxy updates the pinned context for the next page you open, while existing tabs keep their current target.</div>
-{% endcall %}
+{{ scope_notice('global', 'All registered proxies', 'Select a proxy to target it in this tab. It also becomes the starting selection for tabs you open later; tabs already open keep their own selection.') }}
 
 {% if request.args.get('pending') %}
 <div class="banner"><span class="badge warn">Removal pending</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'A bounded removal pass completed. Retry the removal to continue.' }}</span></div></div>
 {% elif request.args.get('default_set') %}
 <div class="banner success"><span class="badge ok">Default updated</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Default proxy updated.' }}</span></div></div>
+{% elif request.args.get('saved') %}
+<div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Proxy ID and display name updated.</span></div></div>
 {% elif request.args.get('removed') %}
 <div class="banner success"><span class="badge ok">Removed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Proxy removed.' }}</span></div></div>
 {% elif request.args.get('error') %}
@@ -38,8 +34,7 @@
 
 <section class="card">
     <div class="card-header">
-        <h2 class="card-title">Proxy snapshot</h2>
-        <span class="badge">control plane</span>
+        <h2 class="card-title">Summary</h2>
     </div>
     <div class="card-body">
         <div class="summary-grid">
@@ -56,10 +51,6 @@
                 <div class="stat-v">{{ (proxies|length) - ns.healthy }}</div>
             </div>
             <div class="stat compact-stat">
-                <div class="stat-k">Pinned in this tab</div>
-                <div class="stat-v">{{ active_proxy_id or 'None' }}</div>
-            </div>
-            <div class="stat compact-stat">
                 <div class="stat-k">Default proxy</div>
                 <div class="stat-v">{{ default_proxy_id }}</div>
             </div>
@@ -70,17 +61,12 @@
             {% if default_proxy_source == 'admin' %}It was chosen on this page.{% else %}It comes from the <span class="mono">DEFAULT_PROXY_ID</span> bootstrap setting; choose a default below to store it in MySQL.{% endif %}
             {% if not default_registered %}<span class="warn-text"><span class="mono">{{ default_proxy_id }}</span> is not registered; choose a registered default.</span>{% endif %}
         </div>
-        <div class="actions">
-            <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
-            {% if active_proxy_id %}<a class="btn ghost" href="{{ url_for('observability', proxy_id=active_proxy_id, window=observability_default_window) }}">Open active observability</a>{% endif %}
-        </div>
     </div>
 </section>
 
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">Proxy instances</h2>
-        <span class="badge">{{ proxies|length }} total</span>
+        <h2 class="card-title">Proxies</h2>
     </div>
     <div class="card-body">
         <div class="table-wrap">
@@ -92,7 +78,7 @@
                         <th>Listeners</th>
                         <th>Heartbeat</th>
                         <th>Config SHA</th>
-                        <th>Observability (24h)</th>
+                        <th>Traffic (24h)</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -101,7 +87,7 @@
                     {% set health = live_health.get(proxy.proxy_id, {}) %}
                     {% set obs = observability_by_proxy.get(proxy.proxy_id, {}) %}
                     <tr>
-                        <td>
+                        <td class="fleet-proxy-cell">
                             <div class="stack-sm">
                                 <div><strong>{{ proxy.display_name }}</strong></div>
                                 <span class="small mono">{{ proxy.proxy_id }}</span>
@@ -133,27 +119,31 @@
                                     {% if health.services and health.services.forwarding %}<div>Forwarding: {{ health.services.forwarding.detail }}</div>{% endif %}
                                 {% else %}
                                     <div><span class="badge">explicit {{ proxy.public_http_proxy_port }}</span></div>
-                                    <div>Latest heartbeat did not include listener details.</div>
+                                    {% if proxy.proxy_id == active_proxy_id %}<div>The health report did not include listener details.</div>{% endif %}
                                 {% endif %}
                             </div>
                         </td>
                         <td>{{ fmt_ts(proxy.last_heartbeat) if proxy.last_heartbeat else 'n/a' }}</td>
                         <td><code class="mono">{{ (proxy.current_config_sha or '')[:12] or 'n/a' }}</code></td>
                         <td>
+                            {% if proxy.proxy_id in observability_by_proxy %}
                             <div class="stack-sm small">
                                 <div><span class="badge">Req {{ obs.requests or 0 }}</span> <span class="badge">Tx {{ obs.transactions or 0 }}</span></div>
                                 <div><span class="badge">ICAP {{ obs.icap_events or 0 }}</span> <span class="badge">SSL {{ obs.ssl_buckets or 0 }}</span></div>
                             </div>
+                            {% else %}
+                            <span class="small">Shown for the selected proxy only.</span>
+                            {% endif %}
                         </td>
                         <td>
                             <div class="actions">
                                 <a class="btn" href="{{ url_for('index', proxy_id=proxy.proxy_id) }}">Select</a>
                                 <a class="btn" href="{{ url_for('observability', proxy_id=proxy.proxy_id, window=observability_default_window) }}">Observability</a>
-                                <a class="btn" href="{{ url_for('observability', proxy_id=proxy.proxy_id, pane='ssl', window=observability_default_window) }}">SSL pane</a>
+                                <a class="btn" href="{{ url_for('observability', proxy_id=proxy.proxy_id, pane='ssl', window=observability_default_window) }}">SSL incidents</a>
                                 <form action="{{ url_for('reload_squid') }}" method="post">
                                     {{ csrf_field() }}
                                     <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
-                                    <button class="btn primary" type="submit">Sync now</button>
+                                    <button class="btn primary" type="submit" data-confirm-message="Re-apply the saved configuration and reload Squid on {{ proxy.display_name }}?" data-pending-label="Reloading...">Reload Squid</button>
                                 </form>
                                 <form action="{{ url_for('clear_caches') }}" method="post">
                                     {{ csrf_field() }}

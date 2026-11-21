@@ -123,7 +123,7 @@ def test_login_page_does_not_advertise_default_credentials_or_fixed_port() -> No
     assert "admin / admin" not in html
     assert "Default credentials" not in html
     assert "Port 5000" not in html
-    assert "admin UI" in html
+    assert "protect the Admin UI only" in html
 
 
 def test_pac_nav_has_server_rendered_active_state() -> None:

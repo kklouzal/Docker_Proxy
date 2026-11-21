@@ -11,20 +11,17 @@
     <div class="page-hero-copy">
         <span class="page-eyebrow">Access control</span>
         <h1 class="page-title">Administration</h1>
-        <p class="page-subtitle">Manage local break-glass operators and optional directory authentication for the admin control plane.</p>
+        <p class="page-subtitle">Manage local administrator accounts and optional LDAP, Active Directory, or SAML sign-in for the Admin UI.</p>
         <div class="hero-badges">
             <span class="badge">Signed in as {{ current_user }}</span>
             <span class="badge">Auth provider: {{ auth_status.active_label }}</span>
             <span class="badge">{{ users|length }} local user{{ '' if users|length == 1 else 's' }}</span>
         </div>
     </div>
-    <div class="page-actions">
-        <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
-    </div>
 </section>
 
-{% call scope_notice('global', 'Shared control-plane access', 'Directory integration is optional. Local operator accounts remain available as break-glass access even when LDAP or Active Directory is active.') %}
-<div>Only one external auth provider can be active at a time. Provider groups authorize admin UI login in this first stage; proxy bypass and policy use are reserved for later phases.</div>
+{% call scope_notice('global', 'Admin UI access', 'Local accounts always work, even when a directory provider is active, so a directory outage cannot lock you out.') %}
+<div>Only one of LDAP or Active Directory can be active at a time. Directory and SAML groups decide who can sign in to the Admin UI; they do not affect proxy traffic or policy.</div>
 {% endcall %}
 
 {% if message %}
@@ -37,12 +34,12 @@
 </div>
 {% endif %}
 
-<div class="actions page-tabs">
-    <a class="btn {{ 'primary' if current_tab == 'status' else 'ghost' }}" href="{{ url_for('administration', tab='status') }}">Status</a>
-    <a class="btn {{ 'primary' if current_tab == 'ldap' else 'ghost' }}" href="{{ url_for('administration', tab='ldap') }}">LDAP</a>
-    <a class="btn {{ 'primary' if current_tab == 'active_directory' else 'ghost' }}" href="{{ url_for('administration', tab='active_directory') }}">Active Directory</a>
-    <a class="btn {{ 'primary' if current_tab == 'saml' else 'ghost' }}" href="{{ url_for('administration', tab='saml') }}">SAML</a>
-</div>
+<nav class="actions page-tabs" aria-label="Administration sections">
+    <a class="btn {{ 'primary' if current_tab == 'status' else 'ghost' }}"{% if current_tab == 'status' %} aria-current="page"{% endif %} href="{{ url_for('administration', tab='status') }}">Status</a>
+    <a class="btn {{ 'primary' if current_tab == 'ldap' else 'ghost' }}"{% if current_tab == 'ldap' %} aria-current="page"{% endif %} href="{{ url_for('administration', tab='ldap') }}">LDAP</a>
+    <a class="btn {{ 'primary' if current_tab == 'active_directory' else 'ghost' }}"{% if current_tab == 'active_directory' %} aria-current="page"{% endif %} href="{{ url_for('administration', tab='active_directory') }}">Active Directory</a>
+    <a class="btn {{ 'primary' if current_tab == 'saml' else 'ghost' }}"{% if current_tab == 'saml' %} aria-current="page"{% endif %} href="{{ url_for('administration', tab='saml') }}">SAML</a>
+</nav>
 
 <div class="grid sidebar-wide-layout">
 {% if current_tab == 'status' %}
@@ -52,20 +49,6 @@
         <span class="badge">{{ auth_status.active_label }}</span>
     </div>
     <div class="card-body">
-        <div class="summary-grid">
-            <div class="stat compact-stat">
-                <div class="stat-k">Active provider</div>
-                <div class="stat-v">{{ auth_status.active_label }}</div>
-            </div>
-            <div class="stat compact-stat">
-                <div class="stat-k">Local users</div>
-                <div class="stat-v">{{ users|length }}</div>
-            </div>
-            <div class="stat compact-stat">
-                <div class="stat-k">Current session</div>
-                <div class="stat-v">{{ current_user }}</div>
-            </div>
-        </div>
         <div class="table-wrap">
             <table class="table">
                 <thead>
@@ -112,17 +95,16 @@
                 </tbody>
             </table>
         </div>
-        <div class="surface-note small">The first directory-backed capability is admin UI login based on group membership. Transparent proxy identity, captive portal identity, and block-page bypass are intentionally not enabled by this configuration alone.</div>
     </div>
 </section>
 
 <section class="card">
     <div class="card-header">
-        <h2 class="card-title">Local break-glass users</h2>
-        <span class="badge">always available</span>
+        <h2 class="card-title">Local users</h2>
+        <span class="badge">Always available</span>
     </div>
     <div class="card-body">
-        <div class="surface-note small">Keep at least one local admin account so directory outages cannot lock operators out of the control plane. Local passwords must be 12-1024 characters.</div>
+        <div class="small">Keep at least one local account so a directory outage cannot lock you out. Local passwords must be 12-1024 characters.</div>
         <div class="table-wrap">
             <table class="table">
                 <thead>
@@ -146,19 +128,19 @@
                                     <input type="hidden" name="action" value="set_password">
                                     <input type="hidden" name="username" value="{{ u.username }}">
                                     <label class="sr-only" for="new-password-{{ loop.index }}">New password for {{ u.username }}</label>
-                                    <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" minlength="12" maxlength="1024" required placeholder="New password" aria-label="New password for {{ u.username }}">
-                                    <button class="btn" type="submit" aria-label="Change password for {{ u.username }}">Change</button>
+                                    <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required placeholder="New password" aria-label="New password for {{ u.username }}">
+                                    <button class="btn" type="submit" aria-label="Change password for {{ u.username }}">Change password</button>
                                 </form>
+                                {% if u.username|lower == current_user|lower %}
+                                <span class="small">Signed in as this user; it cannot be removed.</span>
+                                {% else %}
                                 <form action="{{ url_for('administration', tab='status') }}" method="post">
                                     {{ csrf_field() }}
                                     <input type="hidden" name="action" value="delete_user">
                                     <input type="hidden" name="username" value="{{ u.username }}">
-                                    {% if u.username|lower == current_user|lower %}
-                                        <span class="small">Current user</span>
-                                    {% else %}
-                                        <button class="btn" type="submit" aria-label="Remove user {{ u.username }}" data-confirm-message="Remove Admin UI user {{ u.username }}?">Remove</button>
-                                    {% endif %}
+                                    <button class="btn danger" type="submit" aria-label="Remove user {{ u.username }}" data-confirm-message="Remove Admin UI user {{ u.username }}?">Remove</button>
                                 </form>
+                                {% endif %}
                             </div>
                         </td>
                     </tr>
@@ -179,14 +161,14 @@
             <input type="hidden" name="action" value="add_user">
             <div>
                 <label for="username">Username</label>
-                <input id="username" name="username" type="text" required>
+                <input id="username" name="username" type="text" autocomplete="off" required>
             </div>
             <div>
                 <label for="password">Password</label>
-                <input id="password" name="password" type="password" minlength="12" maxlength="1024" required>
+                <input id="password" name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required>
             </div>
             <div class="actions">
-                <button class="btn primary" type="submit">Add</button>
+                <button class="btn primary" type="submit">Add user</button>
             </div>
         </form>
     </div>
@@ -231,7 +213,7 @@
                 </div>
                 <div>
                     <label for="saml-ca">Metadata TLS CA bundle PEM</label>
-                    <textarea id="saml-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
+                    <textarea id="saml-ca" class="compact-textarea" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
                     <div class="field-note">Leave blank to use system trust. IdP signing certificates are fetched from metadata, not uploaded here.</div>
                 </div>
             </section>
@@ -332,7 +314,7 @@
                 </div>
                 <div>
                     <label for="{{ current_tab }}-server-urls">Server URI(s)</label>
-                    <textarea id="{{ current_tab }}-server-urls" name="server_urls" rows="3" required>{{ profile.server_urls }}</textarea>
+                    <textarea id="{{ current_tab }}-server-urls" class="compact-textarea" name="server_urls" rows="3" required>{{ profile.server_urls }}</textarea>
                 </div>
                 <div class="summary-grid">
                     <input type="hidden" name="use_starttls" value="0">
@@ -347,9 +329,9 @@
                         <div class="field-note">PEM or DER X.509 certificates are validated and stored with the provider profile.</div>
                     </div>
                     <div>
-                        <label for="{{ current_tab }}-clear-ca">Stored CA</label>
+                        <div class="label">Stored CA</div>
                         <input type="hidden" name="clear_ca_bundle" value="0">
-                        <label id="{{ current_tab }}-clear-ca" class="checkbox-row"><input type="checkbox" name="clear_ca_bundle" value="1"> Clear stored CA bundle</label>
+                        <label class="checkbox-row"><input type="checkbox" name="clear_ca_bundle" value="1"> Clear stored CA bundle</label>
                         <div class="field-note">Leave unchecked to keep the stored certificate when no new file is uploaded.</div>
                     </div>
                 </div>
@@ -439,7 +421,7 @@
                 <div class="stack-md">
                     <div>
                         <label for="{{ current_tab }}-ca">CA bundle PEM</label>
-                        <textarea id="{{ current_tab }}-ca" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
+                        <textarea id="{{ current_tab }}-ca" class="compact-textarea" name="ca_bundle" rows="4">{{ profile.ca_bundle }}</textarea>
                     </div>
                     <div>
                         <label for="{{ current_tab }}-user-attribute">User attribute</label>

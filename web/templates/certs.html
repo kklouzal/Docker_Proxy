@@ -8,21 +8,18 @@
     <div class="page-hero-copy">
         <span class="page-eyebrow">Certificate authority</span>
         <h1 class="page-title">Certificates</h1>
-        <p class="page-subtitle">Generate the CA certificate used for HTTPS SSL-bump and download it for client trust stores. The active CA bundle is versioned in MySQL and shared across all registered proxy containers.</p>
+        <p class="page-subtitle">Generate or upload the CA that Squid uses for SSL bump, and download it for client trust stores. Every change is saved as a new bundle revision.</p>
         <div class="hero-badges">
             <span class="badge {{ 'ok' if certificate else 'warn' }}">{{ 'Available' if certificate else 'Not generated' }}</span>
             {% if bundle and bundle.source_kind %}<span class="badge">{{ bundle.source_kind }}</span>{% endif %}
         </div>
     </div>
     <div class="page-actions">
-        {% if certificate %}<a class="btn ghost" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>{% endif %}
-        <a class="btn ghost" href="{{ url_for('sslfilter') }}">Review SSL filtering</a>
+        <a class="btn ghost" href="{{ url_for('sslfilter') }}">SSL filtering</a>
     </div>
 </section>
 
-{% call scope_notice('global', 'Shared certificate authority', 'The active CA bundle on this page is shared across every registered proxy.') %}
-<div>Use this page for the single certificate authority that every registered proxy should publish and report apply status against.</div>
-{% endcall %}
+{{ scope_notice('global', 'Shared certificate authority', 'One active CA bundle is published to every registered proxy; each proxy reports its apply status below.') }}
 
 {% if message %}
 <div class="banner {{ 'success' if message_ok else 'error' }}">
@@ -68,36 +65,10 @@
 </div>
 {% endif %}
 
-<section class="card">
-    <div class="card-header">
-        <h2 class="card-title">CA lifecycle overview</h2>
-        <span class="badge">trust distribution</span>
-    </div>
-    <div class="card-body stack-list">
-        <div class="stats-grid compact-stats">
-            <article class="stat-card">
-                <span class="stat-label">CA state</span>
-                <strong class="stat-value">{{ 'Ready' if certificate else 'Missing' }}</strong>
-                <span class="small">Generate or upload a CA bundle before enabling SSL bump on clients.</span>
-            </article>
-            <article class="stat-card">
-                <span class="stat-label">Scope</span>
-                <strong class="stat-value">Shared</strong>
-                <span class="small">One bundle published to every registered proxy.</span>
-            </article>
-            <article class="stat-card">
-                <span class="stat-label">Apply status rows</span>
-                <strong class="stat-value">{{ proxy_cert_statuses|length if proxy_cert_statuses is defined else 0 }}</strong>
-                <span class="small">Per-proxy evidence compares desired, applied, and running bundle hashes.</span>
-            </article>
-        </div>
-    </div>
-</section>
-
 <div class="grid sidebar-wide-layout">
     <section class="card split-left">
         <div class="card-header">
-            <h2 class="card-title">CA Certificate</h2>
+            <h2 class="card-title">CA certificate</h2>
             {% if certificate %}
                 <span class="badge ok">Available</span>
             {% else %}
@@ -132,12 +103,10 @@
                 <form action="{{ url_for('generate_certificate') }}" method="post">
                     {{ csrf_field() }}
                     <input type="hidden" name="expected_active_revision" value="{{ bundle.revision_id if bundle else 0 }}">
-                    <button class="btn primary" type="submit" data-confirm-message="{{ 'Generate a new CA and publish it to every registered proxy? Clients must then trust the new ca.crt.' if bundle else 'Generate a CA and publish it to every registered proxy?' }}">{{ 'Generate New CA' if bundle else 'Generate CA' }}</button>
+                    <button class="btn primary" type="submit" data-confirm-message="{{ 'Generate a new CA and publish it to every registered proxy? Clients must then trust the new ca.crt.' if bundle else 'Generate a CA and publish it to every registered proxy?' }}">{{ 'Generate new CA' if bundle else 'Generate CA' }}</button>
                 </form>
                 {% if certificate %}
                     <a class="btn" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>
-                {% else %}
-                    <a class="btn" href="{{ url_for('download_certificate', filename='ca.crt') }}">Download CA</a>
                 {% endif %}
             </div>
 
@@ -156,7 +125,7 @@
                         <input id="pfx_password" name="pfx_password" type="password" placeholder="Leave blank if none">
                     </div>
                     <div class="actions">
-                        <button class="btn primary" type="submit">Upload and Use</button>
+                        <button class="btn primary" type="submit" data-confirm-message="Replace the active CA with this PFX bundle and publish it to every registered proxy?">Upload and use</button>
                     </div>
                 </form>
             </div>
@@ -209,10 +178,10 @@
                             <div class="text-danger">The saved/desired SAN state does not match the certificate currently minted on disk. Regenerate the Admin UI HTTPS certificate before relying on it.{% if admin_ui_https.minted_sans_error %} {{ admin_ui_https.minted_sans_error }}{% endif %}</div>
                         {% endif %}
                     </div>
-                    <label>
-                        Admin UI certificate DNS/IP SANs
-                        <textarea name="san_tokens" rows="3" placeholder="proxyadmin.example.com&#10;192.0.2.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
-                    </label>
+                    <div>
+                        <label for="admin-ui-san-tokens">Extra certificate names (DNS names or IPs, one per line)</label>
+                        <textarea id="admin-ui-san-tokens" class="compact-textarea" name="san_tokens" rows="3" placeholder="proxyadmin.example.com&#10;192.0.2.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
+                    </div>
                     <div class="surface-note small">
                         Automatic SAN and continuation authority comes from <code class="mono">ADMIN_UI_PUBLIC_HOST</code> (or <code class="mono">PROXY_PUBLIC_HOST</code>), then a forwarded host only when the immediate peer is allowed by <code class="mono">PAC_TRUSTED_PROXY_CIDRS</code>. The ordinary request <code class="mono">Host</code> header is never trusted for certificate or redirect authority. For direct remote appliance access, set a public host and include it in the configured SANs; without either trusted source, continuation safely falls back to <code class="mono">localhost</code>. Localhost, loopback IPs, and Admin UI container names are added when the certificate is generated.
                         {% if admin_ui_https_env_lines %}
@@ -220,13 +189,13 @@
                         {% endif %}
                     </div>
                     <div class="actions">
-                        <button class="btn primary" type="submit">Save Admin UI HTTPS Preference</button>
+                        <button class="btn primary" type="submit">Save HTTPS settings</button>
                     </div>
                 </form>
                 <form class="form" action="{{ url_for('regenerate_admin_ui_https_certificate') }}" method="post">
                     {{ csrf_field() }}
                     <div class="actions">
-                        <button class="btn" type="submit" data-confirm-message="Regenerate the Admin UI HTTPS certificate from the active CA? The HTTPS listener switches to the new leaf certificate.">Regenerate Admin UI HTTPS Certificate</button>
+                        <button class="btn" type="submit" data-confirm-message="Regenerate the Admin UI HTTPS certificate from the active CA? The HTTPS listener switches to the new leaf certificate." {% if not admin_ui_https.active_bundle_available %}disabled title="Generate or upload a CA first"{% endif %}>Regenerate HTTPS certificate</button>
                     </div>
                 </form>
             </div>
@@ -288,7 +257,7 @@
 
     <aside class="card split-right">
         <div class="card-header">
-            <h2 class="card-title">Security Notes</h2>
+            <h2 class="card-title">Security notes</h2>
         </div>
         <div class="card-body">
             <div class="surface-note small">

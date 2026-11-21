@@ -1,39 +1,161 @@
 {% extends "layout.html" %}
-{% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}Home · Docker Proxy{% endblock %}
+{% block title %}Overview · Docker Proxy{% endblock %}
+
+{% macro health_badge(ok) -%}
+{% if proxy_unreachable %}<span class="badge">Unknown</span>
+{% elif ok %}<span class="badge ok">OK</span>
+{% else %}<span class="badge warn">Failing</span>
+{% endif %}
+{%- endmacro %}
+
+{% macro health_row(label, service) -%}
+<div class="k">{{ label }}</div>
+<div class="v">
+    {{ health_badge(service and service.ok) }}
+    <span class="small">{{ 'No report' if proxy_unreachable else (service.detail if service and service.detail else 'n/a') }}</span>
+</div>
+{%- endmacro %}
 
 {% block content %}
 <section class="page-hero">
     <div class="page-hero-copy">
-        <span class="page-eyebrow">Operational overview</span>
-        <h1 id="status" class="page-title">Status</h1>
-        <p class="page-subtitle">
-            Live process, service health, and quick actions for {{ active_proxy.display_name }}.
-        </p>
+        <span class="page-eyebrow">Selected proxy</span>
+        <h1 id="status" class="page-title">Overview</h1>
+        <p class="page-subtitle">Health, statistics, and quick actions for {{ active_proxy.display_name }}.</p>
         <div class="hero-badges">
-            <span class="badge {{ 'ok' if proxy_ok else 'warn' }}">Proxy {{ 'ready' if proxy_ok else 'check' }}</span>
-            <span class="badge {{ 'ok' if forwarding_health and forwarding_health.ok else 'warn' }}">Forwarding</span>
-            <span class="badge {{ 'ok' if icap_health and icap_health.ok else 'warn' }}">ICAP</span>
-            <span class="badge {{ 'ok' if clamav_health and clamav_health.ok else 'warn' }}">ClamAV</span>
+            {% if proxy_unreachable %}
+            <span class="badge warn">Proxy unreachable</span>
+            {% else %}
+            {% for label, ok in [('Proxy', proxy_ok), ('Forwarding', forwarding_health and forwarding_health.ok), ('ICAP', icap_health and icap_health.ok), ('ClamAV', clamav_health and clamav_health.ok)] %}
+            <span class="badge {{ 'ok' if ok else 'warn' }}">{{ label }} {{ 'OK' if ok else 'failing' }}</span>
+            {% endfor %}
+            {% endif %}
         </div>
-    </div>
-    <div class="page-actions">
-        <a class="btn ghost" href="{{ url_for('observability') }}">Open Observability</a>
-        <a class="btn ghost" href="{{ url_for('squid_config') }}">Tune config</a>
-        <a class="btn ghost" href="{{ url_for('proxies') }}">View proxies</a>
     </div>
 </section>
 
-{% call scope_notice('proxy', 'Selected proxy only', 'The health cards and quick actions on this page target ' ~ active_proxy.display_name ~ ' only.') %}
-<div>Use the proxy selector in the header or the Proxies page to move to another runtime. This tab stays pinned to the proxy that rendered it.</div>
-{% endcall %}
+{% if request.args.get('msg') %}
+{% set action_ok = request.args.get('ok') == '1' %}
+<div class="banner {{ 'success' if action_ok else 'error' }}" role="status">
+    <span class="badge {{ 'ok' if action_ok else 'danger' }}">{{ 'Queued' if action_ok else 'Failed' }}</span>
+    <div class="banner-copy">
+        <span class="small">{{ request.args.get('msg') }}</span>
+        {% if action_ok %}<span class="small">Track progress on the <a href="{{ url_for('operations_status') }}">Operations</a> page.</span>{% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if proxy_unreachable %}
+<div class="banner warning">
+    <span class="badge warn">Unreachable</span>
+    <div class="banner-copy">
+        <strong>No health report from {{ active_proxy.display_name }}</strong>
+        <span class="small">{{ proxy_status }}</span>
+        <span class="small">Live health and statistics need the proxy's management API. Saved settings and stored history are still available.</span>
+    </div>
+</div>
+{% endif %}
 
 <div class="grid sidebar-wide-layout">
-    <section class="card">
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">Proxy status</h2>
+            {{ health_badge(proxy_ok) }}
+        </div>
+        <div class="card-body">
+            {% if not proxy_unreachable %}
+            <pre class="pre-wrap">{{ proxy_status or 'No status detail reported.' }}</pre>
+            {% endif %}
+            <div class="actions">
+                <form action="{{ url_for('reload_squid') }}" method="post">
+                    {{ csrf_field() }}
+                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
+                    <button class="btn primary" type="submit" data-confirm-message="Re-apply the saved configuration and reload Squid on {{ active_proxy.display_name }}?" data-pending-label="Reloading...">Reload Squid</button>
+                </form>
+                <form action="{{ url_for('clear_caches') }}" method="post">
+                    {{ csrf_field() }}
+                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
+                    <button class="btn danger" type="submit" data-confirm-message="Clear proxy caches on {{ active_proxy.display_name }}? Cached objects will be discarded." data-pending-label="Clearing...">Clear cache</button>
+                </form>
+                <a class="btn" href="{{ url_for('squid_config') }}">Edit config</a>
+                <a class="btn" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
+            </div>
+            <div class="surface-note small">
+                <div>
+                {% if last_config %}
+                    Last config apply: {{ fmt_ts(last_config.ts) }} ({{ last_config.remote_addr or 'n/a' }}) · {{ 'ok' if last_config.ok else 'failed' }}
+                {% elif last_config_error %}
+                    Last config apply unavailable: {{ last_config_error }}
+                {% else %}
+                    No config apply events recorded yet.
+                {% endif %}
+                </div>
+                {% if config_runtime_state %}
+                <div>
+                    Config state: <strong>{{ config_runtime_state.label }}</strong>
+                    {% if config_runtime_state.active_revision_id %} · saved revision #{{ config_runtime_state.active_revision_id }}{% endif %}
+                    {% if config_runtime_state.running_config_short_sha %} · running SHA <code class="mono">{{ config_runtime_state.running_config_short_sha }}</code>{% endif %}
+                    {% if config_runtime_state.operation_status %} · operation #{{ config_runtime_state.operation_id }} {{ config_runtime_state.operation_status }}{% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <aside class="card split-right">
+        <div class="card-header">
+            <h2 class="card-title">Services</h2>
+        </div>
+        <div class="card-body">
+            <div class="kv">
+                {{ health_row('Forwarding', forwarding_health) }}
+                {{ health_row('ICAP', icap_health) }}
+                {{ health_row('ClamAV', clamav_health) }}
+            </div>
+        </div>
+    </aside>
+
+    <section class="card split-left">
+        <div class="card-header">
+            <h2 class="card-title">Trends</h2>
+        </div>
+        <div class="card-body">
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Window</th>
+                            <th class="num">Samples</th>
+                            <th class="num">CPU avg</th>
+                            <th class="num">Mem avg</th>
+                            <th class="num">Hit avg</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for k in ['60s','1h','24h','7d'] %}
+                            {% set t = (trends[k] if trends and k in trends else None) %}
+                            <tr>
+                                <td>{{ k }}</td>
+                                <td class="num">{{ t.count if t else 0 }}</td>
+                                <td class="num">{% if t and t.cpu_avg is not none %}{{ "%.1f"|format(t.cpu_avg) }}%{% else %}n/a{% endif %}</td>
+                                <td class="num">{% if t and t.mem_avg is not none %}{{ "%.1f"|format(t.mem_avg) }}%{% else %}n/a{% endif %}</td>
+                                <td class="num">{% if t and t.hit_rate_avg is not none %}{{ "%.1f"|format(t.hit_rate_avg) }}%{% else %}n/a{% endif %}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="small">Averages of the stored samples in each window.</div>
+        </div>
+    </section>
+
+    <aside class="card split-right">
         <div class="card-header">
             <h2 class="card-title">Statistics</h2>
-            {% if stats and stats.squid and stats.squid.mgr_available %}
+            {% if not stats %}
+                <span class="badge">No data</span>
+            {% elif stats.squid and stats.squid.mgr_available %}
                 <span class="badge ok">cachemgr</span>
             {% else %}
                 <span class="badge warn">log-based</span>
@@ -55,14 +177,10 @@
 
                 <div class="k">Memory</div>
                 <div class="v">
-                    {% if stats and stats.memory %}
-                        {% if stats.memory.used_bytes is not none and stats.memory.total_bytes is not none %}
-                            {{ (stats.memory.used_bytes // (1024*1024)) }} MiB / {{ (stats.memory.total_bytes // (1024*1024)) }} MiB
-                            {% if stats.memory.used_percent is not none %}
-                                <span class="small"> ({{ "%.1f"|format(stats.memory.used_percent) }}%)</span>
-                            {% endif %}
-                        {% else %}
-                            n/a
+                    {% if stats and stats.memory and stats.memory.used_bytes is not none and stats.memory.total_bytes is not none %}
+                        {{ (stats.memory.used_bytes // (1024*1024)) }} MiB / {{ (stats.memory.total_bytes // (1024*1024)) }} MiB
+                        {% if stats.memory.used_percent is not none %}
+                            <span class="small"> ({{ "%.1f"|format(stats.memory.used_percent) }}%)</span>
                         {% endif %}
                     {% else %}
                         n/a
@@ -106,47 +224,12 @@
                 </div>
             </div>
         </div>
-    </section>
+    </aside>
 
     <section class="card">
         <div class="card-header">
-            <h2 class="card-title">Trends</h2>
-            <span class="badge">averages</span>
-        </div>
-        <div class="card-body">
-            <div class="table-wrap">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Window</th>
-                            <th class="num">Samples</th>
-                            <th class="num">CPU avg</th>
-                            <th class="num">Mem avg</th>
-                            <th class="num">Hit avg</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for k in ['60s','1h','24h','7d'] %}
-                            {% set t = (trends[k] if trends and k in trends else None) %}
-                            <tr>
-                                <td>{{ k }}</td>
-                                <td class="num">{{ t.count if t else 0 }}</td>
-                                <td class="num">{% if t and t.cpu_avg is not none %}{{ "%.1f"|format(t.cpu_avg) }}%{% else %}n/a{% endif %}</td>
-                                <td class="num">{% if t and t.mem_avg is not none %}{{ "%.1f"|format(t.mem_avg) }}%{% else %}n/a{% endif %}</td>
-                                <td class="num">{% if t and t.hit_rate_avg is not none %}{{ "%.1f"|format(t.hit_rate_avg) }}%{% else %}n/a{% endif %}</td>
-                            </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            <div class="surface-note small">Backed by MySQL rollups (1s → 1m → 1h → 1d …). API: <span class="mono">/api/timeseries</span></div>
-        </div>
-    </section>
-
-    <section class="card">
-        <div class="card-header">
-            <h2 class="card-title">Observability</h2>
-            <span class="badge">last {{ observability_window_label }}</span>
+            <h2 class="card-title">Traffic</h2>
+            <span class="badge">Last {{ observability_window_label }}</span>
         </div>
         <div class="card-body stack-list">
             <div class="stats-grid compact-stats">
@@ -168,104 +251,12 @@
             </div>
             <div class="actions">
                 <a class="btn primary" href="{{ url_for('observability', window=observability_default_window) }}">Open Observability</a>
-                <a class="btn" href="{{ url_for('observability', pane='destinations', window=observability_default_window) }}">Review destinations</a>
+                <a class="btn" href="{{ url_for('observability', pane='destinations', window=observability_default_window) }}">Destinations</a>
                 <a class="btn" href="{{ url_for('observability', pane='security', window=observability_default_window) }}">Security signals</a>
                 <a class="btn" href="{{ url_for('observability', pane='performance', window=observability_default_window) }}">Performance</a>
                 <a class="btn" href="{{ url_for('observability', pane='ssl', window=observability_default_window) }}">SSL incidents</a>
-                <a class="btn" href="{{ url_for('clamav', window=observability_default_window) }}">AV controls</a>
-            </div>
-            <div class="surface-note small">
-                Observability is now the primary operator workflow for traffic, incidents, and latency review; the remaining policy pages focus on configuration and control actions.
             </div>
         </div>
     </section>
-
-    <section class="card split-left">
-        <div class="card-header">
-            <h2 class="card-title">Proxy Status</h2>
-            {% if proxy_ok %}
-                <span class="badge ok">OK</span>
-            {% else %}
-                <span class="badge warn">Check</span>
-            {% endif %}
-        </div>
-        <div class="card-body">
-            <pre>{{ proxy_status }}</pre>
-            <div class="actions">
-                <form action="{{ url_for('reload_squid') }}" method="post">
-                    {{ csrf_field() }}
-                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
-                    <button class="btn primary" type="submit" data-confirm-message="Reload Squid on {{ active_proxy.display_name }} now?" data-pending-label="Reloading...">Reload Squid</button>
-                </form>
-                <form action="{{ url_for('clear_caches') }}" method="post">
-                    {{ csrf_field() }}
-                    <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}" />
-                    <button class="btn danger" type="submit" data-confirm-message="Clear proxy caches on {{ active_proxy.display_name }}? Cached objects will be discarded." data-pending-label="Clearing...">Clear caches</button>
-                </form>
-                <a class="btn" href="{{ url_for('squid_config') }}">Edit config</a>
-                <a class="btn" href="{{ url_for('api_squid_config') }}" download="squid.conf">Download config</a>
-            </div>
-
-            {% if last_config %}
-                <div class="surface-note small">
-                    Last config apply: {{ fmt_ts(last_config.ts) }} ({{ last_config.remote_addr or 'n/a' }}) · {{ 'ok' if last_config.ok else 'failed' }}
-                </div>
-            {% elif last_config_error %}
-                <div class="surface-note small">Last config apply unavailable: {{ last_config_error }}</div>
-            {% else %}
-                <div class="surface-note small">No config apply events recorded yet.</div>
-            {% endif %}
-            {% if config_runtime_state %}
-                <div class="surface-note small">
-                    Config state: <strong>{{ config_runtime_state.label }}</strong>
-                    {% if config_runtime_state.active_revision_id %} · saved revision #{{ config_runtime_state.active_revision_id }}{% endif %}
-                    {% if config_runtime_state.running_config_short_sha %} · running SHA <code class="mono">{{ config_runtime_state.running_config_short_sha }}</code>{% endif %}
-                    {% if config_runtime_state.operation_status %} · operation #{{ config_runtime_state.operation_id }} {{ config_runtime_state.operation_status }}{% endif %}
-                </div>
-            {% endif %}
-        </div>
-    </section>
-
-    <aside class="card split-right">
-        <div class="card-header">
-            <h2 class="card-title">Services Health</h2>
-            <span class="badge">Inline</span>
-        </div>
-        <div class="card-body">
-            <div class="kv">
-                <div class="k">ICAP</div>
-                <div class="v">
-                    {% if icap_health and icap_health.ok %}
-                        <span class="badge ok">OK</span>
-                    {% else %}
-                        <span class="badge warn">Check</span>
-                    {% endif %}
-                    <span class="small">{{ icap_health.detail if icap_health else 'n/a' }}</span>
-                </div>
-
-                <div class="k">Forwarding</div>
-                <div class="v">
-                    {% if forwarding_health and forwarding_health.ok %}
-                        <span class="badge ok">OK</span>
-                    {% else %}
-                        <span class="badge warn">Check</span>
-                    {% endif %}
-                    <span class="small">{{ forwarding_health.detail if forwarding_health else 'n/a' }}</span>
-                </div>
-
-                <div class="k">ClamAV</div>
-                <div class="v">
-                    {% if clamav_health and clamav_health.ok %}
-                        <span class="badge ok">OK</span>
-                    {% else %}
-                        <span class="badge warn">Check</span>
-                    {% endif %}
-                    <span class="small">{{ clamav_health.detail if clamav_health else 'n/a' }}</span>
-                </div>
-                <div class="k">Web UI</div>
-                <div class="v"><span class="badge ok">OK</span> <span class="small">Health: /health</span></div>
-            </div>
-        </div>
-    </aside>
 </div>
 {% endblock %}

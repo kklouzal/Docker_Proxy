@@ -1,7 +1,10 @@
 :root{
+  /* The UI ships one dark theme; native controls follow it. */
+  color-scheme: dark;
   --bg: #0b1220;
   --panel: rgba(255,255,255,.06);
   --panel-2: rgba(255,255,255,.08);
+  --panel-strong: #111827;
   --text: rgba(255,255,255,.92);
   --muted: rgba(255,255,255,.70);
   --muted-2: rgba(255,255,255,.55);
@@ -79,6 +82,18 @@ body::before{
 
 a{ color: var(--text); text-decoration: none; }
 a:hover{ color: white; }
+
+/* Links inside running text need a non-color cue. */
+:where(p, li, .banner-copy, .surface-note, .scope-notice-details, .field-note) a:not(.btn){
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Keyboard focus ring for controls that do not draw their own. */
+:where(a, button, summary, [tabindex]):focus-visible{
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .container{
   width: min(1600px, calc(100% - 32px));
@@ -225,7 +240,7 @@ a.brand:hover{
 .nav{
   display:flex;
   align-items:flex-start;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -244,13 +259,7 @@ a.brand:hover{
 .proxy-switcher select{
   min-width: 220px;
   width: auto;
-}
-
-.context-strip-actions .proxy-switcher{
   padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.08);
-  background: rgba(255,255,255,.04);
 }
 
 .nav-dropdown{
@@ -276,21 +285,44 @@ a.brand:hover{
   background: rgba(255,255,255,.10);
 }
 
-.nav-trigger{
-  padding: 10px 12px;
+.nav-trigger,
+.nav-pill{
+  display:inline-flex;
+  align-items:center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 14px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.05);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
   letter-spacing: .2px;
-  text-transform: uppercase;
-  min-width: 150px;
-  text-align: left;
+  line-height: 1.2;
   cursor: pointer;
 }
 
-.nav-trigger.active{
+.nav-trigger::after{
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: .7;
+}
+
+.nav-trigger:hover,
+.nav-pill:hover{
+  color: white;
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.14);
+}
+
+.nav-trigger.active,
+.nav-pill.active{
   color: white;
   border-color: rgba(122,162,255,.28);
   background: rgba(122,162,255,.14);
@@ -344,27 +376,6 @@ a.brand:hover{
   color: white;
   background: rgba(122,162,255,.16);
   border-color: rgba(122,162,255,.28);
-}
-
-.nav-pill{
-  padding: 10px 12px;
-  border-radius: 12px;
-  color: var(--muted);
-  border: 1px solid rgba(255,255,255,.08);
-  background: rgba(255,255,255,.05);
-}
-
-.nav-pill:hover{
-  color: white;
-  background: rgba(255,255,255,.10);
-  border-color: rgba(255,255,255,.14);
-}
-
-.nav-pill.active{
-  color: white;
-  border-color: rgba(122,162,255,.28);
-  background: rgba(122,162,255,.14);
-  box-shadow: 0 10px 30px rgba(122,162,255,.15);
 }
 
 .main{
@@ -639,11 +650,6 @@ a.brand:hover{
 .scope-chip-mixed{
   border-color: rgba(46,229,157,.30);
   background: rgba(46,229,157,.14);
-}
-
-.scope-chip-local{
-  border-color: rgba(46,229,157,.30);
-  background: rgba(46,229,157,.12);
 }
 
 .scope-notice{
@@ -954,6 +960,10 @@ a.brand:hover{
   background: rgba(242,201,76,.12);
 }
 
+.fleet-proxy-cell{
+  min-width: 170px;
+}
+
 .banner-copy{
   display:grid;
   gap: 4px;
@@ -1215,6 +1225,14 @@ select{
   outline: none;
 }
 
+input[type="checkbox"],
+input[type="radio"]{
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 select option{
   background: var(--panel-strong);
   color: var(--text);
@@ -1273,6 +1291,7 @@ select:focus{
 
 .table{
   width: 100%;
+  font-size: 14px;
   border-collapse: collapse;
   overflow: hidden;
   border-radius: var(--radius-sm);
@@ -1385,10 +1404,12 @@ input.check{
   padding: 10px 12px;
   border-radius: 12px;
   cursor:pointer;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: .2px;
+  line-height: 1.25;
   max-width: 100%;
-  min-height: 42px;
+  min-height: 40px;
   text-align: center;
   white-space: normal;
 }
@@ -1578,6 +1599,31 @@ input.check{
 
 .pre-wrap{
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text-danger{ color: var(--danger); }
+.warn-text{ color: var(--warn); }
+
+.inline-warning{
+  display:grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,179,71,.30);
+  background: rgba(255,179,71,.08);
+}
+
+.inline-details > summary{
+  list-style: none;
+}
+
+.inline-details > summary::-webkit-details-marker{
+  display: none;
+}
+
+.inline-details[open] > summary{
+  margin-bottom: 8px;
 }
 
 .status-list{
@@ -1687,14 +1733,6 @@ pre{
   color: var(--muted-2);
   font-size: 12px;
   line-height: 1.4;
-}
-
-.site-footer{
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  padding: 18px 0;
-  color: var(--muted-2);
-  background: rgba(11,18,32,.66);
 }
 
 @media (min-width: 900px){
@@ -1810,6 +1848,10 @@ pre{
 }
 
 @media (max-width: 899px){
+  .banner{
+    flex-direction: column;
+  }
+
   .context-strip-inner,
   .page-hero,
   .page-heading,

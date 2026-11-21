@@ -34,7 +34,7 @@ def test_live_remote_layout_pins_internal_links_and_actions_to_active_proxy(
     assert response.status == 200
 
     body = response.text
-    assert "This tab keeps navigation and form actions pinned to this proxy" in body
+    assert "Pages and actions in this tab target this proxy" in body
     assert f'href="/squid/config?proxy_id={LIVE_CONFIG.remote_proxy_id}"' in body
     assert f'href="/observability?proxy_id={LIVE_CONFIG.remote_proxy_id}' in body
     assert f'href="/proxies?proxy_id={LIVE_CONFIG.remote_proxy_id}"' in body

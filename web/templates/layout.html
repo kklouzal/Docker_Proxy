@@ -19,7 +19,7 @@
                 <div class="brand-mark" aria-hidden="true"></div>
                 <div class="brand-title">
                     <strong>Docker Proxy</strong>
-                    <span>Admin control plane{% if admin_signed_in and active_proxy %} · {{ active_proxy.display_name }}{% endif %}</span>
+                    <span>Admin UI</span>
                 </div>
             </a>
 
@@ -43,7 +43,7 @@
                     <div class="nav-dropdown">
                         <button class="nav-trigger {{ 'active' if request.endpoint in ['index','operations_status','observability','logs_status','api_logs_status','policy_requests'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Status</button>
                         <div class="nav-menu">
-                            <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Home</a>
+                            <a class="{{ 'active' if request.endpoint == 'index' else '' }}" href="{{ url_for('index') }}">Overview</a>
                             <a class="{{ 'active' if request.endpoint == 'operations_status' else '' }}" href="{{ url_for('operations_status') }}">Operations</a>
                             <a class="{{ 'active' if request.endpoint == 'observability' else '' }}" href="{{ url_for('observability') }}">Observability</a>
                             <a class="{{ 'active' if request.endpoint in ['logs_status','api_logs_status'] else '' }}" href="{{ url_for('logs_status') }}">Logs</a>
@@ -55,7 +55,7 @@
                         <button class="nav-trigger {{ 'active' if request.endpoint in ['squid_config','certs','adblock','clamav','webfilter','sslfilter','error_pages','error_page_preview'] else '' }}" type="button" aria-haspopup="true" aria-expanded="false">Policy</button>
                         <div class="nav-menu">
                             <a class="{{ 'active' if request.endpoint == 'squid_config' else '' }}" href="{{ url_for('squid_config') }}">Squid Config</a>
-                                                        <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
+                            <a class="{{ 'active' if request.endpoint == 'certs' else '' }}" href="{{ url_for('certs') }}">Certificates</a>
                             <a class="{{ 'active' if request.endpoint == 'adblock' else '' }}" href="{{ url_for('adblock') }}">Ad Blocking</a>
                             <a class="{{ 'active' if request.endpoint == 'webfilter' else '' }}" href="{{ url_for('webfilter') }}">Web Filtering</a>
                             <a class="{{ 'active' if request.endpoint == 'clamav' else '' }}" href="{{ url_for('clamav') }}">ClamAV</a>
@@ -89,11 +89,6 @@
         <div class="context-strip">
             <div class="container context-strip-inner">
                 <div class="context-strip-copy">
-                    {{ scope_chip('proxy') }}
-                    <strong>{{ active_proxy.display_name }}</strong>
-                    <span class="small">This tab keeps navigation and form actions pinned to this proxy until you switch it.</span>
-                </div>
-                <div class="context-strip-actions">
                     {% if proxy_inventory %}
                     <form method="get" action="{{ request.path }}" class="proxy-switcher">
                         {% for key, value in request.args.items() %}
@@ -101,7 +96,7 @@
                             <input type="hidden" name="{{ key }}" value="{{ value }}">
                             {% endif %}
                         {% endfor %}
-                        <label for="proxy-id" class="small">Proxy</label>
+                        <label for="proxy-id" class="scope-chip scope-chip-proxy">Selected proxy</label>
                         <select id="proxy-id" name="proxy_id" data-autosubmit>
                             {% for proxy in proxy_inventory %}
                             <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
@@ -110,7 +105,13 @@
                             {% endfor %}
                         </select>
                     </form>
+                    {% else %}
+                    {{ scope_chip('proxy') }}
+                    <strong>{{ active_proxy.display_name }}</strong>
                     {% endif %}
+                    <span class="small">Pages and actions in this tab target this proxy until you switch it.</span>
+                </div>
+                <div class="context-strip-actions">
                     <a class="btn ghost" href="{{ url_for('proxies') }}">Manage proxies</a>
                 </div>
             </div>
@@ -123,11 +124,5 @@
             {% block content %}{% endblock %}
         </div>
     </main>
-
-    <footer class="site-footer">
-        <div class="container">
-            <div class="small">&copy; {{ current_year }} Docker Proxy</div>
-        </div>
-    </footer>
 </body>
 </html>
