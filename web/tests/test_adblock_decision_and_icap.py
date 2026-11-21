@@ -607,7 +607,7 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
                 method="GET",
                 resource_type="other",
                 source_host="",
-                third_party_hint=None,
+                third_party=None,
             ),
         )
         is False
@@ -2403,13 +2403,17 @@ def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
     assert engine.decide("https://unknown-allow.example/a").blocked is True
 
 
-def test_important_exception_overrides_important_block(tmp_path: Path) -> None:
+def test_important_on_exception_is_ignored(tmp_path: Path) -> None:
+    # uBO: `important` is a block-filter option. `@@...$important` acts as an
+    # ordinary exception: it beats normal blocks but not `$important` blocks.
     db_path = _build_lookup_db(
         tmp_path,
         [
             "||vip.example^$important",
             "@@||vip.example/ok^$important",
             "@@||vip.example/plain^",
+            "||normal.example^",
+            "@@||normal.example/ok^$important",
         ],
     )
 
@@ -2417,12 +2421,157 @@ def test_important_exception_overrides_important_block(tmp_path: Path) -> None:
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
 
-    allowed = engine.decide("https://vip.example/ok")
+    for url in ("https://vip.example/ok", "https://vip.example/plain"):
+        decision = engine.decide(url)
+        assert decision.blocked is True
+        assert decision.reason == "important-rule-match"
+        assert decision.raw == "||vip.example^$important"
+    allowed = engine.decide("https://normal.example/ok")
     assert allowed.blocked is False
-    assert allowed.reason == "important-exception"
-    plain = engine.decide("https://vip.example/plain")
-    assert plain.blocked is True
-    assert plain.reason == "important-rule-match"
+    assert allowed.reason == "exception"
+    assert allowed.raw == "@@||normal.example/ok^$important"
+    assert engine.decide("https://normal.example/other").blocked is True
+
+
+_NAVIGATION = {
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+}
+
+
+def test_top_level_navigation_is_its_own_context(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||nav3p.example^$third-party",
+            "||nav1p.example^$~third-party",
+            "||navhost.example^",
+            "||navdoc.example^$document",
+            "||navdoc3p.example^$document,third-party",
+            "||navscoped.example^$document,domain=navscoped.example",
+            "||navelsewhere.example^$document,domain=opener.example",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+    opener = {"Referer": "https://opener.example/page", "Sec-Fetch-Site": "cross-site"}
+
+    def blocked(url: str, headers: dict[str, str]) -> bool:
+        return engine.decide(url, headers=headers).blocked
+
+    navigation = {**_NAVIGATION, **opener}
+    # A link from another site is first-party to the page it opens.
+    assert blocked("https://nav3p.example/", navigation) is False
+    assert blocked("https://nav1p.example/", navigation) is True
+    assert blocked("https://navdoc3p.example/", navigation) is False
+    # Hostname-only and explicit $document filters still block pages.
+    assert blocked("https://navhost.example/", navigation) is True
+    assert blocked("https://navdoc.example/", navigation) is True
+    # $domain= is evaluated against the page itself, not the opener.
+    assert blocked("https://navscoped.example/", navigation) is True
+    assert blocked("https://navelsewhere.example/", navigation) is False
+    # Accept-based inference (no fetch metadata) is a navigation too.
+    inferred = {"Accept": _NAVIGATION["Accept"], "Referer": opener["Referer"]}
+    assert blocked("https://nav3p.example/", inferred) is False
+    assert blocked("https://nav1p.example/", inferred) is True
+    # Frames keep the embedding page as their context.
+    frame = {"Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate", **opener}
+    assert blocked("https://nav3p.example/", frame) is True
+    assert blocked("https://nav1p.example/", frame) is False
+    script = {"Sec-Fetch-Dest": "script", **opener}
+    assert blocked("https://nav3p.example/a.js", script) is True
+
+
+def test_sec_fetch_site_decides_party_over_referer_heuristic(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||sfs3p.example^$third-party",
+            "||sfs1p.example^$~third-party",
+            "||user.github.io^$third-party",
+            "||sfsscoped.example^$domain=source.example",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    def blocked(url: str, referer: str, fetch_site: str | None) -> bool:
+        headers = {"Sec-Fetch-Dest": "script", "Referer": referer}
+        if fetch_site is not None:
+            headers["Sec-Fetch-Site"] = fetch_site
+        return engine.decide(url, headers=headers).blocked
+
+    same = "https://www.sfs3p.example/"
+    other = "https://other.example/"
+    # Without Sec-Fetch-Site the registrable-domain heuristic decides.
+    assert blocked("https://sfs3p.example/a.js", same, None) is False
+    assert blocked("https://sfs3p.example/a.js", other, None) is True
+    # The browser's verdict wins over the heuristic both ways.
+    assert blocked("https://sfs3p.example/a.js", same, "cross-site") is True
+    assert blocked("https://sfs3p.example/a.js", other, "same-site") is False
+    assert blocked("https://sfs3p.example/a.js", other, "same-origin") is False
+    assert blocked("https://sfs1p.example/a.js", other, "same-site") is True
+    assert blocked("https://sfs1p.example/a.js", other, "cross-site") is False
+    # The browser knows the PSL private section the heuristic lacks.
+    sibling = "https://other.github.io/"
+    assert blocked("https://user.github.io/a.js", sibling, None) is False
+    assert blocked("https://user.github.io/a.js", sibling, "cross-site") is True
+    # `none` (user-initiated) is first-party with no initiator.
+    assert blocked("https://sfs3p.example/a.js", other, "none") is False
+    assert blocked("https://sfs1p.example/a.js", other, "none") is True
+    source = "https://source.example/page"
+    assert blocked("https://sfsscoped.example/a.js", source, "none") is False
+    # $domain= still matches the Referer/Origin initiator host.
+    assert blocked("https://sfsscoped.example/a.js", source, "cross-site") is True
+    assert blocked("https://sfsscoped.example/a.js", other, "cross-site") is False
+    # An unknown value is treated as absent.
+    assert blocked("https://sfs3p.example/a.js", same, "bogus") is False
+
+
+def test_decision_cache_keys_on_every_party_input(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||party.example^$third-party",
+            "||scoped.example^$domain=source.example",
+            "||page.example^$third-party,document",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=100)
+    referer = "https://www.party.example/"
+
+    def blocked(url: str, **headers: str) -> bool:
+        return engine.decide(
+            url,
+            headers={"Sec-Fetch-Dest": "script", "Referer": referer, **headers},
+        ).blocked
+
+    assert blocked("https://party.example/a.js") is False
+    assert blocked("https://party.example/a.js", **{"Sec-Fetch-Site": "cross-site"})
+    assert blocked("https://party.example/a.js") is False
+    referer = "https://source.example/"
+    url = "https://scoped.example/a.js"
+    assert blocked(url, **{"Sec-Fetch-Site": "same-origin"}) is True
+    assert blocked(url, **{"Sec-Fetch-Site": "none"}) is False
+    assert blocked(url, **{"Sec-Fetch-Site": "same-origin"}) is True
+    cached = len(engine._cache)
+    # Navigations depend on the URL alone, so openers share one entry.
+    for opener in ("https://a.example/", "https://b.example/x", ""):
+        headers = dict(_NAVIGATION)
+        if opener:
+            headers.update({"Referer": opener, "Sec-Fetch-Site": "cross-site"})
+        assert engine.decide("https://page.example/", headers=headers).blocked is False
+    assert len(engine._cache) == cached + 1
 
 
 def test_icap_decision_cache_uses_artifact_admin_settings(
@@ -2527,7 +2676,7 @@ def test_rule_matcher_unmatchable_domain_include_still_restricts_scope() -> None
         method="GET",
         resource_type="script",
         source_host="news.example",
-        third_party_hint=None,
+        third_party=None,
     )
     assert context is not None
     base = {"rule_id": "r1", "action": "block", "pattern_kind": "option_only"}

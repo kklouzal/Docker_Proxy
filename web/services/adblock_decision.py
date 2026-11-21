@@ -300,20 +300,28 @@ def source_url_from_headers(headers: dict[str, str] | None) -> str:
     return ""
 
 
-def third_party_hint_from_headers(headers: dict[str, str] | None) -> bool | None:
-    headers = headers or {}
-    fetch_site = _header_value(headers, "sec-fetch-site").lower()
-    if fetch_site == "cross-site":
-        return True
-    if fetch_site in {"same-origin", "same-site", "none"}:
-        return False
-    return None
+# Sec-Fetch-Site values and the ABP/uBO party they mean. The browser derives
+# them from its own Public Suffix List "site" (scheme + registrable domain),
+# so they are preferred over the Referer/Origin heuristic. `none` is a
+# user-initiated request (address bar, bookmark): no initiating page.
+_FETCH_SITE_THIRD_PARTY = {
+    "cross-site": True,
+    "none": False,
+    "same-origin": False,
+    "same-site": False,
+}
+
+
+def fetch_site_from_headers(headers: dict[str, str] | None) -> str:
+    """Return the request's known Sec-Fetch-Site value, or "" when absent."""
+    fetch_site = _header_value(headers or {}, "sec-fetch-site").lower()
+    return fetch_site if fetch_site in _FETCH_SITE_THIRD_PARTY else ""
 
 
 def _decision_for_matches(matches: list[_RuleMatcher]) -> AdblockDecision:
-    # uBO precedence: important exception > important block > exception > block.
+    # uBO precedence: important block > exception > block. `important` only
+    # applies to block filters (_RuleMatcher), so no exception outranks it.
     for action, important, reason in (
-        ("allow", True, "important-exception"),
         ("block", True, "important-rule-match"),
         ("allow", False, "exception"),
         ("block", False, "rule-match"),
@@ -407,7 +415,9 @@ class _RuleMatcher:
         self.rule = rule
         self.action = rule.get("action")
         behavior_options = set(rule.get("behavior_options") or [])
-        self.important = "important" in behavior_options
+        # uBO: `important` is a block-filter option; an `@@...$important`
+        # exception is an ordinary exception (owner decision O5).
+        self.important = "important" in behavior_options and self.action == "block"
         self.case_sensitive = "match-case" in behavior_options
         self.unusable = False
         self.included_methods: frozenset[str] | None = None
@@ -619,7 +629,7 @@ class AdblockDecisionEngine:
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds or 0))
         self.cache_max = max(0, int(cache_max or 0))
         self._cache: OrderedDict[
-            tuple[str, str, str, str, str], tuple[float, AdblockDecision]
+            tuple[str, str, str, str, bool | None], tuple[float, AdblockDecision]
         ] = OrderedDict()
         self._cache_lock = threading.Lock()
 
@@ -643,17 +653,31 @@ class AdblockDecisionEngine:
             if resource_type
             else infer_resource_type(method, url, headers)
         )
-        effective_source_url = source_url or source_url_from_headers(headers)
-        effective_third_party_hint = third_party_hint_from_headers(headers)
-        # Rules only see the source page through its host, so key the cache on
-        # that rather than on every distinct Referer path/query.
-        source_host = _source_host(effective_source_url)
+        if effective_resource_type == "document":
+            # A top-level navigation is its own context (uBO: the root frame's
+            # document origin is the request URL), so its party and $domain=
+            # scope derive from the URL alone.
+            source_host = ""
+            third_party: bool | None = False
+        else:
+            fetch_site = fetch_site_from_headers(headers)
+            # The initiator host still scopes $domain=; `none` has no
+            # initiator. Rules only see the source page through its host, so
+            # the cache keys on that, not on every Referer path/query.
+            source_host = (
+                ""
+                if fetch_site == "none"
+                else _source_host(source_url or source_url_from_headers(headers))
+            )
+            # None: no Sec-Fetch-Site, party from the source host heuristic.
+            third_party = _FETCH_SITE_THIRD_PARTY.get(fetch_site)
+        # Every decision input: the request host comes from the URL.
         cache_key = (
             _normalize_method(method),
             url or "",
             effective_resource_type,
             source_host,
-            str(effective_third_party_hint),
+            third_party,
         )
         cached = self._get_cached(cache_key)
         if cached is not None:
@@ -664,7 +688,7 @@ class AdblockDecisionEngine:
             method=method,
             resource_type=effective_resource_type,
             source_host=source_host,
-            third_party_hint=effective_third_party_hint,
+            third_party=third_party,
         )
         if context is None:
             decision = _NO_MATCH
@@ -682,7 +706,7 @@ class AdblockDecisionEngine:
 
     def _get_cached(
         self,
-        key: tuple[str, str, str, str, str],
+        key: tuple[str, str, str, str, bool | None],
     ) -> AdblockDecision | None:
         if not self.cache_ttl_seconds or not self.cache_max:
             return None
@@ -699,7 +723,7 @@ class AdblockDecisionEngine:
 
     def _put_cached(
         self,
-        key: tuple[str, str, str, str, str],
+        key: tuple[str, str, str, str, bool | None],
         decision: AdblockDecision,
     ) -> None:
         if not self.cache_ttl_seconds or not self.cache_max:
@@ -717,15 +741,23 @@ class AdblockDecisionEngine:
         method: str,
         resource_type: str,
         source_host: str,
-        third_party_hint: bool | None,
+        third_party: bool | None,
     ) -> _RequestContext | None:
+        """Build the matching context.
+
+        ``third_party`` is the request's party when known (Sec-Fetch-Site, or
+        a navigation); None derives it from the registrable domains of the
+        request and source hosts. A ``document`` request is its own context.
+        """
         parsed = _safe_urlsplit(url)
         if parsed is None:
             return None
         request_host = _normalize_host(parsed.hostname or "")
-        third_party = _is_third_party(request_host, source_host)
-        if third_party is None and third_party_hint is not None:
-            third_party = bool(third_party_hint)
+        if resource_type == "document":
+            source_host = request_host
+            third_party = False
+        elif third_party is None:
+            third_party = _is_third_party(request_host, source_host)
         return _RequestContext(
             url=url,
             url_lower=url.lower(),
