@@ -6118,13 +6118,18 @@ def _handle_pac_builder_post(store: Any):
 
     try:
         if action == "add_backup_proxy":
-            result = store.add_backup_proxy(
-                proxy_host=request.form.get("backup_proxy_host") or "",
-                proxy_port=request.form.get("backup_proxy_port") or "",
-            )
+            backup_form = {
+                "proxy_host": request.form.get("backup_proxy_host") or "",
+                "proxy_port": request.form.get("backup_proxy_port") or "",
+            }
+            result = store.add_backup_proxy(**backup_form)
             ok, err, _ = result
             if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
+                return _render_pac_builder(
+                    store,
+                    form_error=err or "Backup proxy was not added.",
+                    backup_form=backup_form,
+                )
             return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "remove_backup_proxy":
@@ -6158,21 +6163,23 @@ def _handle_pac_builder_post(store: Any):
                 changed=_pac_mutation_changed(result, default=True)
             )
 
-        if action == "create":
-            result = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+        if action in {"create", "update"}:
+            pid = None
+            if action == "update":
+                pid, id_err = _pac_profile_id_from_form()
+                if pid is None:
+                    return _redirect_to("pac_builder", error="1", msg=id_err)
+            form_data = _pac_profile_form_data(profile_id=pid)
+            result = store.upsert_profile(**form_data)
             ok, err, _ = result
             if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
-
-        if action == "update":
-            pid, id_err = _pac_profile_id_from_form()
-            if pid is None:
-                return _redirect_to("pac_builder", error="1", msg=id_err)
-            result = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
-            ok, err, _ = result
-            if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
+                # Re-render instead of redirecting so the rejected input stays
+                # in the form for correction.
+                return _render_pac_builder(
+                    store,
+                    form_error=err or "PAC profile was not saved.",
+                    profile_form=form_data,
+                )
             return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "delete":
@@ -10022,18 +10029,41 @@ def pac_builder():
 
     if request.method == "POST":
         return _handle_pac_builder_post(store)
+    return _render_pac_builder(store)
 
-    profiles = []
+
+def _render_pac_builder(
+    store: Any,
+    *,
+    form_error: str = "",
+    profile_form: dict[str, Any] | None = None,
+    backup_form: dict[str, str] | None = None,
+):
+    unavailable: list[str] = []
     try:
         profiles = store.list_profiles()
     except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.pac_builder.profiles",
+            interval_seconds=30.0,
+            message="Failed to load PAC profiles; rendering unavailable state",
+        )
         profiles = []
+        unavailable.append("PAC profiles")
 
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
     try:
         chain_settings = store.list_proxy_chain_settings()
     except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.pac_builder.chain",
+            interval_seconds=30.0,
+            message="Failed to load PAC proxy chain; rendering unavailable state",
+        )
         chain_settings = None
+        unavailable.append("fallback proxy chain")
     pac_runtime_state = _pac_runtime_state(get_proxy_id())
     return render_template(
         "pac.html",
@@ -10043,6 +10073,10 @@ def pac_builder():
         pac_target=pac_target,
         chain_settings=chain_settings,
         pac_runtime_state=pac_runtime_state,
+        store_unavailable=unavailable,
+        form_error=form_error,
+        profile_form=profile_form,
+        backup_form=backup_form,
     )
 
 
@@ -10101,13 +10135,11 @@ def winhttp_registry_builder():
     normalized_reg_hex = ""
     decoded_reg = None
     error = ""
-    action = ""
 
     if request.method == "POST":
-        action = request.form.get("action", "generate")
         form = _winhttp_form_from_request()
         try:
-            if action == "normalize_reg":
+            if request.form.get("action", "generate") == "normalize_reg":
                 normalized_reg_hex = normalize_reg_binary_export(
                     form.get("reg_input") or "",
                 )
@@ -10127,7 +10159,6 @@ def winhttp_registry_builder():
         normalized_reg_hex=normalized_reg_hex,
         decoded_reg=decoded_reg,
         error=error,
-        action=action,
     )
 
 

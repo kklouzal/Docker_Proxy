@@ -138,10 +138,7 @@ def test_tools_nav_links_to_winhttp_registry_builder() -> None:
 
     assert "request.endpoint in ['winhttp_registry_builder']" in html
     assert "url_for('winhttp_registry_builder')" in html
-    assert (
-        "Microsoft does not publish a formal byte-for-byte registry binary serialization"
-        in page
-    )
+    assert "but not the registry binary format" in page
     assert "advproxy JSON" in page
 
 

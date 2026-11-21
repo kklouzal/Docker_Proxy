@@ -924,3 +924,49 @@ def test_webfilter_whitelist_remove_failure_is_reported_not_swallowed(
     assert "policy_queue=1" not in location
     assert webfilter_store.whitelist == [("allow.example", 1)]
     assert loaded.operation_ledger.operations == []
+
+
+def test_pac_rejected_profile_and_backup_input_is_kept_for_correction(
+    monkeypatch, tmp_path
+):
+    from .admin_route_test_utils import FakePacProfilesStore
+
+    store = FakePacProfilesStore()
+    loaded, client = _loaded(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    response = _post(
+        client,
+        "/pac",
+        {
+            "action": "create",
+            "name": "Office <LAN>",
+            "client_cidr": "10.0.0.300",
+            "direct_domains": "a.example\nb.example",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Not saved" in body
+    assert 'value="Office &lt;LAN&gt;"' in body
+    assert 'value="10.0.0.300"' in body
+    assert "a.example\nb.example</textarea>" in body
+    assert store.profiles == {}
+    assert loaded.operation_ledger.operations == []
+
+    response = _post(
+        client,
+        "/pac",
+        {
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "bad host!",
+            "backup_proxy_port": "8080",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Not saved" in body
+    assert 'value="bad host!"' in body
+    assert 'value="8080"' in body
+    assert store.backup_proxies == []
