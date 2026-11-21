@@ -68,6 +68,7 @@ def _icap_line(
     adapt_summary: str,
     adapt_details: str,
     threat: str = "",
+    outcome: str = "",
 ) -> str:
     """Build an icapobserve line; ``threat`` uses the current extended layout.
 
@@ -92,17 +93,18 @@ def _icap_line(
         "",
         "",
     ]
-    if threat:
+    if threat or outcome:
+        failed = (outcome or "").startswith("ICAP_ERR")
         fields.extend(
             [
                 "av_resp",
-                "ICAP_MOD",
-                "200",
+                outcome or "ICAP_MOD",
+                "-" if failed else "200",
                 str(icap_time_ms),
                 str(icap_time_ms),
                 "719",
-                "336",
-                f"Type=0;%20Resolution=2;%20Threat={threat};",
+                "-" if failed else "336",
+                f"Type=0;%20Resolution=2;%20Threat={threat};" if threat else "-",
             ]
         )
     return "\t".join(fields)
@@ -563,7 +565,7 @@ def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
                 return FakeResult(
                     [("scan.example", "av", 2, 1, 4300, 1500)],
                 )
-            if "adapt_summary" in sql_text:
+            if "icap_outcome LIKE 'ICAP_ERR%%'" in sql_text:
                 return FakeResult(
                     [
                         (
@@ -572,7 +574,7 @@ def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
                             1,
                             1,
                             4310,
-                            "virus_scan RESPMOD timeout",
+                            "ICAP_ERR_GONE, ICAP_ERR_OTHER",
                         ),
                     ],
                 )
@@ -608,7 +610,10 @@ def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
     assert rows["icap_degraded"]["component"] == "ICAP av"
     assert rows["icap_degraded"]["severity"] == "high"
     assert rows["icap_degraded"]["confidence"] == "high"
-    assert rows["icap_degraded"]["evidence"] == "virus_scan RESPMOD timeout"
+    assert (
+        rows["icap_degraded"]["evidence"]
+        == "ICAP outcomes: ICAP_ERR_GONE, ICAP_ERR_OTHER"
+    )
     assert payload["summary"]["observations"] == 3
 
 
@@ -2308,8 +2313,25 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
             method="GET",
             url="https://scan.example/file.bin",
             icap_time_ms=1500,
+            adapt_summary="",
+            adapt_details="",
+            outcome="ICAP_ERR_GONE",
+        ),
+    )
+    # Failure words in the free-text trace without an ICAP_ERR outcome are not
+    # a failed transaction (the old keyword match flagged them).
+    _insert_icap(
+        diag_store,
+        _icap_line(
+            ts=3021,
+            master_xaction="tx-icap-ok",
+            client_ip="192.0.2.10",
+            method="GET",
+            url="https://words.example/file.bin",
+            icap_time_ms=10,
             adapt_summary="virus_scan RESPMOD timeout",
             adapt_details="clamd timeout bypassed",
+            outcome="ICAP_MOD",
         ),
     )
 
@@ -2339,6 +2361,9 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     assert kinds["aborted_media_segments"]["count"] == 3
     assert kinds["slow_icap"]["component"] == "ICAP av"
     assert kinds["icap_degraded"]["confidence"] == "high"
+    assert kinds["icap_degraded"]["subject"] == "scan.example"
+    assert kinds["icap_degraded"]["evidence"] == "ICAP outcomes: ICAP_ERR_GONE"
+    assert "words.example" not in {row["subject"] for row in payload["rows"]}
     assert kinds["runtime_icap_degraded"]["subject"] == "livingroom"
     assert kinds["runtime_icap_degraded"]["subject_type"] == "proxy"
     assert kinds["memory_pressure"]["subject_type"] == "proxy"

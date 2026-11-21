@@ -250,7 +250,7 @@
       <div class="stat compact-stat"><div class="stat-k">Clients</div><div class="stat-v">{{ num(payload.summary.clients) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">SSL/TLS error events</div><div class="stat-v">{{ num(payload.ssl.summary.total_events) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">AV detections</div><div class="stat-v">{{ num(payload.security.summary.potential_findings) }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Ad-block and web-filter blocks</div><div class="stat-v">{{ num(payload.security.summary.combined_blocks) }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">All blocks</div><div class="stat-v">{{ num(payload.security.summary.combined_blocks) }}</div></div>
     </div>
   </div>
 </section>

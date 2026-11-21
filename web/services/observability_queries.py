@@ -1915,13 +1915,18 @@ class ObservabilityQueries:
                 """,
                 (*icap_params, query_lim),
             ).fetchall()
+            # Squid's %icap::to outcome is ICAP_ERR_* for every failed ICAP
+            # transaction (connect/IO failure, timeout, server error, aborted
+            # by Squid), including ones a bypass=on service then skipped;
+            # ICAP_MOD/ICAP_ECHO/ICAP_SAT/ICAP_OPT are completed transactions.
             icap_failure_rows = conn.execute(
                 f"""
                 SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
-                       MAX(ts) AS last_seen, MAX(adapt_summary) AS sample_summary
+                       MAX(ts) AS last_seen,
+                       GROUP_CONCAT(DISTINCT icap_outcome ORDER BY icap_outcome SEPARATOR ', ') AS outcomes
                 FROM diagnostic_icap_events
                 {icap_where_sql}
-                  AND LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, ''))) REGEXP 'fail|error|timeout|unreachable|bypass'
+                  AND icap_outcome LIKE 'ICAP_ERR%%'
                 GROUP BY domain, service_family
                 ORDER BY observations DESC, last_seen DESC
                 LIMIT %s
@@ -2155,10 +2160,11 @@ class ObservabilityQueries:
                     },
                     f"""
                     SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
-                           MAX(ts) AS last_seen, MAX(adapt_summary) AS sample_summary
+                           MAX(ts) AS last_seen,
+                       GROUP_CONCAT(DISTINCT icap_outcome ORDER BY icap_outcome SEPARATOR ', ') AS outcomes
                     FROM diagnostic_icap_events
                     {source_icap_where_sql}
-                      AND LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, ''))) REGEXP 'fail|error|timeout|unreachable|bypass'
+                      AND icap_outcome LIKE 'ICAP_ERR%%'
                     GROUP BY domain, service_family
                     ORDER BY observations DESC, last_seen DESC
                     LIMIT %s
@@ -2295,12 +2301,10 @@ class ObservabilityQueries:
             icap_failure_rows,
             kind="icap_degraded",
             severity="high",
-            title="ICAP degradation or bypass signal observed",
+            title="Failed ICAP transactions observed",
             confidence="high",
             recommended_action="Inspect c-icap listener health, clamd reachability, fail-open/fail-closed policy, and memory pressure. No automatic bypass or restart is offered here.",
-            evidence_for=lambda row: str(
-                row[5] or "ICAP trace contained failure/bypass language"
-            )[:240],
+            evidence_for=lambda row: f"ICAP outcomes: {row[5] or 'ICAP_ERR'}"[:240],
         )
 
         try:
