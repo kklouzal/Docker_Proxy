@@ -110,6 +110,7 @@ _ENCAPSULATED_OFFSET_RE = re.compile(r"[0-9]+")
 _HTTP_TOKEN_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _HTTP_TRANSFER_CODING_RE = _HTTP_TOKEN_RE
 _HTTP_STATUS_LINE_RE = re.compile(rb"HTTP/(1\.[01]) ([0-9]{3}) ([\t -~]*)")
+_INFECTION_THREAT_UNSAFE_RE = re.compile(r"[^!-:<-~]")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -1177,6 +1178,19 @@ def _http_response_hold_mode(http_header: bytes) -> HoldMode:
     return HoldMode.TAIL
 
 
+def infection_found_header(signature: str | None) -> str:
+    """Return the ``X-Infection-Found`` value for a clamd detection.
+
+    Same de-facto ICAP header (Type=0 virus, Resolution=2 file not repaired)
+    that the c-icap virus_scan module sends; Squid logs it through
+    ``%{X-Infection-Found}icap::<h`` as the authoritative AV verdict. The
+    threat is reduced to visible ASCII without ``;`` so it can neither break
+    the ICAP header nor end the header's own parameter list.
+    """
+    threat = _INFECTION_THREAT_UNSAFE_RE.sub("_", signature or "")[:255]
+    return f"Type=0; Resolution=2; Threat={threat or 'Unknown'};"
+
+
 def blocked_response(signature: str | None) -> bytes:
     reason = signature or "malware"
     payload = (
@@ -1190,7 +1204,11 @@ def blocked_response(signature: str | None) -> bytes:
     )
     return _icap_response(
         "200 OK",
-        {"ISTag": ISTAG, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+        {
+            "ISTag": ISTAG,
+            "X-Infection-Found": infection_found_header(signature),
+            "Encapsulated": f"res-hdr=0, res-body={len(http_header)}",
+        },
         http_header + _encode_icap_body_chunk(payload),
     )
 

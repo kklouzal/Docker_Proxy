@@ -119,6 +119,6 @@ def test_live_observability_security_pane_renders_real_sections(
     assert response.status == 200
     body = response.text
     assert "Security and enforcement" in body
-    assert "Potential AV findings" in body
+    assert "AV detections" in body
     assert "Ad-block blocks" in body
     assert "Web-filter blocks" in body

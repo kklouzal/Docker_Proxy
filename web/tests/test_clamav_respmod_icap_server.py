@@ -2785,6 +2785,41 @@ def test_blocked_icap_response_contains_detection() -> None:
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 403 Forbidden" in response
     assert b"Eicar-Test-Signature" in response
+    icap_head = response.split(b"\r\n\r\n", 1)[0]
+    assert (
+        b"\r\nX-Infection-Found: Type=0; Resolution=2; Threat=Eicar-Test-Signature;"
+        in icap_head
+    )
+
+
+@pytest.mark.parametrize(
+    ("signature", "threat"),
+    [
+        ("Win.Test.EICAR_HDB-1", "Win.Test.EICAR_HDB-1"),
+        (None, "Unknown"),
+        ("", "Unknown"),
+        # Header-breaking or parameter-ending characters never reach the wire.
+        ("Bad;Name\r\nX-Evil: 1", "Bad_Name__X-Evil:_1"),
+        ("Caf\u00e9 Sig", "Caf__Sig"),
+    ],
+)
+def test_infection_found_header_is_a_safe_single_threat(
+    signature: str | None, threat: str
+) -> None:
+    server = _load_server()
+
+    assert server.infection_found_header(signature) == (
+        f"Type=0; Resolution=2; Threat={threat};"
+    )
+    # The value is always encodable as one ASCII ICAP header line.
+    server.blocked_response(signature)
+
+
+def test_unverified_and_error_pages_claim_no_detection() -> None:
+    server = _load_server()
+
+    assert b"X-Infection-Found" not in server.scan_limit_blocked_response()
+    assert b"X-Infection-Found" not in server.error_response("clamd down")
 
 
 def test_respmod_default_clamd_timeout_is_bounded_for_fail_open_browsing() -> None:
@@ -3221,6 +3256,10 @@ def test_small_infected_respmod_returns_block_page_without_original() -> None:
 
     assert b"HTTP/1.1 403 Forbidden" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+    assert (
+        b"X-Infection-Found: Type=0; Resolution=2; Threat=Test.Signature;"
+        in (response.split(b"\r\n\r\n", 1)[0])
+    )
 
 
 @pytest.mark.parametrize(
@@ -5195,6 +5234,8 @@ def test_streamed_infected_body_is_aborted_without_the_held_tail(
     assert body == payload[: len(payload) - icap_server.stream_hold_bytes]
     assert ending in {"reset", "eof"}
     assert icap_server.stats.counters == {"infected": 1, "stream_aborts": 1}
+    # The ICAP head went out before the verdict, so it cannot carry one.
+    assert b"X-Infection-Found" not in response
 
 
 def test_small_infected_body_still_gets_the_block_page() -> None:

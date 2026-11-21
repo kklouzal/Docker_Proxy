@@ -3,6 +3,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pytest
 from services.diagnostic_store import (
     DiagnosticStore,
     _nearest_rows,
@@ -606,6 +607,7 @@ def test_normalized_icap_row_defaults_extended_fields_for_legacy_rows() -> None:
     assert row["icap_io_time_ms"] == 0
     assert row["icap_bytes_sent"] == 0
     assert row["icap_bytes_received"] == 0
+    assert row["av_threat"] == ""
 
 
 def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
@@ -616,6 +618,7 @@ def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
         "1777000002\ttx-resp\t192.0.2.10\tGET\thttp://example.com/file.bin\t11"
         "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
         "\tav_resp\tICAP_ERR_GONE\t500\t12\t10\t512\t64"
+        "\tType=0;%20Resolution=2;%20Threat=Eicar-Signature;"
     )
     inserted_sql: list[str] = []
 
@@ -644,7 +647,7 @@ def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
         def execute(self, sql, _params):
             assert self.persisted is not None
             sql_text = str(sql)
-            selected = tuple(self.persisted[2:26])
+            selected = tuple(self.persisted[2:27])
             if "FORCE INDEX" in sql_text:
                 if "ORDER BY ts ASC" in sql_text:
                     return FakeCursor([])
@@ -660,8 +663,8 @@ def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
     store._flush_icap_rows(connection, [params])
     assert connection.persisted is not None
     assert "icap_service, icap_outcome, icap_status" in inserted_sql[0]
-    assert inserted_sql[0].count("%s") == 28
-    assert len(connection.persisted) == 28
+    assert inserted_sql[0].count("%s") == 29
+    assert len(connection.persisted) == 29
 
     recent = store.list_recent_icap(search="ICAP_ERR_GONE", limit=1)
     assert recent[0]["icap_service"] == "av_resp"
@@ -671,6 +674,10 @@ def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
     assert recent[0]["icap_io_time_ms"] == 10
     assert recent[0]["icap_bytes_sent"] == 512
     assert recent[0]["icap_bytes_received"] == 64
+    assert recent[0]["av_threat"] == "Eicar-Signature"
+    assert store.list_recent_icap(search="eicar", limit=1)[0]["av_threat"] == (
+        "Eicar-Signature"
+    )
 
     slowest = store.slowest_icap_events(limit=1)
     assert slowest[0]["icap_outcome"] == "ICAP_ERR_GONE"
@@ -702,7 +709,7 @@ def test_icap_schema_creates_and_additively_migrates_extended_columns(
             if "information_schema.columns" in sql_text:
                 if "diagnostic_requests" in sql_text:
                     return FakeCursor((1,))
-                assert params[0].startswith("icap_")
+                assert params[0].startswith("icap_") or params[0] == "av_threat"
                 return FakeCursor(None)
             if "information_schema.statistics" in sql_text:
                 return FakeCursor((1,))
@@ -739,6 +746,7 @@ def test_icap_schema_creates_and_additively_migrates_extended_columns(
         "icap_io_time_ms",
         "icap_bytes_sent",
         "icap_bytes_received",
+        "av_threat",
     ):
         assert column in create_icap
         assert any(
@@ -1366,6 +1374,79 @@ def test_icap_parse_maps_squid_absent_marker_and_decodes_headers() -> None:
     assert row["adapt_summary"] == ""
     assert row["user_agent"] == "curl/8.19.0 (x)"
     assert row["adapt_details"].startswith("service=av_resp;")
+    assert row["av_threat"] == ""
+
+
+@pytest.mark.parametrize(
+    ("infection_field", "expected"),
+    [
+        # Squid URL-escapes the logged header value; '-' marks it absent.
+        (
+            "Type=0;%20Resolution=2;%20Threat=Win.Test.EICAR_HDB-1;",
+            "Win.Test.EICAR_HDB-1",
+        ),
+        ("Type=0; Resolution=2; Threat=Eicar-Signature;", "Eicar-Signature"),
+        ("Type=0;%20Resolution=2;", "Unknown"),
+        ("-", ""),
+    ],
+)
+def test_icap_parse_reads_x_infection_found_threat(
+    infection_field: str, expected: str
+) -> None:
+    line = (
+        "1777000002\ttx-1\t192.0.2.10\tGET\thttps://secure.eicar.org/eicar.com.txt\t16"
+        "\t-\t-\tsecure.eicar.org\tcurl/8.19.0\t-\t-\t-\t-\t-"
+        f"\tav_resp\tICAP_MOD\t200\t16\t14\t719\t336\t{infection_field}"
+    )
+    row = DiagnosticStore()._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["service_family"] == "av"
+    assert row["icap_bytes_received"] == 336
+    assert row["av_threat"] == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Verbatim icap.log rows from Squid 7.8 (Alpine edge) with the ClamAV
+        # RESPMOD helper: an EICAR block page, a clean response and an EICAR
+        # body detected after partial delivery (aborted, no verdict header).
+        (
+            r"1795274975\t53\t127.0.0.1\tGET\thttp://127.0.0.1:8080/eicar.com.txt\t3\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t3\t2\t606\t397\tType=0;%20Resolution=2;%20Threat=Eicar-Signature;",
+            "Eicar-Signature",
+        ),
+        (
+            r"1795274975\t57\t127.0.0.1\tGET\thttp://127.0.0.1:8080/clean.txt\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t1\t0\t545\t347\t-",
+            "",
+        ),
+        (
+            r"1795274975\t60\t127.0.0.1\tGET\thttp://127.0.0.1:8080/big-eicar.bin\t1\t-\t-\t-\t-\t-\t-\t-\t-\t-\tav_resp\tICAP_MOD\t200\t31\t8\t2098282\t1835814\t-",
+            "",
+        ),
+    ],
+)
+def test_icap_parse_native_squid_rows(line: str, expected: str) -> None:
+    row = DiagnosticStore()._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["icap_service"] == "av_resp"
+    assert row["icap_outcome"] == "ICAP_MOD"
+    assert row["av_threat"] == expected
+
+
+def test_icap_parse_keeps_lines_without_the_infection_field() -> None:
+    """Lines written before the field was added (22 fields) still parse."""
+    line = (
+        "1777000002\ttx-1\t192.0.2.10\tGET\thttps://example.com/\t16"
+        "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
+        "\tav_resp\tICAP_MOD\t200\t16\t14\t719\t336"
+    )
+    row = DiagnosticStore()._parse_icap_log_line(line)
+
+    assert row is not None
+    assert row["icap_bytes_received"] == 336
+    assert row["av_threat"] == ""
 
 
 def test_absent_transaction_rows_do_not_correlate_with_each_other(

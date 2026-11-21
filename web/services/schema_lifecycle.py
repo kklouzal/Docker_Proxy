@@ -31,7 +31,7 @@ from services.sql_identifiers import (
     quote_mysql_identifier,
 )
 
-_SCHEMA_VERSION = 38
+_SCHEMA_VERSION = 39
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _CONTROL_PLANE_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -1817,6 +1817,17 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "saml_auth_profiles",
                     "next_refresh_ts",
                     "ALTER TABLE saml_auth_profiles ADD COLUMN next_refresh_ts BIGINT NOT NULL DEFAULT 0 AFTER refresh_failures",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=39,
+            name="diagnostic_icap_av_threat",
+            columns=(
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "av_threat",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN av_threat VARCHAR(255) NOT NULL DEFAULT '' AFTER icap_bytes_received",
                 ),
             ),
         ),
