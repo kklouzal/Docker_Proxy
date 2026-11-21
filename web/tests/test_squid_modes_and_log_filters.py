@@ -1606,7 +1606,7 @@ def test_all_compatibility_presets_preflight_catalog_before_writes(
 
     assert (added, attempted) == (0, 0)
     assert added_domains == []
-    assert "malformed: bad domain: Invalid domain length." in error
+    assert "malformed: bad domain: Not a valid domain name." in error
 
 
 def test_compatibility_preset_install_rolls_back_every_domain_on_mid_write_failure(

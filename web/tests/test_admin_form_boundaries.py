@@ -40,23 +40,41 @@ def _assert_latest_pac_refresh_matches_desired(loaded, store) -> str:
     return desired_sha
 
 
-def test_adblock_shared_settings_clamp_invalid_values_and_request_refresh(
+def test_adblock_shared_settings_reject_invalid_values_and_request_refresh(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+    before = dict(store.settings)
+    for cache_ttl, cache_max, expected in (
+        ("not-int", "100", "TTL seconds must be an integer."),
+        ("900", "-10", "Maximum entries must be between 0 and 1000000."),
+        ("", "100", "TTL seconds is required."),
+        ("604801", "100", "TTL seconds must be between 0 and 604800."),
+    ):
+        with loaded.module.app.test_request_context(
+            "/adblock",
+            method="POST",
+            data={
+                "action": "save_settings",
+                "cache_ttl": cache_ttl,
+                "cache_max": cache_max,
+            },
+        ):
+            rejected = loaded.module._handle_adblock_post(store)
+        assert _params(rejected.location)["invalid"] == [expected]
+    assert store.settings == before
+    assert store.refresh_requested == 0
+    assert loaded.operation_ledger.operations == []
+
     with loaded.module.app.test_request_context(
         "/adblock",
         method="POST",
-        data={
-            "action": "save_settings",
-            "cache_ttl": "not-int",
-            "cache_max": "-10",
-        },
+        data={"action": "save_settings", "cache_ttl": "900", "cache_max": "0"},
     ):
         response = loaded.module._handle_adblock_post(store)
-    assert response.status_code in {301, 302, 303}
-    assert store.settings["cache_ttl"] == 3600
+    assert _params(response.location)["saved"] == ["cache"]
+    assert store.settings["cache_ttl"] == 900
     assert store.settings["cache_max"] == 0
     assert store.refresh_requested == 1
     operation = loaded.operation_ledger.operations[-1]
@@ -143,6 +161,7 @@ def test_webfilter_save_validates_source_url_and_whitelist(
     ):
         invalid = loaded.module._handle_webfilter_post(store, "categories")
     assert _params(invalid.location)["err_source"] == ["1"]
+    assert _params(invalid.location)["err_detail"] != [""]
     assert not hasattr(store, "last_set_settings")
 
     with loaded.module.app.test_request_context(
@@ -157,6 +176,8 @@ def test_webfilter_save_validates_source_url_and_whitelist(
         disabled_internal = loaded.module._handle_webfilter_post(store, "categories")
     disabled_params = _params(disabled_internal.location)
     assert "err_source" not in disabled_params
+    # A save that needs no feed refresh still confirms it was saved.
+    assert disabled_params["saved"] == ["1"]
     assert store.last_set_settings["enabled"] is False
     assert (
         store.last_set_settings["source_url"] == "http://127.0.0.1/private-feed.tar.gz"
@@ -253,20 +274,24 @@ def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None
     assert store.no_bump_src_nets == ["10.1.2.0/24"]
 
     with loaded.module.app.test_request_context(
-        "/sslfilter", method="POST", data={"action": "add", "cidr": "172.31.250.0/24"}
-    ):
-        legacy_add = loaded.module._handle_sslfilter_post(store)
-    assert _params(legacy_add.location)["ok"] == ["1"]
-    assert "172.31.250.0/24" in store.no_bump_src_nets
-
-    with loaded.module.app.test_request_context(
         "/sslfilter",
         method="POST",
-        data={"action": "remove", "cidr": "172.31.250.0/24"},
+        data={"action": "remove_src", "policy": "nobump", "cidr": "10.1.2.0/24"},
     ):
-        legacy_remove = loaded.module._handle_sslfilter_post(store)
-    assert _params(legacy_remove.location)["removed"] == ["1"]
-    assert "172.31.250.0/24" not in store.no_bump_src_nets
+        removed = loaded.module._handle_sslfilter_post(store)
+    assert _params(removed.location)["removed"] == ["1"]
+    assert "10.1.2.0/24" not in store.no_bump_src_nets
+
+    # The retired policy-less "add"/"remove" aliases are not accepted.
+    for retired in ("add", "remove"):
+        with loaded.module.app.test_request_context(
+            "/sslfilter",
+            method="POST",
+            data={"action": retired, "cidr": "172.31.250.0/24"},
+        ):
+            ignored = loaded.module._handle_sslfilter_post(store)
+        assert urlsplit(ignored.location).path == "/sslfilter"
+        assert "172.31.250.0/24" not in store.no_bump_src_nets
 
     with loaded.module.app.test_request_context(
         "/sslfilter", method="POST", data={"action": "unknown"}

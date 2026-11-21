@@ -1577,8 +1577,8 @@ def _policy_runtime_state(
             else "Policy apply running"
         )
         detail = (
-            f"Selected-proxy policy operation #{operation_id} is {operation_status}; "
-            "desired policy settings are not proven running yet."
+            f"Operation #{operation_id} is {operation_status}; the saved policy is "
+            "not confirmed running yet."
         )
     elif (
         operation_status in {"failed", "superseded"}
@@ -1591,48 +1591,45 @@ def _policy_runtime_state(
             else "Policy apply superseded"
         )
         detail = (
-            f"Selected-proxy policy operation #{operation_id} ended {operation_status}; "
-            "do not treat the saved desired policy as running until a later reconcile succeeds."
+            f"Operation #{operation_id} {operation_status}; the saved policy is not "
+            "running until a later apply succeeds."
         )
     elif running_matches:
         state = "reconciled"
         label = "Policy running"
-        detail = "Desired policy SHA matches the selected proxy runtime policy SHA."
+        detail = "The proxy is running the saved policy."
     elif operation_status == "applied" and operation_matches_current_desired:
         state = "applied_unverified"
         label = "Policy apply succeeded"
         detail = (
-            f"Selected-proxy policy operation #{operation_id} succeeded, "
-            "but current runtime policy SHA evidence is unavailable."
+            f"Operation #{operation_id} succeeded, but the proxy has not reported "
+            "which policy it is running."
         )
     elif desired_policy_sha and current_policy_sha:
         state = "drift"
         label = "Desired/running mismatch"
         detail = (
-            f"Desired policy {_short_sha(desired_policy_sha) or 'unknown sha'} does not "
-            f"match running policy {_short_sha(current_policy_sha) or 'unknown sha'}."
+            f"Saved policy {_short_sha(desired_policy_sha) or 'unknown'} does not "
+            f"match running policy {_short_sha(current_policy_sha) or 'unknown'}."
         )
     elif desired_error:
         state = "unknown"
-        label = "Policy evidence limited"
-        detail = (
-            "Desired policy state could not be fingerprinted for this Admin UI view. "
-            f"{desired_error}"
-        )
+        label = "Policy status unknown"
+        detail = f"The saved policy could not be fingerprinted. {desired_error}"
     else:
         state = "unknown"
-        label = "Runtime policy unknown"
-        detail = "The selected proxy runtime did not report enough policy SHA evidence."
+        label = "Policy status unknown"
+        detail = "The proxy has not reported which policy it is running."
 
     if latest_operation is not None and operation_target_error:
         detail = (
-            f"{detail} Latest selected-proxy policy operation #{operation_id} has an "
-            f"invalid target fingerprint ({operation_target_error}), so it is shown as context only."
+            f"{detail} Operation #{operation_id} has an invalid target "
+            f"({operation_target_error}) and is shown for reference only."
         )
     elif latest_operation is not None and not operation_matches_current_desired:
         detail = (
-            f"{detail} Latest selected-proxy policy operation #{operation_id} targets "
-            "a different desired policy fingerprint, so it is shown as context only."
+            f"{detail} Operation #{operation_id} was for an earlier saved policy "
+            "(a different desired policy fingerprint) and is shown for reference only."
         )
 
     operation_payload = _operation_view(latest_operation)
@@ -1752,10 +1749,8 @@ def _pac_runtime_state(
     if not desired_pac_sha and not desired_error:
         state = "no_desired_state"
         label = "No desired PAC state"
-        detail = "No saved PAC desired-state fingerprint is available for the selected proxy."
-        recovery_action = (
-            "Save PAC routing settings to queue selected-proxy materialization."
-        )
+        detail = "No saved PAC state exists for this proxy yet."
+        recovery_action = "Save PAC settings to publish them to the proxy."
     elif (
         operation_status in {"pending", "applying"}
         and operation_matches_current_desired
@@ -1767,12 +1762,10 @@ def _pac_runtime_state(
             else "PAC materialization running"
         )
         detail = (
-            f"Selected-proxy PAC operation #{operation_id} is {operation_status}; "
-            "saved PAC profiles are not proven materialized yet."
+            f"Operation #{operation_id} is {operation_status}; the proxy has not "
+            "confirmed it serves the saved PAC yet."
         )
-        recovery_action = (
-            "Wait for the selected proxy to reconcile, then refresh this page."
-        )
+        recovery_action = "Wait for the proxy to apply it, then refresh this page."
     elif (
         operation_status in {"failed", "superseded"}
         and operation_matches_current_desired
@@ -1784,54 +1777,52 @@ def _pac_runtime_state(
             else "PAC materialization superseded"
         )
         detail = (
-            f"Selected-proxy PAC operation #{operation_id} ended {operation_status}; "
-            "do not treat saved PAC profiles as selected-proxy runtime until a later refresh succeeds."
+            f"Operation #{operation_id} {operation_status}; the proxy is not serving "
+            "the saved PAC until a later refresh succeeds."
         )
-        recovery_action = (
-            "Save the PAC settings again to queue a fresh selected-proxy refresh."
-        )
+        recovery_action = "Save the PAC settings again to queue a new refresh."
     elif desired_pac_sha and current_pac_sha and desired_pac_sha == current_pac_sha:
         state = "reconciled"
         label = "PAC materialized"
-        detail = "Saved PAC desired SHA matches the selected proxy runtime PAC SHA."
+        detail = "The proxy serves the saved PAC."
         recovery_action = "No action needed."
     elif desired_pac_sha and current_pac_sha:
         state = "drift"
         label = "Saved/runtime PAC mismatch"
         detail = (
-            f"Saved PAC {_short_sha(desired_pac_sha) or 'unknown sha'} does not match "
-            f"selected-proxy runtime PAC {_short_sha(current_pac_sha) or 'unknown sha'}."
+            f"Saved PAC {_short_sha(desired_pac_sha) or 'unknown'} does not match "
+            f"the PAC the proxy serves ({_short_sha(current_pac_sha) or 'unknown'})."
         )
-        recovery_action = (
-            "Save PAC routing settings to queue selected-proxy materialization."
-        )
+        recovery_action = "Save PAC settings to publish them to the proxy again."
     elif _runtime_unavailable(runtime_health):
         state = "unavailable"
         label = "PAC runtime unavailable"
-        detail = "The selected proxy runtime is unavailable, so saved PAC profiles cannot be verified as materialized."
-        recovery_action = "Restore selected-proxy health, then save PAC settings or run the existing proxy sync."
+        detail = "The proxy is unreachable, so the PAC it serves cannot be checked."
+        recovery_action = (
+            "Restore the proxy, then save PAC settings or run a proxy sync."
+        )
     elif desired_error:
         state = "unknown"
-        label = "PAC evidence limited"
-        detail = f"Desired PAC state could not be fingerprinted. {desired_error}"
-        recovery_action = (
-            "Fix the PAC desired-state error, then save PAC settings again."
-        )
+        label = "PAC status unknown"
+        detail = f"The saved PAC state could not be fingerprinted. {desired_error}"
+        recovery_action = "Fix the error above, then save PAC settings again."
     else:
         state = "unknown"
         label = "PAC runtime unknown"
-        detail = "The selected proxy did not report enough PAC SHA evidence to verify materialization."
-        recovery_action = "Refresh selected-proxy health or use the existing PAC save controls to queue reconciliation."
+        detail = "The proxy has not reported which PAC it serves."
+        recovery_action = (
+            "Refresh this page later, or save PAC settings to publish them again."
+        )
 
     if latest_operation is not None and operation_target_error:
         detail = (
-            f"{detail} Latest selected-proxy PAC operation #{operation_id} has an invalid "
-            f"target fingerprint ({operation_target_error}), so it is shown as context only."
+            f"{detail} Operation #{operation_id} has an invalid target "
+            f"({operation_target_error}) and is shown for reference only."
         )
     elif latest_operation is not None and not operation_matches_current_desired:
         detail = (
-            f"{detail} Latest selected-proxy PAC operation #{operation_id} targets a different "
-            "PAC fingerprint, so stale success/failure is context only."
+            f"{detail} Operation #{operation_id} was for an earlier saved PAC "
+            "(a different PAC fingerprint) and is shown for reference only."
         )
 
     return {
@@ -1931,8 +1922,8 @@ def _adblock_runtime_state(
     if not (active_artifact or {}).get("available"):
         state = "no_active_artifact"
         label = "No active adblock artifact"
-        detail = "No shared compiled adblock artifact is active; there is no selected-proxy artifact to verify."
-        recovery_action = "Use the existing Update now or Save lists controls to build an active artifact."
+        detail = "No compiled ad-block rules exist yet, so there is nothing to apply."
+        recovery_action = "Enable lists and click Save lists or Update now."
     elif operation_status in {"pending", "applying"} and operation_matches_active:
         state = operation_status
         label = (
@@ -1941,12 +1932,10 @@ def _adblock_runtime_state(
             else "Adblock apply running"
         )
         detail = (
-            f"Selected-proxy adblock operation #{operation_id} is {operation_status}; "
-            "the shared artifact is not proven applied to runtime yet."
+            f"Operation #{operation_id} is {operation_status}; the proxy has not "
+            "confirmed it applied the compiled rules yet."
         )
-        recovery_action = (
-            "Wait for selected-proxy reconciliation, then refresh this page."
-        )
+        recovery_action = "Wait for the proxy to apply them, then refresh this page."
     elif operation_status in {"failed", "superseded"} and operation_matches_active:
         state = operation_status
         label = (
@@ -1955,10 +1944,10 @@ def _adblock_runtime_state(
             else "Adblock apply superseded"
         )
         detail = (
-            f"Selected-proxy adblock operation #{operation_id} ended {operation_status}; "
-            "do not treat the shared built artifact as applied runtime."
+            f"Operation #{operation_id} {operation_status}; the proxy is not using "
+            "the compiled rules."
         )
-        recovery_action = "Use the existing adblock refresh controls to queue a fresh selected-proxy apply."
+        recovery_action = "Click Update now to queue a new apply."
     elif (
         artifact_sha
         and current_sha
@@ -1967,31 +1956,35 @@ def _adblock_runtime_state(
     ):
         state = "reconciled"
         label = "Adblock artifact applied"
-        detail = "Active shared artifact hash matches the selected proxy runtime hash and revision-scoped apply evidence."
+        detail = "The proxy is running the current compiled rules."
         recovery_action = "No action needed."
     elif artifact_sha and current_sha and artifact_sha != current_sha:
         state = "drift"
         label = "Built/runtime adblock mismatch"
         detail = (
-            f"Active artifact {_short_sha(artifact_sha) or 'unknown sha'} does not match "
-            f"selected-proxy runtime {_short_sha(current_sha) or 'unknown sha'}."
+            f"Compiled rules {_short_sha(artifact_sha) or 'unknown'} do not match "
+            f"the rules the proxy runs ({_short_sha(current_sha) or 'unknown'})."
         )
-        recovery_action = "Use the existing adblock refresh controls to queue selected-proxy materialization."
+        recovery_action = "Click Update now to queue a new apply."
     elif _runtime_unavailable(runtime_health):
         state = "unavailable"
         label = "Adblock runtime unavailable"
-        detail = "The selected proxy runtime is unavailable, so the shared built artifact cannot be verified as applied."
-        recovery_action = "Restore selected-proxy health, then use the existing adblock refresh controls or proxy sync."
+        detail = "The proxy is unreachable, so its ad-block rules cannot be checked."
+        recovery_action = (
+            "Restore the proxy, then click Update now or run a proxy sync."
+        )
     else:
         state = "built_unverified"
         label = "Built, not runtime-verified"
-        detail = "A shared artifact exists, but selected-proxy runtime/apply evidence is missing for this revision."
-        recovery_action = "Use the existing adblock refresh controls to queue selected-proxy materialization."
+        detail = (
+            "Rules are compiled, but the proxy has not reported applying this revision."
+        )
+        recovery_action = "Click Update now to queue a new apply."
 
     if latest_operation is not None and not operation_matches_active:
         detail = (
-            f"{detail} Latest selected-proxy adblock operation #{operation_id} targets a different "
-            "artifact revision/hash, so stale success/failure is context only."
+            f"{detail} Operation #{operation_id} was for a different "
+            "artifact revision/hash and is shown for reference only."
         )
 
     return {
@@ -5261,7 +5254,8 @@ def _handle_adblock_post(store: Any):
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="list save", store=store):
             return response
-    elif action == "save_runtime":
+        return _redirect_to("adblock", saved="lists")
+    if action == "save_runtime":
         enabled = request.form.get("adblock_enabled") == "on"
         store.set_runtime_enabled(enabled)
         if response := _queue_adblock_or_error(
@@ -5270,20 +5264,23 @@ def _handle_adblock_post(store: Any):
             runtime_enabled=enabled,
         ):
             return response
-    elif action == "save_settings":
-        cur = store.get_settings()
-        cache_ttl = _bounded_int(
-            request.form.get("cache_ttl"),
-            default=int(cur.get("cache_ttl") or 0),
-            minimum=0,
-            maximum=7 * 24 * 3600,
-        )
-        cache_max = _bounded_int(
-            request.form.get("cache_max"),
-            default=int(cur.get("cache_max") or 0),
-            minimum=0,
-            maximum=1_000_000,
-        )
+        return _redirect_to("adblock", saved="routing")
+    if action == "save_settings":
+        try:
+            cache_ttl = _required_bounded_int(
+                request.form.get("cache_ttl"),
+                field_label="TTL seconds",
+                minimum=0,
+                maximum=7 * 24 * 3600,
+            )
+            cache_max = _required_bounded_int(
+                request.form.get("cache_max"),
+                field_label="Maximum entries",
+                minimum=0,
+                maximum=1_000_000,
+            )
+        except ValueError as exc:
+            return _redirect_to("adblock", invalid=str(exc))
         changed = store.set_shared_settings(cache_ttl=cache_ttl, cache_max=cache_max)
         if changed:
             store.request_refresh_now()
@@ -5292,14 +5289,15 @@ def _handle_adblock_post(store: Any):
                 store=store,
             ):
                 return response
-    elif action == "refresh":
+        return _redirect_to("adblock", saved="cache")
+    if action == "refresh":
         if not any(st.enabled for st in store.list_statuses()):
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="manual refresh", store=store):
             return response
         return _redirect_to("adblock", refresh_requested="1")
-    elif action == "flush_cache":
+    if action == "flush_cache":
         store.request_cache_flush()
         if response := _queue_adblock_or_error(action="cache flush", store=store):
             return response
@@ -5777,8 +5775,13 @@ def _handle_webfilter_post(store: Any, tab: str):
         if source_url and category_refresh_required:
             try:
                 source_url = _validate_webfilter_source_url(source_url)
-            except ValueError:
-                return _redirect_to("webfilter", tab="categories", err_source="1")
+            except ValueError as exc:
+                return _redirect_to(
+                    "webfilter",
+                    tab="categories",
+                    err_source="1",
+                    err_detail=public_error_message(exc),
+                )
 
         try:
             _webfilter_set_settings(
@@ -5807,10 +5810,15 @@ def _handle_webfilter_post(store: Any, tab: str):
                     "safe_browsing_lists",
                 ),
             )
-        except ValueError:
-            return _redirect_to("webfilter", tab="categories", err_source="1")
+        except ValueError as exc:
+            return _redirect_to(
+                "webfilter",
+                tab="categories",
+                err_source="1",
+                err_detail=public_error_message(exc),
+            )
         if not category_refresh_required:
-            return _redirect_to("webfilter", tab="categories")
+            return _redirect_to("webfilter", tab="categories", saved="1")
         return _redirect_after_policy_refresh(
             "webfilter",
             store,
@@ -5869,8 +5877,12 @@ def _handle_webfilter_post(store: Any, tab: str):
                 safe_browsing_api_key=safe_browsing_api_key,
                 safe_browsing_lists=safe_browsing_lists,
             )
-        except ValueError:
-            return _redirect_to("webfilter", tab="categories", err_source="1")
+        except ValueError as exc:
+            return _redirect_to(
+                "webfilter",
+                tab="categories",
+                err=public_error_message(exc),
+            )
         return _redirect_after_policy_refresh(
             "webfilter",
             store,
@@ -5887,6 +5899,7 @@ def _handle_webfilter_post(store: Any, tab: str):
                 "webfilter",
                 tab="whitelist",
                 wl_err=(err or "1"),
+                wl_value=entry[:300],
             )
         return _redirect_after_policy_refresh(
             "webfilter",
@@ -5963,7 +5976,7 @@ def _handle_sslfilter_post(store: Any):
     action = _form_action(lower=True)
     policy = _sslfilter_policy_from_form()
 
-    if action in {"apply_policy", "apply_verify"}:
+    if action == "apply_policy":
         ok, detail = _trigger_policy_sync(force=True)
         detail = (
             detail or ("Policy sync requested." if ok else "Policy sync failed.")
@@ -5993,23 +6006,6 @@ def _handle_sslfilter_post(store: Any):
             compatibility_added=added,
             compatibility_attempted=attempted,
         )
-
-    if action == "add":
-        ok, err, canonical = _add_sslfilter_src(
-            store,
-            "nobump",
-            request.form.get("cidr") or "",
-        )
-        if not ok:
-            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
-        return _sslfilter_redirect(ok="1", added="1", value=canonical, policy="nobump")
-
-    if action == "remove":
-        ok, err, canonical = normalize_src_net_rule(request.form.get("cidr") or "")
-        if not ok:
-            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
-        store.remove_src_net("nobump", canonical)
-        return _sslfilter_redirect(removed="1")
 
     if action in {"add_domain", "add_domain_bulk"}:
         if policy not in {"nobump", "nocache"}:
@@ -6116,13 +6112,18 @@ def _handle_pac_builder_post(store: Any):
 
     try:
         if action == "add_backup_proxy":
-            result = store.add_backup_proxy(
-                proxy_host=request.form.get("backup_proxy_host") or "",
-                proxy_port=request.form.get("backup_proxy_port") or "",
-            )
+            backup_form = {
+                "proxy_host": request.form.get("backup_proxy_host") or "",
+                "proxy_port": request.form.get("backup_proxy_port") or "",
+            }
+            result = store.add_backup_proxy(**backup_form)
             ok, err, _ = result
             if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
+                return _render_pac_builder(
+                    store,
+                    form_error=err or "Backup proxy was not added.",
+                    backup_form=backup_form,
+                )
             return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "remove_backup_proxy":
@@ -6156,21 +6157,23 @@ def _handle_pac_builder_post(store: Any):
                 changed=_pac_mutation_changed(result, default=True)
             )
 
-        if action == "create":
-            result = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+        if action in {"create", "update"}:
+            pid = None
+            if action == "update":
+                pid, id_err = _pac_profile_id_from_form()
+                if pid is None:
+                    return _redirect_to("pac_builder", error="1", msg=id_err)
+            form_data = _pac_profile_form_data(profile_id=pid)
+            result = store.upsert_profile(**form_data)
             ok, err, _ = result
             if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
-
-        if action == "update":
-            pid, id_err = _pac_profile_id_from_form()
-            if pid is None:
-                return _redirect_to("pac_builder", error="1", msg=id_err)
-            result = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
-            ok, err, _ = result
-            if not ok:
-                return _redirect_to("pac_builder", error="1", msg=err)
+                # Re-render instead of redirecting so the rejected input stays
+                # in the form for correction.
+                return _render_pac_builder(
+                    store,
+                    form_error=err or "PAC profile was not saved.",
+                    profile_form=form_data,
+                )
             return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "delete":
@@ -9356,7 +9359,6 @@ def adblock():
         refresh_no_lists=(request.args.get("refresh_no_lists") == "1"),
         store_unavailable=unavailable,
         window=window_i,
-        window_label=_window_label(window_i),
         adblock_icap_summary=adblock_icap_summary,
         active_artifact=active_artifact,
         artifact_build=artifact_build,
@@ -9451,14 +9453,16 @@ def webfilter():
         whitelist_max_entries=WEBFILTER_WHITELIST_MAX_ENTRIES,
         safe_browsing_status=safe_browsing_status,
         window=window_i,
-        window_label=_window_label(window_i),
         err=(request.args.get("err") or ""),
         err_source=(request.args.get("err_source") == "1"),
+        err_detail=(request.args.get("err_detail") or ""),
+        saved=(request.args.get("saved") == "1"),
         err_safe_browsing_lists=(request.args.get("err_safe_browsing_lists") == "1"),
         err_safe_browsing_key=(request.args.get("err_safe_browsing_key") == "1"),
         safe_browsing_saved=(request.args.get("safe_browsing_saved") == "1"),
         wl_ok=(request.args.get("wl_ok") == "1"),
         wl_err=(request.args.get("wl_err") or ""),
+        wl_value=(request.args.get("wl_value") or ""),
     )
 
 
@@ -9496,16 +9500,14 @@ def sslfilter():
             return _redirect_to("sslfilter", err=public_error_message(exc))
 
     rules = store.list_all()
-    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    _pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
     policy_runtime_state = _policy_runtime_state(get_proxy_id())
     return render_template(
         "sslfilter.html",
         rules=rules,
         policy_runtime_state=policy_runtime_state,
-        pac_target=pac_target,
         pac_url=pac_url,
         pac_warning=pac_warning,
-        private_dst_nets=store.private_dst_nets,
         private_dst_metadata=pac_private_local_destination_metadata(),
         compatibility_presets=store.list_compatibility_presets(),
         ok=(request.args.get("ok") == "1"),
@@ -9623,6 +9625,18 @@ def error_page_preview(name: str):
 
 @app.route("/clamav", methods=["GET"])
 def clamav():
+    return _render_clamav_page(
+        settings_ok=request.args.get("settings_ok"),
+        settings_msg=request.args.get("settings_msg"),
+    )
+
+
+def _render_clamav_page(
+    *,
+    settings_ok: str | None,
+    settings_msg: str | None,
+    posted_options: dict[str, Any] | None = None,
+):
     cfg = _current_managed_config()
     clamav_enabled = _is_clamav_enabled(cfg)
     window_i = _query_int_arg(
@@ -9653,6 +9667,9 @@ def clamav():
         }
 
     clamav_options = extract_clamav_options(cfg)
+    if posted_options is not None:
+        # Rejected form input: show what was submitted so it can be corrected.
+        clamav_options = {**clamav_options, **posted_options}
 
     return render_template(
         "clamav.html",
@@ -9671,9 +9688,19 @@ def clamav():
         eicar_detail=request.args.get("eicar_detail"),
         icap_result=request.args.get("icap_sample"),
         icap_detail=request.args.get("icap_detail"),
-        settings_ok=request.args.get("settings_ok"),
-        settings_msg=request.args.get("settings_msg"),
+        settings_ok=settings_ok,
+        settings_msg=settings_msg,
     )
+
+
+def _posted_clamav_options() -> dict[str, Any]:
+    posted: dict[str, Any] = {}
+    for key, field in get_clamav_ui_field_map().items():
+        if field.input_type == "checkbox":
+            posted[key] = request.form.get(key) == "on"
+        elif key in request.form:
+            posted[key] = request.form.get(key, "")
+    return posted
 
 
 @app.route("/clamav/settings", methods=["POST"])
@@ -9681,10 +9708,20 @@ def clamav_settings():
     new_cfg = ""
     try:
         current = _current_managed_config()
-        options = read_clamav_options_from_form(
-            request.form,
-            extract_clamav_options(current),
-        )
+        try:
+            options = read_clamav_options_from_form(
+                request.form,
+                extract_clamav_options(current),
+            )
+        except ValueError as exc:
+            # Invalid input never reaches the config; keep the form as typed.
+            detail = public_error_message(exc)
+            _record_audit_event("clamav_settings_apply", ok=False, detail=detail)
+            return _render_clamav_page(
+                settings_ok="0",
+                settings_msg=detail,
+                posted_options=_posted_clamav_options(),
+            )
         new_cfg = apply_clamav_options_to_config(current, options)
         ok, details = _publish_config_for_current_mode(
             new_cfg,
@@ -9791,7 +9828,11 @@ def clamav_toggle():
     )
     if ok:
         return _redirect_to("clamav")
-    return _redirect_to("clamav", error="1")
+    return _redirect_to(
+        "clamav",
+        toggle_error="1",
+        toggle_msg=clean_text(details or "", max_len=1000),
+    )
 
 
 @app.route("/squid/config", methods=["GET", "POST"])
@@ -9805,6 +9846,7 @@ def squid_config():
     )
 
     validation = None
+    apply_error = None
     posted_config = None
     if request.method == "POST":
         action = _form_action(default="apply", lower=True)
@@ -9833,7 +9875,9 @@ def squid_config():
                 )
                 if ok:
                     return _redirect_config(tab, ok=True, msg=details)
-                return _redirect_config(tab, error=True, msg=details)
+                # Re-render with the submitted text so a rejected edit is
+                # not lost to a redirect that reloads the saved config.
+                apply_error = (details or "").strip()
         except Exception as exc:
             detail = public_error_message(exc)
             log_exception_throttled(
@@ -9853,7 +9897,7 @@ def squid_config():
             if action == "validate":
                 validation = {"ok": False, "detail": detail}
             else:
-                return _redirect_config(tab, error=True, msg=detail)
+                apply_error = detail
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=max_squid_workers())
@@ -9882,7 +9926,6 @@ def squid_config():
         + len(getattr(sslfilter_rules, "no_cache_domains", []) or [])
         + len(getattr(sslfilter_rules, "no_bump_src_nets", []) or [])
         + len(getattr(sslfilter_rules, "no_cache_src_nets", []) or [])
-        + (1 if bool(getattr(sslfilter_rules, "exclude_private_nets", False)) else 0)
     )
     summary = {
         "workers": tunables.get("workers") if tunables else None,
@@ -9916,6 +9959,7 @@ def squid_config():
         summary=summary,
         config_runtime_state=config_runtime_state,
         validation=validation,
+        apply_error=apply_error,
         config_sections=config_sections,
         config_field_map=get_config_ui_field_map(),
         active_section=active_section,
@@ -9979,6 +10023,13 @@ def apply_safe_caching():
             audit_kind="config_apply_template",
         )
     except Exception as exc:
+        if not isinstance(exc, ValueError):
+            log_exception_throttled(
+                app.logger,
+                "web.app.apply_safe_caching",
+                interval_seconds=30.0,
+                message="Failed to apply managed Squid settings",
+            )
         return _redirect_config(form_kind, error=True, msg=public_error_message(exc))
 
     return _redirect_config(form_kind, ok=ok, error=not ok, msg=detail)
@@ -10012,6 +10063,13 @@ def apply_cache_overrides():
             overrides=overrides,
         )
     except Exception as exc:
+        if not isinstance(exc, ValueError):
+            log_exception_throttled(
+                app.logger,
+                "web.app.apply_cache_overrides",
+                interval_seconds=30.0,
+                message="Failed to apply Squid cache overrides",
+            )
         return _redirect_config(
             "caching",
             subtab="overrides",
@@ -10034,18 +10092,41 @@ def pac_builder():
 
     if request.method == "POST":
         return _handle_pac_builder_post(store)
+    return _render_pac_builder(store)
 
-    profiles = []
+
+def _render_pac_builder(
+    store: Any,
+    *,
+    form_error: str = "",
+    profile_form: dict[str, Any] | None = None,
+    backup_form: dict[str, str] | None = None,
+):
+    unavailable: list[str] = []
     try:
         profiles = store.list_profiles()
     except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.pac_builder.profiles",
+            interval_seconds=30.0,
+            message="Failed to load PAC profiles; rendering unavailable state",
+        )
         profiles = []
+        unavailable.append("PAC profiles")
 
     pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
     try:
         chain_settings = store.list_proxy_chain_settings()
     except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.pac_builder.chain",
+            interval_seconds=30.0,
+            message="Failed to load PAC proxy chain; rendering unavailable state",
+        )
         chain_settings = None
+        unavailable.append("fallback proxy chain")
     pac_runtime_state = _pac_runtime_state(get_proxy_id())
     return render_template(
         "pac.html",
@@ -10055,6 +10136,10 @@ def pac_builder():
         pac_target=pac_target,
         chain_settings=chain_settings,
         pac_runtime_state=pac_runtime_state,
+        store_unavailable=unavailable,
+        form_error=form_error,
+        profile_form=profile_form,
+        backup_form=backup_form,
     )
 
 
@@ -10113,13 +10198,11 @@ def winhttp_registry_builder():
     normalized_reg_hex = ""
     decoded_reg = None
     error = ""
-    action = ""
 
     if request.method == "POST":
-        action = request.form.get("action", "generate")
         form = _winhttp_form_from_request()
         try:
-            if action == "normalize_reg":
+            if request.form.get("action", "generate") == "normalize_reg":
                 normalized_reg_hex = normalize_reg_binary_export(
                     form.get("reg_input") or "",
                 )
@@ -10139,7 +10222,6 @@ def winhttp_registry_builder():
         normalized_reg_hex=normalized_reg_hex,
         decoded_reg=decoded_reg,
         error=error,
-        action=action,
     )
 
 

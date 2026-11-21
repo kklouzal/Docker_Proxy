@@ -756,7 +756,7 @@ a.brand:hover{
 
 .config-tabs{
   display: grid !important;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) !important;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)) !important;
   gap: 10px;
   width: 100% !important;
 }
@@ -1056,6 +1056,28 @@ a.brand:hover{
 }
 
 /* Web filtering category tiles */
+/* Short value + action tables: no 560-640px minimum, so the Remove button
+   stays on screen on phones without horizontal scrolling. */
+.table-wrap .table.policy-rule-table{
+  min-width: 0;
+}
+
+.policy-rule-table td.mono{
+  overflow-wrap: anywhere;
+}
+
+.error-token-guidance > .grid{
+  padding: 0 16px 16px;
+}
+
+/* Grid items default to min-width:auto; let the list table scroll inside
+   its .table-wrap instead of widening (and being clipped by) the card. */
+.adblock-lists-form{
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
 .webfilter-categories{
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -1067,6 +1089,7 @@ a.brand:hover{
   align-items:center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.03);
@@ -1076,6 +1099,7 @@ a.brand:hover{
   display:flex;
   align-items:center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .webfilter-toggle{

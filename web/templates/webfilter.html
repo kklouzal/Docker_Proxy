@@ -1,7 +1,7 @@
 {% extends 'layout.html' %}
 {% from "_scope_macros.html" import scope_notice, scope_chip %}
 {% from "_policy_runtime_state.html" import policy_runtime_card with context %}
-{% block title %}Web Filtering | Docker Proxy{% endblock %}
+{% block title %}Web Filtering · Docker Proxy{% endblock %}
 
 {% block content %}
 <section class="page-heading">
@@ -18,7 +18,7 @@
     </div>
   </div>
   <div class="page-actions">
-    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Observability hub</a>
+    <a class="btn ghost" href="{{ url_for('observability', pane='security', window=window) }}">Observability hub</a>
     <a class="btn ghost" href="{{ url_for('sslfilter') }}">SSL Filtering</a>
     <a class="btn ghost" href="{{ url_for('adblock') }}">Ad blocking</a>
   </div>
@@ -35,7 +35,7 @@
 {% endcall %}
 {% elif tab == 'whitelist' %}
 {% call scope_notice('proxy', 'Selected proxy only', 'Whitelist entries on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
-<div>Whitelist rules are evaluated before category blocking for this proxy.</div>
+<div>Whitelisted domains are allowed before category blocking.</div>
 {% endcall %}
 {% endif %}
 
@@ -48,6 +48,8 @@
 
 {% if err %}
   <div class="banner error"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
+{% elif saved %}
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Web filtering settings saved.</span></div></div>
 {% endif %}
 
 {% if request.args.get('policy_error') %}
@@ -69,7 +71,7 @@
       {% if wl_ok %}
         <div class="banner success">
           <span class="badge ok">Saved</span>
-          <div class="banner-copy"><span class="small">Whitelist entry saved and queued for proxy reconciliation.</span></div>
+          <div class="banner-copy"><span class="small">Whitelist entry saved.</span></div>
         </div>
       {% endif %}
       {% if wl_err %}
@@ -85,16 +87,16 @@
         <input type="hidden" name="action" value="whitelist_add">
         <label for="whitelist_domain">Add domain</label>
         <div class="inline-form">
-          <input id="whitelist_domain" class="input inline-fill" type="text" name="whitelist_domain" placeholder="example.com or *.example.com">
+          <input id="whitelist_domain" class="input inline-fill" type="text" name="whitelist_domain" placeholder="example.com or *.example.com" value="{{ wl_value }}">
           <button class="btn" type="submit">Add</button>
         </div>
-        <div class="help">Supports exact domains (example.com) and wildcard suffixes (*.example.com). Whitelisted domains are allowed before category blocking. Each proxy holds up to {{ "{:,}".format(whitelist_max_entries) }} entries.</div>
+        <div class="help">Exact domains (example.com) or wildcard suffixes (*.example.com), up to {{ "{:,}".format(whitelist_max_entries) }} entries per proxy.</div>
       </form>
 
       <div class="stack-sm">
         {% if whitelist_rows and whitelist_rows|length > 0 %}
           <div class="table-wrap">
-            <table class="table">
+            <table class="table policy-rule-table">
               <thead>
                 <tr>
                   <th>Domain</th>
@@ -152,15 +154,15 @@
         <div class="stack-lg">
           {% if err_source %}
             <div class="alert error">
-              A valid shared category source URL is required before web filtering can be enabled.
+              Not saved: a valid category source URL is required to enable web filtering.{% if err_detail %} {{ err_detail }}{% endif %}
             </div>
           {% endif %}
 
           <section class="surface-panel">
             <div class="section-header-row">
               <div>
-                <h3>Shared category feed</h3>
-                <div class="small">Controls the catalog source used by all proxies. Source changes request a fresh build before enforcement refresh.</div>
+                <h3>Category feed source</h3>
+                <div class="small">Shared by all proxies. Changing it rebuilds the category catalog.</div>
               </div>
               {{ scope_chip('global') }}
             </div>
@@ -257,7 +259,7 @@
           <div class="card-header">
             <div>
               <h2 class="card-title">Google Safe Browsing</h2>
-              <div class="small">Optional cached/local-list threat-intel provider.</div>
+              <div class="small">Optional malware and phishing lists, checked locally.</div>
             </div>
             <span class="badge {{ 'ok' if settings.safe_browsing_enabled else 'warn' }}">{{ 'Enabled' if settings.safe_browsing_enabled else 'Disabled' }}</span>
           </div>
@@ -266,7 +268,7 @@
               {% if safe_browsing_saved %}
                 <div class="banner success">
                   <span class="badge ok">Saved</span>
-                  <div class="banner-copy"><span class="small">Safe Browsing settings saved and queued for proxy reconciliation.</span></div>
+                  <div class="banner-copy"><span class="small">Safe Browsing settings saved.</span></div>
                 </div>
               {% endif %}
               {% if err_safe_browsing_lists %}
@@ -280,29 +282,29 @@
                 </div>
               {% endif %}
 
-              <label class="checkbox-row">
-                <input type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
-                Enable cached/local-list checks
+              <label class="check-row">
+                <input class="check" type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
+                Enable Safe Browsing
               </label>
 
               <div class="form-row">
                 <label class="label" for="safe-browsing-api-key">API key</label>
                 <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="" autocomplete="new-password" placeholder="{{ 'Configured - enter a new key to replace' if settings.safe_browsing_api_key else 'AIza...' }}">
                 {% if settings.safe_browsing_api_key %}
-                  <label class="checkbox-row">
-                    <input type="checkbox" name="safe_browsing_clear_key" value="on">
+                  <label class="checkbox-inline">
+                    <input class="check" type="checkbox" name="safe_browsing_clear_key" value="on">
                     Clear stored API key
                   </label>
                 {% endif %}
-                <div class="help">Google is contacted only to confirm a local hash-prefix hit. Leave disabled to use category filtering without a Google key.</div>
+                <div class="help">Google is contacted only to confirm a local hash-prefix match. Category filtering works without a key.</div>
               </div>
 
               <div class="form-row">
                 <div class="label">Threat lists</div>
                 {% set gsb_lists = settings.safe_browsing_lists or ['se-4b','mw-4b','uws-4b'] %}
                 {% for list_id, label in [('se-4b','Social engineering / phishing'), ('mw-4b','Malware'), ('uws-4b','Unwanted software'), ('uwsa-4b','Android unwanted software'), ('pha-4b','Potentially harmful Android apps')] %}
-                  <label class="checkbox-row">
-                    <input type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
+                  <label class="checkbox-inline">
+                    <input class="check" type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
                     {{ label }} <span class="mono">{{ list_id }}</span>
                   </label>
                 {% endfor %}
@@ -319,8 +321,8 @@
       <section class="card">
         <div class="card-header">
           <div>
-              <h2 class="card-title">Shared category feed</h2>
-              <div class="small">Shared category catalog and refresh status for all proxies.</div>
+              <h2 class="card-title">Feed status</h2>
+              <div class="small">Category catalog and Safe Browsing list refreshes, shared by all proxies.</div>
           </div>
             {{ scope_chip('global') }}
         </div>
@@ -374,7 +376,7 @@
           {% if settings.last_error %}
           {% if 'timed out' in settings.last_error|lower and not settings.last_success %}
           <div class="alert warning">
-            The first category build timed out before completing. The feed builder now waits up to 30 minutes before declaring failure.
+            The first category build timed out. Each build may run for up to 30 minutes before it is treated as failed.
           </div>
           {% else %}
           <div class="alert error">
@@ -382,42 +384,10 @@
           </div>
           {% endif %}
           {% endif %}
-          <div class="surface-note small">The feed is downloaded automatically when filtering is first enabled and refreshed on a schedule in the background.</div>
+          <div class="surface-note small">The feed downloads when filtering is first enabled and then refreshes on a schedule.</div>
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-header">
-          <h2 class="card-title">Effective policy summary</h2>
-          <span class="badge">{{ selected|length }} blocked</span>
-        </div>
-        <div class="card-body">
-          <div class="summary-grid">
-            <div class="stat">
-              <div class="stat-k">Filtering</div>
-              <div class="stat-v">{{ 'On' if settings.enabled else 'Off' }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k">Blocked categories</div>
-              <div class="stat-v">{{ selected|length }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k">Whitelist</div>
-              <div class="stat-v">{{ whitelist_rows|length }}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k">Observability</div>
-              <div class="stat-v">Hub</div>
-            </div>
-          </div>
-          <div class="surface-note small">
-            Blocked-request review and recent enforcement evidence now live in <strong>Observability &gt; Security</strong>, leaving this page focused on rule configuration.
-          </div>
-          <div class="actions">
-            <a class="btn" href="{{ url_for('observability', pane='security', window=window if window is defined else observability_default_window) }}">Open security pane</a>
-          </div>
-        </div>
-      </section>
     </aside>
   </div>
 {% endif %}

@@ -82,8 +82,10 @@ def _normalize_domain_rule(domain: str) -> tuple[bool, str, str]:
         pass
     else:
         return False, _IP_LITERAL_DOMAIN_RULE_ERROR, ""
-    if not core or len(core) > 253:
-        return False, "Invalid domain length.", ""
+    if not core:
+        # normalize_domain returns "" for anything that is not a valid DNS
+        # hostname, including names over 253 characters.
+        return False, "Not a valid domain name.", ""
     labels = core.split(".")
     if not labels or any(not label for label in labels):
         return False, "Invalid domain format.", ""

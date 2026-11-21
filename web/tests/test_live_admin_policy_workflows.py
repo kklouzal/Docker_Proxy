@@ -399,7 +399,7 @@ def test_live_pac_a_then_b_operation_truth_preserves_latest_materialization(
     )
 
     pre_sync_page = admin_client.admin_request("/pac")
-    assert "Selected proxy PAC runtime evidence" in pre_sync_page.text
+    assert "PAC status on " in pre_sync_page.text
     assert (
         "PAC materialization pending" in pre_sync_page.text
         or "Saved/runtime PAC mismatch" in pre_sync_page.text
@@ -458,10 +458,7 @@ def test_live_sslfilter_granular_policy_stays_proxy_side_only(
     assert toggle_private_params.get("private_saved") == ["1"]
     assert toggle_private_params.get("pac_queue") == ["1"]
     assert toggle_private_params.get("policy_queue") is None
-    assert (
-        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
-        in toggle_private_response.text
-    )
+    assert "Private/local destination setting saved." in toggle_private_response.text
     assert "PAC materialization refresh is queued" in toggle_private_response.text
     assert "Policy change saved; proxy reconciliation is queued" not in (
         toggle_private_response.text
@@ -618,7 +615,8 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
     add_cidr_response = admin_client.admin_post_form(
         "/sslfilter",
         {
-            "action": "add",
+            "action": "add_src",
+            "policy": "nobump",
             "cidr": cidr,
         },
         csrf_path="/sslfilter",
@@ -629,7 +627,8 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
     remove_cidr_response = admin_client.admin_post_form(
         "/sslfilter",
         {
-            "action": "remove",
+            "action": "remove_src",
+            "policy": "nobump",
             "cidr": cidr,
         },
         csrf_path="/sslfilter",
@@ -654,10 +653,7 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
         "Policy change saved; proxy reconciliation is queued"
         in add_whitelist_response.text
     )
-    assert (
-        "Whitelist entry saved and queued for proxy reconciliation."
-        in add_whitelist_response.text
-    )
+    assert "Whitelist entry saved." in add_whitelist_response.text
     assert "Whitelist entry added." not in add_whitelist_response.text
     assert whitelist_domain in add_whitelist_response.text
 
@@ -805,7 +801,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     )
     _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
     pre_sync_page = admin_client.admin_request("/adblock")
-    assert "Selected proxy adblock runtime evidence" in pre_sync_page.text
+    assert "Ad-block rules on " in pre_sync_page.text
     assert (
         "Built/runtime adblock mismatch" in pre_sync_page.text
         or "Built, not runtime-verified" in pre_sync_page.text

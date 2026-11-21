@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% block title %}Error Pages | Docker Proxy{% endblock %}
+{% block title %}Error Pages · Docker Proxy{% endblock %}
 {% block content %}
 <div class="hero-card">
   <div>
@@ -17,17 +17,17 @@
   <section class="stat card">
     <span class="stat-label">Squid templates</span>
     <span class="stat-value">{{ squid_template_count }}</span>
-    <span class="small">Complete upstream `ERR_*` surface covered.</span>
+    <span class="small">Every upstream <span class="mono">ERR_*</span> page, rebranded.</span>
   </section>
   <section class="stat card">
     <span class="stat-label">Docker Proxy custom</span>
     <span class="stat-value">{{ custom_template_count }}</span>
-    <span class="small">Web-filter block page for generated policy denies.</span>
+    <span class="small">Block page for web-filter denies.</span>
   </section>
   <section class="stat card">
     <span class="stat-label">Sensitive diagnostics</span>
     <span class="stat-value">Controlled</span>
-    <span class="small">End-user pages avoid credential-bearing URL tokens and isolate admin guidance.</span>
+    <span class="small">User pages show no credential-bearing URL tokens.</span>
   </section>
 </div>
 
@@ -35,7 +35,7 @@
   <div class="card-header">
     <div>
       <h2 class="card-title">Template manifest</h2>
-      <p class="small">Open any page in a new tab to preview representative Squid substitutions. Live values are supplied by Squid at request time.</p>
+      <p class="small">Previews use sample values; Squid fills in the real ones per request.</p>
     </div>
   </div>
   <div class="table-wrap">
@@ -55,7 +55,7 @@
           <td>
             <div class="stack-sm">
               <strong class="mono">{{ page.name }}</strong>
-              <span>{% if page.custom %}<span class="badge success">Docker Proxy</span>{% endif %}{% if page.high_priority %}<span class="badge">High visibility</span>{% endif %}{% if unavailable_templates.get(page.name) %}<span class="badge danger">Missing/unavailable</span>{% endif %}</span>
+              <span>{% if page.custom %}<span class="badge success">Docker Proxy</span>{% endif %}{% if page.high_priority %}<span class="badge" title="Users commonly see this page">Common</span>{% endif %}{% if unavailable_templates.get(page.name) %}<span class="badge danger">Missing/unavailable</span>{% endif %}</span>
             </div>
           </td>
           <td>{{ page.family }}</td>
@@ -67,7 +67,7 @@
             <span class="small text-break">{{ token_summary[page.name] }}</span>
             {% endif %}
           </td>
-          <td class="num"><a class="btn" href="{{ url_for('error_page_preview', name=page.name) }}" target="_blank" rel="noopener">Open in new tab</a></td>
+          <td class="num"><a class="btn" href="{{ url_for('error_page_preview', name=page.name) }}" target="_blank" rel="noopener" aria-label="Preview {{ page.name }} (opens in new tab)">Preview</a></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -75,7 +75,7 @@
   </div>
 </section>
 
-<section class="card">
+<section class="card error-token-guidance">
   <div class="card-header"><h2 class="card-title">Token guidance</h2></div>
   <div class="grid two-col">
     <div>

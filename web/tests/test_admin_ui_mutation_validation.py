@@ -146,10 +146,7 @@ def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selecte
 
     page = client.get(location)
     text = page.get_data(as_text=True)
-    assert (
-        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
-        in text
-    )
+    assert "Private/local destination setting saved." in text
     assert "PAC materialization refresh is queued for Edge-2" in text
     assert "Policy change saved; proxy reconciliation is queued" not in text
     assert "fc00::/7" in text
@@ -188,7 +185,7 @@ def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
     text = page.get_data(as_text=True)
     assert "Sync not queued" in text
     assert "Policy changes were saved, but proxy reconciliation was not queued." in text
-    assert "SSL filtering policy updated and queued" not in text
+    assert "SSL filtering rules saved." not in text
 
 
 def test_policy_queue_refuses_missing_desired_sha(monkeypatch, tmp_path) -> None:
@@ -261,7 +258,7 @@ def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
     assert "Whitelist entries on this page apply only to Edge-2." in text
     assert "Policy change saved; proxy reconciliation is queued" in text
     assert "not yet proven applied" in text
-    assert "Whitelist entry saved and queued for proxy reconciliation." in text
+    assert "Whitelist entry saved." in text
     assert "Whitelist entry added." not in text
 
 
@@ -299,7 +296,7 @@ def test_webfilter_whitelist_reports_reconcile_queue_failure_without_success(
     text = page.get_data(as_text=True)
     assert "Sync not queued" in text
     assert "Policy changes were saved, but proxy reconciliation was not queued." in text
-    assert "Whitelist entry saved and queued" not in text
+    assert "Whitelist entry saved." not in text
 
 
 def test_sslfilter_forms_preserve_selected_proxy_context(monkeypatch, tmp_path) -> None:
@@ -686,11 +683,6 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         ),
         (
             "/sslfilter",
-            {"action": "add", "cidr": "bad-cidr"},
-            "err=",
-        ),
-        (
-            "/sslfilter",
             {"action": "add_domain", "policy": "invalid", "domain": "example.test"},
             "err=Invalid+domain+policy",
         ),
@@ -706,7 +698,7 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         ),
         (
             "/sslfilter",
-            {"action": "remove", "cidr": ""},
+            {"action": "remove_src", "policy": "nobump", "cidr": ""},
             "err=CIDR+is+required",
         ),
     ],
@@ -785,11 +777,6 @@ def test_webfilter_save_persists_shared_source_provider(monkeypatch, tmp_path) -
 @pytest.mark.parametrize(
     ("path", "data", "expected_location_fragment"),
     [
-        (
-            "/squid/config",
-            {"action": "apply", "config_text": "http_port 3128\n"},
-            "error=1",
-        ),
         ("/clamav/toggle", {"action": "disable"}, "error=1"),
         ("/sslfilter", {"action": "apply_policy"}, "apply_ok=0"),
         ("/reload", {}, "#status"),
@@ -924,3 +911,89 @@ def test_webfilter_whitelist_remove_failure_is_reported_not_swallowed(
     assert "policy_queue=1" not in location
     assert webfilter_store.whitelist == [("allow.example", 1)]
     assert loaded.operation_ledger.operations == []
+
+
+def test_pac_rejected_profile_and_backup_input_is_kept_for_correction(
+    monkeypatch, tmp_path
+):
+    from .admin_route_test_utils import FakePacProfilesStore
+
+    store = FakePacProfilesStore()
+    loaded, client = _loaded(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    response = _post(
+        client,
+        "/pac",
+        {
+            "action": "create",
+            "name": "Office <LAN>",
+            "client_cidr": "10.0.0.300",
+            "direct_domains": "a.example\nb.example",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Not saved" in body
+    assert 'value="Office &lt;LAN&gt;"' in body
+    assert 'value="10.0.0.300"' in body
+    assert "a.example\nb.example</textarea>" in body
+    assert store.profiles == {}
+    assert loaded.operation_ledger.operations == []
+
+    response = _post(
+        client,
+        "/pac",
+        {
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "bad host!",
+            "backup_proxy_port": "8080",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Not saved" in body
+    assert 'value="bad host!"' in body
+    assert 'value="8080"' in body
+    assert store.backup_proxies == []
+
+
+def test_webfilter_rejected_whitelist_entry_is_kept_for_correction(
+    monkeypatch, tmp_path
+):
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(
+        client,
+        "/webfilter?tab=whitelist",
+        {"tab": "whitelist", "action": "whitelist_add", "whitelist_domain": "bad host"},
+    )
+
+    location = response.headers.get("Location", "")
+    assert "wl_err=" in location
+    page = client.get(location).get_data(as_text=True)
+    assert 'value="bad host"' in page
+    assert loaded.operation_ledger.operations == []
+
+
+def test_raw_config_apply_failure_keeps_editor_text(monkeypatch, tmp_path) -> None:
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    def fail_reconcile(*_args, **_kwargs):
+        msg = "operation ledger unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", fail_reconcile)
+    edited = "http_port 3128\n# unsaved <edit>\n"
+
+    response = _post(
+        client, "/squid/config", {"action": "apply", "config_text": edited}
+    )
+
+    # Rendered in place: a redirect would reload the saved config and drop
+    # the operator's edit.
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert "Config validation/apply failed; previous config kept." in text
+    assert "# unsaved &lt;edit&gt;" in text
