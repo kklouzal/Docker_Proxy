@@ -534,9 +534,11 @@ def _runtime_paths_from_environment() -> list[Path]:
         os.environ.get("SQUID_SUPERVISOR_INCLUDE_DIR") or "/etc/supervisor.d"
     )
     cicap_dir = Path(os.environ.get("CICAP_CONFIG_DIR") or "/etc/c-icap")
-    for pattern in ("cicap_adblock_*.conf", "cicap_av_*.conf", "clamav_respmod_*.conf"):
+    # Same managed patterns as SquidController._managed_icap_runtime_paths
+    # (they also match the per-Squid-worker files of earlier releases).
+    for pattern in ("cicap_adblock*.conf", "cicap_av*.conf", "clamav_respmod*.conf"):
         paths.extend(sorted(supervisor_dir.glob(pattern)))
-    paths.extend(sorted(cicap_dir.glob("c-icap-av-*.conf")))
+    paths.extend(sorted(cicap_dir.glob("c-icap-av*.conf")))
     return list(dict.fromkeys(paths))
 
 

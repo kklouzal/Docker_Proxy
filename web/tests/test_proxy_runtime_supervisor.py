@@ -685,87 +685,19 @@ def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_ret
     assert "RUNNING" in detail
 
 
-def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> None:
+def test_supervisor_program_status_rejects_duplicate_program_lines(
+    monkeypatch,
+) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
-    monkeypatch.setenv("SQUID_WORKERS", "2")
     monkeypatch.setattr(
         runtime_module.subprocess,
         "run",
         lambda *_args, **_kwargs: _cp(
             0,
             stdout=(
-                "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-                "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
-                "cicap_av_1 RUNNING pid 12, uptime 0:00:09\n"
-                "proxy_api RUNNING pid 13, uptime 0:00:08\n"
-            ),
-        ),
-    )
-
-    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
-
-    assert ok is True
-    assert "cicap_adblock_1 RUNNING" in detail
-    assert "cicap_adblock_2 RUNNING" in detail
-    assert "no such process" not in detail
-
-
-def test_supervisor_program_status_rejects_partial_scaled_icap_helpers(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    monkeypatch.setattr(
-        runtime_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: _cp(
-            0, stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-        ),
-    )
-
-    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
-
-    assert ok is False
-    assert "missing configured programs: cicap_adblock_2" in detail
-
-
-def test_resolve_supervisor_program_names_rejects_partial_scaled_set(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    monkeypatch.setattr(
-        runtime_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: _cp(
-            0, stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-        ),
-    )
-
-    programs, detail = _runtime_shell()._resolve_supervisor_program_names(
-        "cicap_adblock"
-    )
-
-    assert programs == []
-    assert "missing configured programs: cicap_adblock_2" in detail
-
-
-def test_supervisor_program_status_rejects_duplicate_scaled_member(monkeypatch) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    monkeypatch.setattr(
-        runtime_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: _cp(
-            0,
-            stdout=(
-                "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-                "cicap_adblock_1 RUNNING pid 99, uptime 0:00:01\n"
-                "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+                "cicap_adblock RUNNING pid 10, uptime 0:00:11\n"
+                "cicap_adblock RUNNING pid 99, uptime 0:00:01\n"
             ),
         ),
     )
@@ -773,15 +705,14 @@ def test_supervisor_program_status_rejects_duplicate_scaled_member(monkeypatch) 
     ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
 
     assert ok is False
-    assert "cicap_adblock_1 RUNNING pid 10" in detail
-    assert "cicap_adblock_1 RUNNING pid 99" in detail
+    assert "cicap_adblock RUNNING pid 10" in detail
+    assert "cicap_adblock RUNNING pid 99" in detail
 
 
-def test_supervisor_program_status_preserves_legacy_single_name(monkeypatch) -> None:
+def test_supervisor_program_status_reads_the_single_icap_helper(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
-    monkeypatch.delenv("SQUID_WORKERS", raising=False)
-    monkeypatch.delenv("WORKERS", raising=False)
+    monkeypatch.setenv("SQUID_WORKERS", "2")
     monkeypatch.setattr(
         runtime_module.subprocess,
         "run",
@@ -796,204 +727,7 @@ def test_supervisor_program_status_preserves_legacy_single_name(monkeypatch) -> 
     assert "cicap_adblock RUNNING" in detail
 
 
-@pytest.mark.parametrize(
-    ("raw_workers", "expected"),
-    [
-        ("   ", ("cicap_adblock_1",)),
-        ("malformed", ("cicap_adblock_1",)),
-        ("0", ("cicap_adblock_1",)),
-        ("3", ("cicap_adblock_1", "cicap_adblock_2", "cicap_adblock_3")),
-        ("99", tuple(f"cicap_adblock_{index}" for index in range(1, 5))),
-    ],
-)
-def test_icap_supervisor_program_names_use_shared_worker_normalization(
-    monkeypatch, raw_workers: str, expected: tuple[str, ...]
-) -> None:
-    from proxy.runtime import _icap_supervisor_programs
-
-    monkeypatch.setenv("SQUID_WORKERS", raw_workers)
-    monkeypatch.delenv("WORKERS", raising=False)
-
-    assert _icap_supervisor_programs("cicap_adblock") == expected
-
-
-def test_icap_supervisor_program_names_accept_workers_fallback(monkeypatch) -> None:
-    from proxy.runtime import _icap_supervisor_programs
-
-    monkeypatch.delenv("SQUID_WORKERS", raising=False)
-    monkeypatch.setenv("WORKERS", "2")
-
-    assert _icap_supervisor_programs("cicap_adblock") == (
-        "cicap_adblock_1",
-        "cicap_adblock_2",
-    )
-
-
-def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    calls: list[tuple[str, str | None]] = []
-    started: set[str] = set()
-
-    def fake_run(args, **_kwargs):
-        action = args[3]
-        program = args[4] if len(args) > 4 else None
-        calls.append((action, program))
-        if program == "cicap_adblock":
-            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
-        if action == "status" and program is None:
-            return _cp(
-                0,
-                stdout=(
-                    "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
-                ),
-            )
-        if action == "status":
-            state = (
-                "RUNNING pid 42, uptime 0:00:01"
-                if program in started
-                else "STOPPED Jul 03 09:42 PM"
-            )
-            return _cp(0, stdout=f"{program} {state}\n")
-        if action == "start" and program:
-            started.add(program)
-        return _cp(0, stdout=f"{program}: {action}ped\n")
-
-    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
-
-    ok, detail = _runtime_shell()._restart_supervisor_program("cicap_adblock")
-
-    assert ok is True
-    assert ("stop", "cicap_adblock_1") in calls
-    assert ("start", "cicap_adblock_1") in calls
-    assert ("stop", "cicap_adblock_2") in calls
-    assert ("start", "cicap_adblock_2") in calls
-    assert "cicap_adblock_1" in detail
-    assert "cicap_adblock_2" in detail
-    assert not any(program == "cicap_adblock" for _action, program in calls)
-    assert "no such process" not in detail
-
-
-def test_restart_supervisor_program_scaled_fail_safe_avoids_logical_no_such_process(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "1")
-    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
-    calls: list[tuple[str, str | None]] = []
-    started = False
-
-    def fake_run(args, **_kwargs):
-        nonlocal started
-        action = args[3]
-        program = args[4] if len(args) > 4 else None
-        calls.append((action, program))
-        if program == "cicap_adblock":
-            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
-        if action == "status" and program is None:
-            return _cp(
-                0,
-                stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n",
-            )
-        if action == "stop":
-            started = False
-            return _cp(0, stdout=f"{program}: stopped\n")
-        if action == "start":
-            started = True
-            return _cp(1, stderr=f"{program}: ERROR (abnormal termination)\n")
-        if action == "status":
-            state = (
-                "BACKOFF exited too quickly" if started else "STOPPED Aug 10 01:00 AM"
-            )
-            return _cp(3, stdout=f"{program} {state}\n")
-        pytest.fail(f"unexpected supervisor call: {args}")
-
-    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
-
-    ok, detail = _runtime_shell()._restart_supervisor_program(
-        "cicap_adblock",
-        stop_on_failure=True,
-    )
-
-    assert ok is False
-    assert calls.count(("stop", "cicap_adblock_1")) == 2
-    assert not any(program == "cicap_adblock" for _action, program in calls)
-    assert "Fail-safe stop confirmed for cicap_adblock_1." in detail
-    assert "Unable to verify fail-safe stop" not in detail
-    assert "no such process" not in detail
-
-
-@pytest.mark.parametrize(
-    "status_output",
-    [
-        "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n",
-        "cicap_av_1 RUNNING pid 10, uptime 0:00:11\n",
-        (
-            "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-            "cicap_adblock_1 RUNNING pid 99, uptime 0:00:01\n"
-            "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
-        ),
-    ],
-)
-def test_control_supervisor_program_rejects_unresolvable_scaled_set(
-    monkeypatch, status_output: str
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    calls: list[list[str]] = []
-
-    def fake_run(args, **_kwargs):
-        calls.append(list(args))
-        assert args[3] == "status"
-        return _cp(0, stdout=status_output)
-
-    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
-    runtime = _runtime_shell()
-    runtime._invalidate_health_cache = lambda: None
-
-    result = runtime.test_control_supervisor_program("cicap_adblock", action="stop")
-
-    assert result["ok"] is False
-    assert result["detail"]
-    assert calls == [["supervisorctl", "-c", "/etc/supervisord.conf", "status"]]
-
-
-def test_control_supervisor_program_controls_complete_scaled_set(monkeypatch) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    monkeypatch.setenv("SQUID_WORKERS", "2")
-    calls: list[list[str]] = []
-
-    def fake_run(args, **_kwargs):
-        calls.append(list(args))
-        if args[3] == "status":
-            return _cp(
-                3,
-                stdout=(
-                    "cicap_adblock_1 STOPPED Jul 03 09:42 PM\n"
-                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
-                ),
-            )
-        return _cp(0, stdout=f"{args[4]}: stopped\n")
-
-    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
-    runtime = _runtime_shell()
-    runtime._invalidate_health_cache = lambda: None
-
-    result = runtime.test_control_supervisor_program("cicap_adblock", action="stop")
-
-    assert result["ok"] is True
-    assert [call[4] for call in calls[1:]] == [
-        "cicap_adblock_1",
-        "cicap_adblock_2",
-    ]
-
-
-def test_control_supervisor_program_preserves_legacy_unsuffixed_name(
+def test_control_supervisor_program_controls_the_named_program(
     monkeypatch,
 ) -> None:
     import proxy.runtime as runtime_module  # type: ignore
@@ -1051,7 +785,6 @@ def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
-    resolve_timeouts: list[float] = []
     command_timeouts: list[float] = []
     status_timeouts: list[float] = []
 
@@ -1060,21 +793,15 @@ def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
     runtime = _runtime_shell()
     runtime._invalidate_health_cache = lambda: None
 
-    def resolve(_program, timeout_seconds=10):
-        resolve_timeouts.append(timeout_seconds)
-        elapsed["value"] += 0.4
-        return ["cicap_adblock_1", "cicap_adblock_2"], "scaled helpers"
-
     def fake_run(_args, **kwargs):
         command_timeouts.append(kwargs["timeout"])
         elapsed["value"] += 0.4
-        return _cp(0, stdout="started")
+        return _cp(0, stdout="cicap_adblock: started")
 
     def status(_program, timeout_seconds=10, **_kwargs):
         status_timeouts.append(timeout_seconds)
-        return True, "helpers RUNNING"
+        return True, "cicap_adblock RUNNING"
 
-    runtime._resolve_supervisor_program_names = resolve
     runtime._supervisor_program_status = status
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
 
@@ -1083,11 +810,10 @@ def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
     )
 
     assert result["ok"] is True
-    assert "scaled helpers" in result["detail"]
-    assert "helpers RUNNING" in result["detail"]
-    assert resolve_timeouts == pytest.approx([2.0])
-    assert command_timeouts == pytest.approx([1.6, 1.2])
-    assert status_timeouts == pytest.approx([0.8])
+    assert "cicap_adblock: started" in result["detail"]
+    assert "cicap_adblock RUNNING" in result["detail"]
+    assert command_timeouts == pytest.approx([2.0])
+    assert status_timeouts == pytest.approx([1.6])
 
 
 def test_test_control_supervisor_start_skips_status_when_total_budget_expires(
@@ -1102,20 +828,15 @@ def test_test_control_supervisor_start_skips_status_when_total_budget_expires(
     runtime = _runtime_shell()
     runtime._invalidate_health_cache = lambda: None
 
-    def resolve(_program, timeout_seconds=10):
-        elapsed["value"] += 0.5
-        return ["cicap_av_1", "cicap_av_2"], "scaled helpers"
-
     def fake_run(_args, **_kwargs):
-        elapsed["value"] += 0.75
+        elapsed["value"] += 2.5
         return _cp(0, stdout="started")
 
     def status(*_args, **_kwargs):
         nonlocal status_called
         status_called = True
-        return True, "helpers RUNNING"
+        return True, "cicap_av RUNNING"
 
-    runtime._resolve_supervisor_program_names = resolve
     runtime._supervisor_program_status = status
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
 
@@ -1620,48 +1341,33 @@ def test_restart_adblock_service_surfaces_unverified_fail_safe_stop(
     assert "Unable to verify fail-safe stop for cicap_adblock." in detail
 
 
-def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
+def test_restart_adblock_service_reports_helper_failure_without_squid(
     monkeypatch,
 ) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
-    started: set[str] = set()
+    started = False
     patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     monkeypatch.setenv("SQUID_WORKERS", "2")
 
     def fake_run(args, **_kwargs):
+        nonlocal started
         calls.append(list(args))
         action = args[3]
         program = args[4] if len(args) > 4 else None
-        assert program != "squid"
-        if action == "status" and program is None:
-            return _cp(
-                0,
-                stdout=(
-                    "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
-                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
-                ),
-            )
-        if program == "cicap_adblock":
-            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
+        assert program == "cicap_adblock"
         if action == "stop":
-            started.discard(str(program))
-            return _cp(0, stdout=f"{program}: stopped")
+            started = False
+            return _cp(0, stdout="cicap_adblock: stopped")
         if action == "status":
-            if program == "cicap_adblock_2" and str(program) in started:
-                return _cp(3, stdout="cicap_adblock_2 BACKOFF exited too quickly")
-            state = (
-                "RUNNING pid 42, uptime 0:00:01"
-                if str(program) in started
-                else "STOPPED Jul 03 09:42 PM"
-            )
-            return _cp(0, stdout=f"{program} {state}\n")
-        if action == "start" and program:
-            started.add(str(program))
-            if program == "cicap_adblock_2":
-                return _cp(1, stderr="cicap_adblock_2: ERROR (abnormal termination)")
-        return _cp(0, stdout=f"{program}: {action}ped\n")
+            if started:
+                return _cp(3, stdout="cicap_adblock BACKOFF exited too quickly")
+            return _cp(3, stdout="cicap_adblock STOPPED Jul 03 09:42 PM\n")
+        if action == "start":
+            started = True
+            return _cp(1, stderr="cicap_adblock: ERROR (abnormal termination)")
+        pytest.fail(f"unexpected supervisor call: {args}")
 
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
 
@@ -1671,18 +1377,9 @@ def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
     ok, detail = runtime._restart_adblock_service()
 
     assert ok is False
-    assert "cicap_adblock_1" in detail
-    assert "cicap_adblock_2 BACKOFF" in detail
-    assert not any(call[3:] == ["stop", "squid"] for call in calls)
-    assert any(call[3:] == ["stop", "cicap_adblock_1"] for call in calls)
-    assert any(call[3:] == ["start", "cicap_adblock_1"] for call in calls)
-    assert any(call[3:] == ["stop", "cicap_adblock_2"] for call in calls)
-    assert any(call[3:] == ["start", "cicap_adblock_2"] for call in calls)
-    assert sum(call[3:] == ["stop", "cicap_adblock_1"] for call in calls) == 2
-    assert sum(call[3:] == ["stop", "cicap_adblock_2"] for call in calls) == 2
-    assert not any(call[3:] == ["stop", "cicap_adblock"] for call in calls)
-    assert "Fail-safe stop confirmed for cicap_adblock_1." in detail
-    assert "Fail-safe stop confirmed for cicap_adblock_2." in detail
+    assert "cicap_adblock BACKOFF" in detail
+    assert sum(call[3:] == ["stop", "cicap_adblock"] for call in calls) == 2
+    assert "Fail-safe stop confirmed for cicap_adblock." in detail
 
 
 def test_heartbeat_uses_derived_management_url_when_override_unset(monkeypatch) -> None:
@@ -2603,7 +2300,9 @@ def test_sync_from_db_accepts_normalized_active_revision_before_failed_apply_qua
     assert result["detail"] == "Proxy is already using the active config revision."
 
 
-def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None:
+def test_sync_from_db_keeps_squid_running_config_for_adblock_artifact_change() -> None:
+    # The helper reloads the artifact in process; the stable ICAP service name
+    # leaves nothing for Squid to reconfigure.
     runtime = _runtime_shell()
     reloads: list[bool] = []
     marked: list[tuple[bool, str, str]] = []
@@ -2646,8 +2345,8 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -2659,8 +2358,8 @@ def test_sync_from_db_reconfigures_squid_after_adblock_artifact_change() -> None
     assert result["ok"] is True
     assert result["config_changed"] is False
     assert result["adblock_changed"] is True
-    assert reloads == [True]
-    assert "Squid reconfigured for policy update." in result["detail"]
+    assert reloads == []
+    assert "Squid reconfigured for policy update." not in result["detail"]
     assert marked == []
 
 
@@ -2722,8 +2421,8 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -2737,7 +2436,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     assert result["policy_changed"] is True
     assert applies == ["http_port 3128\n"]
     assert len(invalidations) >= 2
-    assert reloads == [False]
+    assert reloads == [True]
     assert recorded
     assert "Squid reconfigured for policy update." in recorded[0][2]
 
@@ -2754,9 +2453,6 @@ def test_sync_from_db_forced_noop_records_apply_for_current_config() -> None:
         def apply_config_text(self, _text):
             msg = "forced no-op should not reapply active config"
             raise AssertionError(msg)
-
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
 
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
@@ -2838,7 +2534,6 @@ def test_sync_from_db_forced_noop_records_apply_for_current_config() -> None:
             "current-sha",
         ),
     ]
-    assert runtime.controller.token == "adblock-sha"
 
 
 def test_sync_from_db_records_noop_apply_for_claimed_current_config_operation() -> None:
@@ -2860,9 +2555,6 @@ def test_sync_from_db_records_noop_apply_for_claimed_current_config_operation() 
         def apply_config_text(self, _text):
             msg = "current config operation should not reapply active config"
             raise AssertionError(msg)
-
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
 
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
@@ -2964,9 +2656,6 @@ def test_sync_from_db_records_noop_apply_for_each_current_config_operation() -> 
             msg = "current config operation should not reapply active config"
             raise AssertionError(msg)
 
-        def set_adblock_icap_revision_token(self, _token) -> None:
-            return None
-
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
 
@@ -3056,9 +2745,6 @@ def test_sync_from_db_noop_materializes_adblock_setting_state() -> None:
             msg = "forced no-op should not reapply active config"
             raise AssertionError(msg)
 
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
-
         def set_adblock_enabled(self, enabled) -> None:
             self.enabled = enabled
 
@@ -3118,7 +2804,6 @@ def test_sync_from_db_noop_materializes_adblock_setting_state() -> None:
     assert result["config_changed"] is False
     assert materialized_enabled == [False]
     assert runtime.controller.enabled is False
-    assert runtime.controller.token == "adblock-sha"
 
 
 def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() -> None:
@@ -3142,9 +2827,6 @@ def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() ->
         def apply_config_text(self, text):
             applies.append(text)
             return True, "Squid reconfigured."
-
-        def set_adblock_icap_revision_token(self, _token) -> None:
-            return None
 
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
@@ -3192,9 +2874,8 @@ def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() ->
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: normalized_sha
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
-        or (True, "Squid reconfigured for policy update.")
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True) or (True, "Squid reconfigured for policy update.")
     )
 
     result = runtime.sync_from_db(force=True)
@@ -3205,12 +2886,12 @@ def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() ->
     assert result["policy_changed"] is True
     assert result["revision_id"] == 9
     assert applies == []
-    assert reloads == [False]
+    assert reloads == [True]
     assert marked == []
     assert "Proxy is already using the active config revision." in result["detail"]
 
 
-def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> None:
+def test_reload_for_policy_update_never_probes_adblock_icap(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -3231,123 +2912,11 @@ def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> N
     runtime.controller = Controller()
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", fail_icap)
 
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+    ok, detail = runtime._reload_for_policy_update()
 
     assert ok is True
     assert "reconfigured" in detail
     assert "Squid reconfigured for policy update." in detail
-
-
-def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    runtime = _runtime_shell()
-    calls = {"icap": 0}
-    sleeps: list[float] = []
-
-    class Controller:
-        def _run(self, args, **_kwargs):
-            assert args == ["squid", "-k", "reconfigure"]
-            return _cp(0, stdout="reconfigured")
-
-        def _wait_for_http_listener(self, *, timeout) -> bool:
-            assert timeout == pytest.approx(10.0)
-            return True
-
-    def fake_icap(**_kwargs):
-        calls["icap"] += 1
-        return {"ok": calls["icap"] >= 2, "detail": "icap ready"}
-
-    runtime.controller = Controller()
-    monkeypatch.setattr(runtime_module, "_check_icap_adblock", fake_icap)
-    patch_module_clock(monkeypatch, runtime_module, sleep=sleeps.append)
-
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
-
-    assert ok is True
-    assert "reconfigured" in detail
-    assert "Squid reconfigured for policy update." in detail
-    assert calls["icap"] == 2
-    assert sleeps == [0.5]
-
-
-def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    runtime = _runtime_shell()
-    now = {"value": 0.0}
-
-    class Controller:
-        def _run(self, args, **_kwargs):
-            assert args == ["squid", "-k", "reconfigure"]
-            return _cp(0, stdout="reconfigured")
-
-        def _wait_for_http_listener(self, *, timeout) -> bool:
-            assert timeout == pytest.approx(10.0)
-            return True
-
-    runtime.controller = Controller()
-    monkeypatch.setattr(
-        runtime_module,
-        "_check_icap_adblock",
-        lambda **_kwargs: {"ok": False, "detail": "icap not ready"},
-    )
-    patch_module_clock(monkeypatch, runtime_module, time=lambda: now["value"])
-    patch_module_clock(
-        monkeypatch,
-        runtime_module,
-        sleep=lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0),
-    )
-
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
-
-    assert ok is False
-    assert "reconfigured" in detail
-    assert "icap not ready" in detail
-
-
-def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps(
-    monkeypatch,
-) -> None:
-    import proxy.runtime as runtime_module  # type: ignore
-
-    runtime = _runtime_shell()
-    elapsed = {"value": 0.0}
-    probes = {"count": 0}
-
-    class Controller:
-        def _run(self, _args, **_kwargs):
-            return _cp(0, stdout="reconfigured")
-
-        def _wait_for_http_listener(self, *, timeout) -> bool:
-            return True
-
-    runtime.controller = Controller()
-    patch_module_clock(
-        monkeypatch,
-        runtime_module,
-        time=lambda: -(10**9) if probes["count"] % 2 else 10**9,
-    )
-    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
-    patch_module_clock(
-        monkeypatch,
-        runtime_module,
-        sleep=lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
-    )
-
-    def unhealthy(**_kwargs):
-        probes["count"] += 1
-        return {"ok": False, "detail": "icap still warming"}
-
-    monkeypatch.setattr(runtime_module, "_check_icap_adblock", unhealthy)
-
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
-
-    assert ok is False
-    assert "icap still warming" in detail
-    assert probes["count"] == 3
 
 
 def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
@@ -3376,7 +2945,7 @@ def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
     runtime.controller = Controller()
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", fail_icap)
 
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+    ok, detail = runtime._reload_for_policy_update()
 
     assert ok is True
     assert "failed to open /var/run/squid.pid" in detail
@@ -3396,7 +2965,7 @@ def test_reload_for_policy_update_fails_when_listener_probe_raises() -> None:
 
     runtime.controller = Controller()
 
-    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+    ok, detail = runtime._reload_for_policy_update()
 
     assert ok is False
     assert "Squid reconfigured for policy update." not in detail
@@ -4219,7 +3788,9 @@ def test_apply_uses_structured_restart_evidence_not_detail_prose(tmp_path) -> No
     assert "legacy restart wording" in detail
 
 
-def test_transaction_manifest_covers_worker_expansion_and_shrink(tmp_path) -> None:
+def test_transaction_manifest_covers_current_and_candidate_icap_files(
+    tmp_path,
+) -> None:
     from services.squid_core import SquidController  # type: ignore
 
     active = tmp_path / "squid.conf"
@@ -4227,14 +3798,20 @@ def test_transaction_manifest_covers_worker_expansion_and_shrink(tmp_path) -> No
     controller = SquidController(str(active))
     controller._icap_include_path = lambda: tmp_path / "20-icap.conf"
     controller._virus_scan_config_path = lambda: tmp_path / "virus.conf"
-    controller._managed_icap_runtime_paths = list
-    controller._render_icap_supervisor_files = lambda *, workers, config_text=None: {
-        tmp_path / f"worker-{workers}.conf": "contents"
+    controller._managed_icap_runtime_paths = lambda: {tmp_path / "on-disk.conf"}
+    controller._render_icap_supervisor_files = lambda *, config_text=None: {
+        tmp_path / f"{config_text.split()[1]}.conf": "contents"
     }
 
     paths = set(controller._transaction_runtime_paths("workers 4\n"))
 
-    assert {tmp_path / f"worker-{worker}.conf" for worker in range(1, 5)} <= paths
+    assert {
+        tmp_path / "1.conf",
+        tmp_path / "4.conf",
+        tmp_path / "on-disk.conf",
+        tmp_path / "20-icap.conf",
+        tmp_path / "virus.conf",
+    } <= paths
 
 
 def test_runtime_icap_materialization_matches_startup_parity_contract(
@@ -4266,10 +3843,11 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
         "Include /etc/virus_scan.conf\n",
         encoding="utf-8",
     )
-    (supervisor_dir / "cicap_adblock_3.conf").write_text("stale\n", encoding="utf-8")
-    (supervisor_dir / "cicap_av_3.conf").write_text("stale\n", encoding="utf-8")
-    (supervisor_dir / "clamav_respmod_3.conf").write_text("stale\n", encoding="utf-8")
-    (cicap_dir / "c-icap-av-3.conf").write_text("stale\n", encoding="utf-8")
+    # Per-Squid-worker files of earlier releases.
+    (supervisor_dir / "cicap_adblock_1.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "cicap_av_2.conf").write_text("stale\n", encoding="utf-8")
+    (supervisor_dir / "clamav_respmod_1.conf").write_text("stale\n", encoding="utf-8")
+    (cicap_dir / "c-icap-av-2.conf").write_text("stale\n", encoding="utf-8")
 
     monkeypatch.setenv("SQUID_SUPERVISOR_INCLUDE_DIR", str(supervisor_dir))
     monkeypatch.setenv("CICAP_CONFIG_DIR", str(cicap_dir))
@@ -4311,29 +3889,33 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
         ["supervisorctl", "-c", "/etc/supervisord.conf", "reread"],
         ["supervisorctl", "-c", "/etc/supervisord.conf", "update"],
     ]
-    assert not (supervisor_dir / "cicap_adblock_3.conf").exists()
-    assert not (supervisor_dir / "cicap_av_3.conf").exists()
-    assert not (supervisor_dir / "clamav_respmod_3.conf").exists()
-    assert not (cicap_dir / "c-icap-av-3.conf").exists()
+    assert sorted(path.name for path in supervisor_dir.iterdir()) == [
+        "cicap_adblock.conf",
+        "cicap_av.conf",
+        "clamav_respmod.conf",
+    ]
+    assert not (cicap_dir / "c-icap-av-2.conf").exists()
 
     include = include_path.read_text(encoding="utf-8")
     assert "icap://127.0.0.1:15000/adblockreq bypass=on" in include
-    assert "icap://127.0.0.1:15002/avrespmod bypass=off" in include
-    assert "icap://127.0.0.1:15003/avrespmod bypass=off" in include
-    assert "icap://127.0.0.1:15004/avrespmod bypass=off" in include
-    assert "icap://127.0.0.1:15005/avrespmod bypass=off" in include
+    assert (
+        "icap_service av_req reqmod_precache icap://127.0.0.1:15001/avrespmod bypass=off"
+        in include
+    )
+    assert (
+        "icap_service av_resp respmod_precache icap://127.0.0.1:15002/avrespmod bypass=off"
+        in include
+    )
+    assert include.count("icap_service ") == 3
     assert "# Adblock request routing disabled by persisted UI setting." in include
     assert "adaptation_access adblock_req_set allow icap_adblockable" not in include
 
     assert "virus_scan.PassOnError off" in virus_path.read_text(encoding="utf-8")
-    assert "Port 127.0.0.1:15002" in (cicap_dir / "c-icap-av-1.conf").read_text(
-        encoding="utf-8",
-    )
-    assert f"PidFile {run_dir}/c-icap-av-2.pid" in (
-        cicap_dir / "c-icap-av-2.conf"
-    ).read_text(encoding="utf-8")
+    av_conf = (cicap_dir / "c-icap-av.conf").read_text(encoding="utf-8")
+    assert "Port 127.0.0.1:15001" in av_conf
+    assert f"PidFile {run_dir}/c-icap-av.pid" in av_conf
 
-    adblock_supervisor = (supervisor_dir / "cicap_adblock_1.conf").read_text(
+    adblock_supervisor = (supervisor_dir / "cicap_adblock.conf").read_text(
         encoding="utf-8",
     )
     assert "autorestart=unexpected" in adblock_supervisor
@@ -4342,17 +3924,17 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
     assert "startsecs=45" not in adblock_supervisor
     assert "startretries=2" in adblock_supervisor
 
-    av_supervisor = (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
+    av_supervisor = (supervisor_dir / "cicap_av.conf").read_text(encoding="utf-8")
     assert 'CLAMD_HOST="clamd.example.internal"' in av_supervisor
     assert 'CLAMD_PORT="3311"' in av_supervisor
     assert 'CLAMAV_REQUIRED="1"' in av_supervisor
     assert "rm -f" in av_supervisor
     assert "cicap_av_runner.py" in av_supervisor
 
-    respmod_supervisor = (supervisor_dir / "clamav_respmod_1.conf").read_text(
+    respmod_supervisor = (supervisor_dir / "clamav_respmod.conf").read_text(
         encoding="utf-8",
     )
-    assert '--port "15004"' in respmod_supervisor
+    assert '--port "15002"' in respmod_supervisor
     assert '--clamd-host "clamd.example.internal"' in respmod_supervisor
     assert '--clamd-port "3311"' in respmod_supervisor
     assert "--fail-closed" in respmod_supervisor
@@ -4965,7 +4547,36 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
     assert recorded[-1]["ok"] is True
 
 
-def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_stop(
+def _write_worker_statuses(
+    directory: Path,
+    *,
+    helper_pid: int,
+    processes: int,
+    generation: int,
+    errors: dict[int, str] | None = None,
+) -> None:
+    from services.adblock_icap_status import (  # type: ignore
+        WorkerLoadStatus,
+        write_worker_status,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    for worker in range(1, processes + 1):
+        error = (errors or {}).get(worker, "")
+        write_worker_status(
+            str(directory),
+            WorkerLoadStatus(
+                helper_pid=helper_pid,
+                worker=worker,
+                processes=processes,
+                generation=generation,
+                ok=not error,
+                error=error,
+            ),
+        )
+
+
+def test_sync_adblock_state_changed_artifact_reloads_helper_in_process(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -4977,9 +4588,9 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
     _write_adblock_lookup_metadata(compiled / "request_lookup.sqlite", count_rules=0)
     recorded: list[dict[str, object]] = []
     supervisor_calls: list[list[str]] = []
-    started: set[str] = set()
-    monkeypatch.delenv("SQUID_WORKERS", raising=False)
-    monkeypatch.delenv("WORKERS", raising=False)
+    status_dir = tmp_path / "status"
+    monkeypatch.setenv("ADBLOCK_ICAP_STATUS_DIR", str(status_dir))
+    _write_worker_statuses(status_dir, helper_pid=7, processes=2, generation=0)
 
     class Artifacts:
         compiled_dir = str(compiled)
@@ -5032,25 +4643,10 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
 
     def fake_run(args, **_kwargs):
         supervisor_calls.append(list(args))
-        action = args[3]
-        program = args[4] if len(args) > 4 else None
-        assert program != "squid"
-        if action == "status" and program is None:
-            return _cp(0, stdout="")
-        if action == "stop":
-            started.discard(program)
-            return _cp(0, stdout=f"{program}: stopped")
-        if action == "status":
-            state = (
-                "RUNNING pid 42, uptime 0:00:01"
-                if program in started
-                else "STOPPED Jul 25 10:25 PM"
-            )
-            return _cp(0, stdout=f"{program} {state}\n")
-        if action == "start":
-            started.add(program)
-            return _cp(0, stdout=f"{program}: started")
-        raise AssertionError(args)
+        assert args[3:] == ["signal", "HUP", "cicap_adblock"]
+        # Both workers swap in the new engine.
+        _write_worker_statuses(status_dir, helper_pid=7, processes=2, generation=1)
+        return _cp(0, stdout="cicap_adblock: signalled")
 
     patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
@@ -5081,13 +4677,9 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
     assert result["artifact_changed"] is True
     assert result["current_adblock_artifact_sha256"] == "new-sha"
     assert recorded[-1]["ok"] is True
-    assert not any(call[3:] == ["stop", "squid"] for call in supervisor_calls)
-    assert not any("squid" in call for call in supervisor_calls)
+    assert "reloaded in process (2 worker(s))" in result["detail"]
     assert [call[3:] for call in supervisor_calls] == [
-        ["stop", "cicap_adblock"],
-        ["status", "cicap_adblock"],
-        ["start", "cicap_adblock"],
-        ["status", "cicap_adblock"],
+        ["signal", "HUP", "cicap_adblock"],
     ]
 
 
@@ -6595,12 +6187,15 @@ def test_adblock_refresh_uses_lifecycle_lock_without_squid_restart(
 
     runtime.controller = Controller()
 
-    def refresh_helper() -> tuple[bool, str]:
+    def reload_helper() -> tuple[str, str]:
         assert lock_state["held"] is True
-        calls.append("adblock_restart")
-        return True, "adblock restarted"
+        calls.append("adblock_reload")
+        return "reloaded", "adblock reloaded"
 
-    runtime._restart_adblock_service = refresh_helper
+    runtime._reload_adblock_service = reload_helper
+    runtime._restart_adblock_service = lambda: pytest.fail(
+        "a confirmed reload must not restart the helper"
+    )
 
     def invoke_restart() -> None:
         ok, detail = runtime._refresh_adblock_service_without_squid_restart()
@@ -6614,23 +6209,153 @@ def test_adblock_refresh_uses_lifecycle_lock_without_squid_restart(
     assert not thread.is_alive()
     assert result == {
         "ok": True,
-        "detail": "adblock restarted",
+        "detail": "adblock reloaded",
     }
-    assert calls == ["lifecycle_enter", "adblock_restart", "lifecycle_exit"]
+    assert calls == ["lifecycle_enter", "adblock_reload", "lifecycle_exit"]
 
 
-def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync() -> (
-    None
-):
+def test_adblock_refresh_restarts_helper_only_when_reload_is_unconfirmed() -> None:
+    runtime = _runtime_shell()
+    calls: list[str] = []
+    runtime._reload_adblock_service = lambda: (
+        calls.append("reload") or ("unconfirmed", "helper not running")
+    )
+    runtime._restart_adblock_service = lambda: (
+        calls.append("restart") or (True, "adblock restarted")
+    )
+
+    ok, detail = runtime._refresh_adblock_service_without_squid_restart()
+
+    assert ok is True
+    assert calls == ["reload", "restart"]
+    assert "helper not running" in detail
+    assert "Restarting the adblock ICAP helper instead." in detail
+    assert "adblock restarted" in detail
+
+
+def test_adblock_refresh_keeps_serving_helper_when_it_rejects_the_artifact() -> None:
+    runtime = _runtime_shell()
+    runtime._reload_adblock_service = lambda: (
+        "rejected",
+        "adblock ICAP helper kept its previous artifact: worker 1: bad schema",
+    )
+    runtime._restart_adblock_service = lambda: pytest.fail(
+        "a rejected artifact must not restart the serving helper"
+    )
+
+    ok, detail = runtime._refresh_adblock_service_without_squid_restart()
+
+    assert ok is False
+    assert "bad schema" in detail
+
+
+def _reload_with_statuses(monkeypatch, tmp_path, on_signal, *, signal_result=None):
+    import proxy.runtime as runtime_module  # type: ignore
+
+    status_dir = tmp_path / "status"
+    monkeypatch.setenv("ADBLOCK_ICAP_STATUS_DIR", str(status_dir))
+    elapsed = {"value": 0.0}
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        monotonic=lambda: elapsed["value"],
+        sleep=lambda seconds: elapsed.__setitem__("value", elapsed["value"] + seconds),
+    )
+
+    def fake_run(args, **_kwargs):
+        assert args[3:] == ["signal", "HUP", "cicap_adblock"]
+        on_signal(status_dir)
+        return signal_result or _cp(0, stdout="cicap_adblock: signalled")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    return _runtime_shell()._reload_adblock_service(), status_dir
+
+
+def test_reload_adblock_service_waits_for_every_worker(monkeypatch, tmp_path) -> None:
+    def on_signal(status_dir):
+        _write_worker_statuses(status_dir, helper_pid=7, processes=2, generation=0)
+        # Only worker 1 reloaded: worker 2 still reports the old generation.
+        from services.adblock_icap_status import (  # type: ignore
+            WorkerLoadStatus,
+            write_worker_status,
+        )
+
+        write_worker_status(
+            str(status_dir),
+            WorkerLoadStatus(
+                helper_pid=7, worker=1, processes=2, generation=1, ok=True, error=""
+            ),
+        )
+
+    tmp_path.joinpath("status").mkdir()
+    _write_worker_statuses(tmp_path / "status", helper_pid=7, processes=2, generation=0)
+    (outcome, detail), _status_dir = _reload_with_statuses(
+        monkeypatch, tmp_path, on_signal
+    )
+
+    assert outcome == "unconfirmed"
+    assert "waiting for worker(s) 2" in detail
+
+
+def test_reload_adblock_service_reports_a_rejected_artifact(
+    monkeypatch, tmp_path
+) -> None:
+    _write_worker_statuses(tmp_path / "status", helper_pid=7, processes=2, generation=0)
+    (outcome, detail), _status_dir = _reload_with_statuses(
+        monkeypatch,
+        tmp_path,
+        lambda status_dir: _write_worker_statuses(
+            status_dir,
+            helper_pid=7,
+            processes=2,
+            generation=1,
+            errors={2: "LookupSchemaError: unsupported schema"},
+        ),
+    )
+
+    assert outcome == "rejected"
+    assert "worker 2: LookupSchemaError: unsupported schema" in detail
+
+
+def test_reload_adblock_service_accepts_a_helper_started_after_the_snapshot(
+    monkeypatch, tmp_path
+) -> None:
+    # A helper (re)started after materialization loaded the new artifact at
+    # startup, so its generation-0 records confirm the reload.
+    _write_worker_statuses(tmp_path / "status", helper_pid=7, processes=1, generation=4)
+    (outcome, detail), _status_dir = _reload_with_statuses(
+        monkeypatch,
+        tmp_path,
+        lambda status_dir: _write_worker_statuses(
+            status_dir, helper_pid=8, processes=1, generation=0
+        ),
+    )
+
+    assert outcome == "reloaded"
+    assert "1 worker(s)" in detail
+
+
+def test_reload_adblock_service_is_unconfirmed_when_the_helper_is_down(
+    monkeypatch, tmp_path
+) -> None:
+    (outcome, detail), _status_dir = _reload_with_statuses(
+        monkeypatch,
+        tmp_path,
+        lambda _status_dir: None,
+        signal_result=_cp(1, stdout="cicap_adblock: ERROR (not running)"),
+    )
+
+    assert outcome == "unconfirmed"
+    assert "not running" in detail
+
+
+def test_sync_from_db_initial_helper_reload_noops_next_sync() -> None:
     runtime = _runtime_shell()
     calls: list[object] = []
 
     class Controller:
         def __init__(self) -> None:
             self.materialized = False
-
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
 
         def set_adblock_enabled(self, enabled) -> None:
             self.adblock_enabled = enabled
@@ -6717,8 +6442,11 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
             result = {**result, "ok": ok_restart, "detail": restart_detail}
         return result
 
-    runtime._restart_adblock_service = lambda: (
-        calls.append("adblock_restart") or (True, "adblock restarted")
+    runtime._reload_adblock_service = lambda: (
+        calls.append("adblock_reload") or ("reloaded", "adblock reloaded")
+    )
+    runtime._restart_adblock_service = lambda: pytest.fail(
+        "a confirmed in-process reload must not restart the helper"
     )
     runtime.sync_adblock_state = sync_adblock
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
@@ -6726,9 +6454,8 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
     runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
     runtime._current_adblock_enabled = lambda: True
     runtime._ensure_policy_runtime_config = lambda: (True, "", False)
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        calls.append(("reload", wait_for_adblock_icap))
-        or (True, "Squid reconfigured for policy update.")
+    runtime._reload_for_policy_update = lambda: (
+        calls.append("reload") or (True, "Squid reconfigured for policy update.")
     )
 
     first = runtime.sync_from_db(force=False)
@@ -6738,10 +6465,10 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
     assert first["changed"] is True
     assert second["ok"] is True
     assert second["changed"] is False
+    # The artifact change reloads the helper only: Squid is not reconfigured.
     assert calls == [
-        "adblock_restart",
+        "adblock_reload",
         ("materialize", "workers 1\nhttp_port 3128\n"),
-        ("reload", True),
         ("materialize", "workers 1\nhttp_port 3128\n"),
     ]
 
@@ -6754,10 +6481,10 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
         encoding="utf-8",
     )
 
-    assert 'while [ "$i" -lt "$SQUID_WORKERS" ]; do' in healthcheck
-    assert "cicap_adblock_${instance}" in healthcheck
-    assert "cicap_av_${instance}" in healthcheck
-    assert "clamav_respmod_${instance}" in healthcheck
+    assert "SQUID_WORKERS" not in healthcheck
+    assert "supervisor_program_running cicap_adblock;" in healthcheck
+    assert "supervisor_program_running cicap_av;" in healthcheck
+    assert "supervisor_program_running clamav_respmod;" in healthcheck
     assert (
         "for program in proxy_api proxy_public proxy_agent forwarding_canary; do"
         in (healthcheck)
@@ -6773,15 +6500,15 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "squid-flask-proxy-forwarding-health" in healthcheck
     assert "local canary target" in healthcheck
     assert (
-        "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
+        "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
         in healthcheck
     )
     assert (
-        "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING"
+        "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
         in healthcheck
     )
     assert (
-        "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING"
+        "CLAMAV_REQUIRED is set but supervisor reports clamav_respmod is not RUNNING"
         in healthcheck
     )
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
@@ -6832,7 +6559,7 @@ def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:
 
     assert "CLAMAV_REQUIRED=0" in entrypoint
     assert "/usr/local/bin/cicap_av_runner.py" in entrypoint
-    av_section = entrypoint.split("[program:cicap_av_${instance}]", 1)[1].split(
+    av_section = entrypoint.split("[program:cicap_av]", 1)[1].split(
         "autostart=true",
         1,
     )[0]
@@ -6845,8 +6572,8 @@ def test_packaged_proxy_entrypoint_keeps_adblock_running_before_squid_gate() -> 
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
         encoding="utf-8",
     )
-    section = entrypoint.split("[program:cicap_adblock_${instance}]", 1)[1].split(
-        "[program:cicap_av_${instance}]",
+    section = entrypoint.split("[program:cicap_adblock]", 1)[1].split(
+        "[program:cicap_av]",
         1,
     )[0]
 
@@ -6864,11 +6591,9 @@ def test_packaged_proxy_entrypoint_keeps_adblock_running_before_squid_gate() -> 
 def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() -> None:
     from services.squid_core import SquidController  # type: ignore
 
-    files = SquidController()._render_icap_supervisor_files(workers=1)
+    files = SquidController()._render_icap_supervisor_files()
     adblock_configs = [
-        content
-        for path, content in files.items()
-        if path.name == "cicap_adblock_1.conf"
+        content for path, content in files.items() if path.name == "cicap_adblock.conf"
     ]
     assert len(adblock_configs) == 1
     section = adblock_configs[0]
@@ -7049,9 +6774,6 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     reloads: list[bool] = []
 
     class Controller:
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
-
         def materialize_clamav_runtime_files(self, config_text, **_kwargs):
             self.config_text = config_text
             return True, "ClamAV runtime files updated: /etc/squid/conf.d/20-icap.conf"
@@ -7094,8 +6816,8 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
     runtime.controller.get_current_config = lambda: "workers 2\nhttp_port 3128\n"
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -7106,8 +6828,7 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
 
     assert result["ok"] is True
     assert result["changed"] is True
-    assert reloads == [False]
-    assert runtime.controller.token == "adblock-sha"
+    assert reloads == [True]
     assert runtime.controller.config_text == "workers 2\nhttp_port 3128\n"
     assert "ClamAV runtime files updated" in result["detail"]
     assert "Squid reconfigured for policy update." in result["detail"]
@@ -7118,9 +6839,6 @@ def test_sync_from_db_skips_extra_reload_after_clamav_runtime_restart() -> None:
     reloads: list[bool] = []
 
     class Controller:
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
-
         def materialize_clamav_runtime_files(self, config_text, **_kwargs):
             self.config_text = config_text
             detail = (
@@ -7167,8 +6885,8 @@ def test_sync_from_db_skips_extra_reload_after_clamav_runtime_restart() -> None:
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
     runtime.controller.get_current_config = lambda: "workers 2\nhttp_port 3128\n"
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -7180,7 +6898,6 @@ def test_sync_from_db_skips_extra_reload_after_clamav_runtime_restart() -> None:
     assert result["ok"] is True
     assert result["changed"] is True
     assert reloads == []
-    assert runtime.controller.token == "adblock-sha"
     assert runtime.controller.config_text == "workers 2\nhttp_port 3128\n"
     assert "Squid restarted after ICAP supervisor update." in result["detail"]
 
@@ -7197,9 +6914,6 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
                 "http_access allow all\n"
             )
             self.applied: list[str] = []
-
-        def set_adblock_icap_revision_token(self, token) -> None:
-            self.token = token
 
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, ""
@@ -7250,8 +6964,8 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "normalized-sha"
-    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
-        reloads.append(wait_for_adblock_icap)
+    runtime._reload_for_policy_update = lambda: (
+        reloads.append(True)
         or (
             True,
             "Squid reconfigured for policy update.",
@@ -7774,9 +7488,7 @@ def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
     runtime._current_config_sha = lambda: "current-config-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None
-    )
+    runtime.controller = SimpleNamespace()
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: None,
     )
@@ -7844,9 +7556,7 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
     runtime._current_config_sha = lambda: "current-config-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None
-    )
+    runtime.controller = SimpleNamespace()
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: None,
     )
@@ -8021,9 +7731,7 @@ def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -
     runtime._current_config_sha = lambda: "config-sha-11"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None
-    )
+    runtime.controller = SimpleNamespace()
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
             revision_id=11,
@@ -8104,9 +7812,7 @@ def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
     runtime._current_config_sha = lambda: "config-sha-12"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime._current_adblock_enabled = lambda: True
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None
-    )
+    runtime.controller = SimpleNamespace()
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
             revision_id=12,
@@ -9613,7 +9319,6 @@ def test_forced_non_config_operation_refreshes_artifacts_only() -> None:
     runtime.controller = SimpleNamespace(
         get_current_config=lambda: revision_text,
         normalize_config_text=lambda text: (text or "").strip() + "\n",
-        set_adblock_icap_revision_token=lambda _token: None,
         materialize_clamav_runtime_files=lambda _text, **_kwargs: (True, "unchanged"),
         apply_config_text=lambda *args, **kwargs: applied.append((args, kwargs)),
     )

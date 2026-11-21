@@ -834,7 +834,7 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         in entrypoint
     )
     assert "python3 /app/tools/clamav_respmod_icap_server.py" in entrypoint
-    assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in entrypoint
+    assert 'av_pid="/var/run/c-icap/c-icap-av.pid"' in entrypoint
     assert (
         'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"'
         in entrypoint

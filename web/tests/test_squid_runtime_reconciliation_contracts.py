@@ -7,10 +7,8 @@ import pytest
 from services.squid_core import SquidController  # type: ignore
 
 _REPO = Path(__file__).resolve().parents[2]
-_LOOP_START = (
-    'i=0\nwhile [ "$i" -lt "$WORKERS" ]; do\n    instance=$((i + 1))\n    adblock_port='
-)
-_LOOP_END = '\n{\n    adblock_services=""'
+_LOOP_START = 'av_conf="/etc/c-icap/c-icap-av.conf"\n'
+_LOOP_END = '\n{\n    echo "icap_service adblock_req '
 
 
 def _entrypoint_supervisor_loop() -> str:
@@ -21,26 +19,31 @@ def _entrypoint_supervisor_loop() -> str:
 
 
 @pytest.mark.parametrize(
-    ("clamd_host", "remote", "workers"),
-    [("clamd.example.internal", "1", 1), ("127.0.0.1", "0", 2)],
+    ("clamd_host", "remote", "squid_workers"),
+    [("clamd.example.internal", "1", "1"), ("127.0.0.1", "0", "2")],
 )
 def test_runtime_icap_supervisor_files_match_entrypoint_bytes(
     tmp_path: Path,
     monkeypatch,
     clamd_host: str,
     remote: str,
-    workers: int,
+    squid_workers: str,
 ) -> None:
     # Byte drift between the boot-time files and the runtime renderer makes the
     # first ICAP reconciliation after every boot pause and restart Squid.
     entry_dir = tmp_path / "entrypoint"
     entry_dir.mkdir()
-    script = _entrypoint_supervisor_loop().replace("/etc/supervisor.d", str(entry_dir))
+    script = (
+        _entrypoint_supervisor_loop()
+        .replace("/etc/supervisor.d", str(entry_dir))
+        # Skip the c-icap config copy; only the supervisor programs compare.
+        .replace("/etc/c-icap/c-icap.conf", str(tmp_path / "missing.conf"))
+    )
     env = {
         "PATH": "/usr/bin:/bin",
-        "WORKERS": str(workers),
         "CICAP_PORT": "14000",
-        "CICAP_AV_RESP_PORT": "14002" if workers == 1 else "14004",
+        "CICAP_AV_PORT": "14001",
+        "CICAP_AV_RESP_PORT": "14002",
         "CLAMD_HOST": clamd_host,
         "CLAMD_PORT": "3310",
         "CLAMAV_REQUIRED": "0",
@@ -56,16 +59,14 @@ def test_runtime_icap_supervisor_files_match_entrypoint_bytes(
     monkeypatch.setenv("CICAP_PORT", "14000")
     monkeypatch.delenv("CICAP_AV_PORT", raising=False)
     monkeypatch.delenv("CICAP_AV_RESP_PORT", raising=False)
+    monkeypatch.setenv("SQUID_WORKERS", squid_workers)
     monkeypatch.setenv("CLAMD_HOST", clamd_host)
     monkeypatch.setenv("CLAMD_PORT", "3310")
     monkeypatch.delenv("CLAMD_TIMEOUT", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", raising=False)
     monkeypatch.delenv("CLAMAV_RESPMOD_MAX_SCANS", raising=False)
-    rendered = SquidController()._render_icap_supervisor_files(
-        workers=workers,
-        config_text="",
-    )
+    rendered = SquidController()._render_icap_supervisor_files(config_text="")
     rendered_programs = {
         path.name: content
         for path, content in rendered.items()

@@ -264,57 +264,41 @@ fi
 # Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders
 # adblock ICAP with bypass=on, so the container healthcheck must not turn an
 # adblock helper outage into data-plane downtime unless explicitly required.
-i=0
-while [ "$i" -lt "$SQUID_WORKERS" ]; do
-    instance=$((i + 1))
-    adblock_program="cicap_adblock_${instance}"
-    adblock_port=$((CICAP_PORT + i))
-    if ! supervisor_program_running "$adblock_program"; then
-        if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
-            echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
-            exit 1
-        fi
-        echo "supervisor reports ${adblock_program} is not RUNNING; Squid adblock ICAP is fail-open"
-    elif ! has_listen_socket "$adblock_port"; then
-        if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
-            echo "ADBLOCK_ICAP_REQUIRED is set but ${adblock_program} is not listening on port ${adblock_port}"
-            exit 1
-        fi
-        echo "${adblock_program} is not listening on port ${adblock_port}; Squid adblock ICAP is fail-open"
+if ! supervisor_program_running cicap_adblock; then
+    if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
+        echo "ADBLOCK_ICAP_REQUIRED is set but supervisor reports cicap_adblock is not RUNNING"
+        exit 1
     fi
-    i=$((i + 1))
-done
+    echo "supervisor reports cicap_adblock is not RUNNING; Squid adblock ICAP is fail-open"
+elif ! has_listen_socket "$CICAP_PORT"; then
+    if [ "$ADBLOCK_ICAP_REQUIRED" = "1" ]; then
+        echo "ADBLOCK_ICAP_REQUIRED is set but cicap_adblock is not listening on port ${CICAP_PORT}"
+        exit 1
+    fi
+    echo "cicap_adblock is not listening on port ${CICAP_PORT}; Squid adblock ICAP is fail-open"
+fi
 
 if [ "$CLAMAV_REQUIRED" = "1" ]; then
-    i=0
-    while [ "$i" -lt "$SQUID_WORKERS" ]; do
-        instance=$((i + 1))
-        av_program="cicap_av_${instance}"
-        av_port=$((CICAP_AV_PORT + i))
-        if ! supervisor_program_running "$av_program"; then
-            echo "CLAMAV_REQUIRED is set but supervisor reports ${av_program} is not RUNNING"
+    if ! supervisor_program_running cicap_av; then
+        echo "CLAMAV_REQUIRED is set but supervisor reports cicap_av is not RUNNING"
+        exit 1
+    fi
+
+    if ! has_listen_socket "$CICAP_AV_PORT"; then
+        echo "CLAMAV_REQUIRED is set but cicap_av is not listening on port ${CICAP_AV_PORT}"
+        exit 1
+    fi
+
+    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+        if ! supervisor_program_running clamav_respmod; then
+            echo "CLAMAV_REQUIRED is set but supervisor reports clamav_respmod is not RUNNING"
             exit 1
         fi
-
-        if ! has_listen_socket "$av_port"; then
-            echo "CLAMAV_REQUIRED is set but ${av_program} is not listening on port ${av_port}"
+        if ! has_listen_socket "$CICAP_AV_RESP_PORT"; then
+            echo "CLAMAV_REQUIRED is set but clamav_respmod is not listening on port ${CICAP_AV_RESP_PORT}"
             exit 1
         fi
-
-        if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
-            resp_program="clamav_respmod_${instance}"
-            resp_port=$((CICAP_AV_RESP_PORT + i))
-            if ! supervisor_program_running "$resp_program"; then
-                echo "CLAMAV_REQUIRED is set but supervisor reports ${resp_program} is not RUNNING"
-                exit 1
-            fi
-            if ! has_listen_socket "$resp_port"; then
-                echo "CLAMAV_REQUIRED is set but ${resp_program} is not listening on port ${resp_port}"
-                exit 1
-            fi
-        fi
-        i=$((i + 1))
-    done
+    fi
 
     # Check the remote clamd backend used by the local AV ICAP services.
     if ! remote_clamd_responding >/dev/null 2>&1; then

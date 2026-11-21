@@ -627,9 +627,6 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
             msg = "current config operation should not reapply active config"
             raise AssertionError(msg)
 
-        def set_adblock_icap_revision_token(self, _token):
-            return None
-
         def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
             return True, "ClamAV runtime files already current."
 

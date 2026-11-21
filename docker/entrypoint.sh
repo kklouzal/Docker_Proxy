@@ -740,74 +740,59 @@ WORKERS="$(clamp_int "$WORKERS" 1 4)"
 export SQUID_WORKERS="$WORKERS"
 
 mkdir -p /etc/supervisor.d
-rm -f /etc/supervisor.d/icap.conf || true
+# Also drops the per-Squid-worker helper files of earlier releases.
+rm -f /etc/supervisor.d/icap.conf /etc/supervisor.d/cicap_adblock*.conf \
+    /etc/supervisor.d/cicap_av*.conf /etc/supervisor.d/clamav_respmod*.conf \
+    /etc/c-icap/c-icap-av*.conf || true
 
-# Run the SQLite-backed adblock ICAP helper immediately so Squid's ICAP
-# OPTIONS checks succeed quickly. AV still runs through c-icap and can wait
-# for the remote clamd backend without impacting adblock.
-icap_base_is_usable() {
-    value="$1"
-    workers="$2"
-    case "$value" in
-        ''|*[!0-9]*|??????*) return 1 ;;
+# One helper of each kind serves every Squid worker: adaptation_service_set is
+# an ordered failover list, so further instances would be idle standbys. The
+# adblock helper scales with ADBLOCK_ICAP_PROCESSES (SO_REUSEPORT workers) and
+# reloads artifacts in process. Port selection matches squid_core._icap_ports.
+icap_port_or_default() {
+    case "$1" in
+        ''|*[!0-9]*|??????*) printf '%s\n' "$2" ;;
+        *)
+            if [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; then
+                printf '%s\n' "$1"
+            else
+                printf '%s\n' "$2"
+            fi
+            ;;
     esac
-    [ "$value" -ge 1 ] && [ "$value" -le $((65536 - workers)) ]
 }
 
-icap_ranges_overlap() {
-    left="$1"
-    right="$2"
-    workers="$3"
-    [ "$left" -lt $((right + workers)) ] && [ "$right" -lt $((left + workers)) ]
-}
-
-allocate_icap_base() {
+# Print the first port from $1 upward (wrapping) that is not in the other args.
+allocate_icap_port() {
     candidate="$1"
-    workers="$2"
-    shift 2
-    if ! icap_base_is_usable "$candidate" "$workers"; then
-        candidate=1
-    fi
-    max_base=$((65536 - workers))
-    checked=0
-    while [ "$checked" -lt "$max_base" ]; do
-        available=1
+    shift
+    while :; do
+        taken=0
         for occupied in "$@"; do
-            if icap_ranges_overlap "$candidate" "$occupied" "$workers"; then
-                available=0
+            if [ "$candidate" = "$occupied" ]; then
+                taken=1
                 break
             fi
         done
-        if [ "$available" = "1" ]; then
+        if [ "$taken" = "0" ]; then
             printf '%s\n' "$candidate"
             return 0
         fi
-        candidate=$((candidate + 1))
-        if [ "$candidate" -gt "$max_base" ]; then
+        if [ "$candidate" -lt 65535 ]; then
+            candidate=$((candidate + 1))
+        else
             candidate=1
         fi
-        checked=$((checked + 1))
     done
-    return 1
 }
 
-CICAP_PORT_RAW="${CICAP_PORT:-14000}"
-if ! icap_base_is_usable "$CICAP_PORT_RAW" "$WORKERS"; then
-    CICAP_PORT_RAW=14000
+CICAP_PORT="$(icap_port_or_default "${CICAP_PORT:-}" 14000)"
+CICAP_AV_PORT="$(allocate_icap_port "$(icap_port_or_default "${CICAP_AV_PORT:-}" 14001)" "$CICAP_PORT")"
+CICAP_AV_RESP_DEFAULT=$((CICAP_AV_PORT + 1))
+if [ "$CICAP_AV_RESP_DEFAULT" -gt 65535 ]; then
+    CICAP_AV_RESP_DEFAULT=1
 fi
-CICAP_PORT="$(allocate_icap_base "$CICAP_PORT_RAW" "$WORKERS")"
-
-CICAP_AV_PORT_RAW="${CICAP_AV_PORT:-14001}"
-if ! icap_base_is_usable "$CICAP_AV_PORT_RAW" "$WORKERS"; then
-    CICAP_AV_PORT_RAW=14001
-fi
-CICAP_AV_PORT="$(allocate_icap_base "$CICAP_AV_PORT_RAW" "$WORKERS" "$CICAP_PORT")"
-
-CICAP_AV_RESP_PORT_RAW="${CICAP_AV_RESP_PORT:-$((CICAP_AV_PORT + WORKERS))}"
-if ! icap_base_is_usable "$CICAP_AV_RESP_PORT_RAW" "$WORKERS"; then
-    CICAP_AV_RESP_PORT_RAW=$((CICAP_AV_PORT + WORKERS))
-fi
-CICAP_AV_RESP_PORT="$(allocate_icap_base "$CICAP_AV_RESP_PORT_RAW" "$WORKERS" "$CICAP_PORT" "$CICAP_AV_PORT")"
+CICAP_AV_RESP_PORT="$(allocate_icap_port "$(icap_port_or_default "${CICAP_AV_RESP_PORT:-}" "$CICAP_AV_RESP_DEFAULT")" "$CICAP_PORT" "$CICAP_AV_PORT")"
 
 CLAMD_HOST_RAW="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
 CLAMD_HOST="$(sanitize_bind_host "$CLAMD_HOST_RAW")"
@@ -870,41 +855,29 @@ mkdir -p /var/run/c-icap
 
 # Generate the AV c-icap config from the base image config. Adblock uses the
 # Python ICAP helper below and does not consume a c-icap service config.
+av_conf="/etc/c-icap/c-icap-av.conf"
+av_pid="/var/run/c-icap/c-icap-av.pid"
 if [ -f /etc/c-icap/c-icap.conf ]; then
-    i=0
-    while [ "$i" -lt "$WORKERS" ]; do
-        instance=$((i + 1))
-        av_port=$((CICAP_AV_PORT + i))
-        av_conf="/etc/c-icap/c-icap-av-${instance}.conf"
-        cp /etc/c-icap/c-icap.conf "$av_conf"
+    cp /etc/c-icap/c-icap.conf "$av_conf"
 
-        if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" "$av_conf" 2>/dev/null; then
-            sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile /var/run/c-icap/c-icap-av-${instance}.pid#I" "$av_conf"
-        else
-            echo "PidFile /var/run/c-icap/c-icap-av-${instance}.pid" >> "$av_conf"
-        fi
+    if grep -qiE "^[[:space:]]*PidFile[[:space:]]+" "$av_conf" 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*PidFile[[:space:]]+.*#PidFile ${av_pid}#I" "$av_conf"
+    else
+        echo "PidFile ${av_pid}" >> "$av_conf"
+    fi
 
-        sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' "$av_conf" || true
+    sed -i -E '/^[[:space:]]*AccessLog[[:space:]]+/d' "$av_conf" || true
 
-        if grep -qiE "^[[:space:]]*Port[[:space:]]+" "$av_conf" 2>/dev/null; then
-            sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${av_port}#I" "$av_conf"
-        else
-            echo "Port 127.0.0.1:${av_port}" >> "$av_conf"
-        fi
-        i=$((i + 1))
-    done
+    if grep -qiE "^[[:space:]]*Port[[:space:]]+" "$av_conf" 2>/dev/null; then
+        sed -i -E "s#^[[:space:]]*Port[[:space:]]+.*#Port 127.0.0.1:${CICAP_AV_PORT}#I" "$av_conf"
+    else
+        echo "Port 127.0.0.1:${CICAP_AV_PORT}" >> "$av_conf"
+    fi
 fi
 
-i=0
-while [ "$i" -lt "$WORKERS" ]; do
-    instance=$((i + 1))
-    adblock_port=$((CICAP_PORT + i))
-    av_resp_port=$((CICAP_AV_RESP_PORT + i))
-    av_conf="/etc/c-icap/c-icap-av-${instance}.conf"
-    av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"
-    cat > "/etc/supervisor.d/cicap_adblock_${instance}.conf" <<EOF
-[program:cicap_adblock_${instance}]
-command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${adblock_port}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
+cat > /etc/supervisor.d/cicap_adblock.conf <<EOF
+[program:cicap_adblock]
+command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "${CICAP_PORT}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=unexpected
 exitcodes=0
@@ -919,8 +892,8 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
-    cat > "/etc/supervisor.d/cicap_av_${instance}.conf" <<EOF
-[program:cicap_av_${instance}]
+cat > /etc/supervisor.d/cicap_av.conf <<EOF
+[program:cicap_av]
 # Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
 # Keep the backend probe inside the supervisor child process. RouterOS/supervisord
 # otherwise logs the short-lived probe helper as an unknown reaped pid whenever
@@ -934,12 +907,12 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
-    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
-        fail_mode_arg="--fail-open"
-        if [ "$CLAMAV_REQUIRED" = "1" ]; then fail_mode_arg="--fail-closed"; fi
-        cat > "/etc/supervisor.d/clamav_respmod_${instance}.conf" <<EOF
-[program:clamav_respmod_${instance}]
-command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "${av_resp_port}" --clamd-host "${CLAMD_HOST}" --clamd-port "${CLAMD_PORT}" --clamd-timeout "${CLAMD_TIMEOUT:-5}" --client-timeout "${CLAMAV_RESPMOD_CLIENT_TIMEOUT:-2}" --max-connections "${CLAMAV_RESPMOD_MAX_CONNECTIONS:-64}" --max-scans "${CLAMAV_RESPMOD_MAX_SCANS:-16}" ${fail_mode_arg}'
+if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+    fail_mode_arg="--fail-open"
+    if [ "$CLAMAV_REQUIRED" = "1" ]; then fail_mode_arg="--fail-closed"; fi
+    cat > /etc/supervisor.d/clamav_respmod.conf <<EOF
+[program:clamav_respmod]
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "${CICAP_AV_RESP_PORT}" --clamd-host "${CLAMD_HOST}" --clamd-port "${CLAMD_PORT}" --clamd-timeout "${CLAMD_TIMEOUT:-5}" --client-timeout "${CLAMAV_RESPMOD_CLIENT_TIMEOUT:-2}" --max-connections "${CLAMAV_RESPMOD_MAX_CONNECTIONS:-64}" --max-scans "${CLAMAV_RESPMOD_MAX_SCANS:-16}" ${fail_mode_arg}'
 autostart=true
 autorestart=true
 priority=12
@@ -948,37 +921,19 @@ stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
-    fi
-    i=$((i + 1))
-done
+fi
 
 {
-    adblock_services=""
-    av_req_services=""
-    av_resp_services=""
-    i=0
-    while [ "$i" -lt "$WORKERS" ]; do
-        instance=$((i + 1))
-        suffix=""
-        if [ "$instance" -gt 1 ]; then suffix="_${instance}"; fi
-        adblock_name="adblock_req${suffix}"
-        av_req_name="av_req${suffix}"
-        av_resp_name="av_resp${suffix}"
-        adblock_services="${adblock_services}${adblock_services:+ }${adblock_name}"
-        av_req_services="${av_req_services}${av_req_services:+ }${av_req_name}"
-        av_resp_services="${av_resp_services}${av_resp_services:+ }${av_resp_name}"
-        echo "icap_service ${adblock_name} reqmod_precache icap://127.0.0.1:$((CICAP_PORT + i))/adblockreq bypass=${ADBLOCK_BYPASS}"
-        echo "icap_service ${av_req_name} reqmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
-        if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
-            echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_RESP_PORT + i))/avrespmod bypass=${AV_BYPASS}"
-        else
-            echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
-        fi
-        i=$((i + 1))
-    done
-    echo "adaptation_service_set adblock_req_set ${adblock_services}"
-    echo "adaptation_service_set av_req_set ${av_req_services}"
-    echo "adaptation_service_set av_resp_set ${av_resp_services}"
+    echo "icap_service adblock_req reqmod_precache icap://127.0.0.1:${CICAP_PORT}/adblockreq bypass=${ADBLOCK_BYPASS}"
+    echo "icap_service av_req reqmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=${AV_BYPASS}"
+    if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
+        echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_RESP_PORT}/avrespmod bypass=${AV_BYPASS}"
+    else
+        echo "icap_service av_resp respmod_precache icap://127.0.0.1:${CICAP_AV_PORT}/avrespmod bypass=${AV_BYPASS}"
+    fi
+    echo "adaptation_service_set adblock_req_set adblock_req"
+    echo "adaptation_service_set av_req_set av_req"
+    echo "adaptation_service_set av_resp_set av_resp"
     echo "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE"
     if [ "$ADBLOCK_ROUTING_ENABLED" = "1" ]; then
         echo "adaptation_access adblock_req_set allow icap_adblockable"
@@ -1104,7 +1059,6 @@ fi
 HEALTHCHECK_SQUID_HTTP_PORT="$(host_override_value SQUID_HTTP_PORT)"
 mkdir -p "$(dirname "$HEALTHCHECK_ENV_FILE")"
 {
-    printf 'SQUID_WORKERS=%s\n' "$WORKERS"
     printf 'SQUID_HTTP_PORT=%s\n' "${HEALTHCHECK_SQUID_HTTP_PORT:-3128}"
     printf 'CICAP_PORT=%s\nCICAP_AV_PORT=%s\nCICAP_AV_RESP_PORT=%s\n' \
         "$CICAP_PORT" "$CICAP_AV_PORT" "$CICAP_AV_RESP_PORT"

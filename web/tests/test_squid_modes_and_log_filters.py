@@ -202,104 +202,51 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
     assert top[0]["domain"] == "tls.example"
 
 
-def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_uris(
-    monkeypatch,
+@pytest.mark.parametrize("squid_workers", ["1", "3", "malformed"])
+def test_render_icap_include_renders_one_helper_set_for_any_squid_worker_count(
+    monkeypatch, squid_workers: str
 ) -> None:
-
+    # adaptation_service_set is an ordered failover list: further members
+    # would only be idle standbys, so every Squid worker shares one set.
     from services.squidctl import SquidController  # type: ignore
 
     monkeypatch.setenv("CICAP_PORT", "24000")
     monkeypatch.setenv("CICAP_AV_PORT", "24001")
-    monkeypatch.setenv("SQUID_WORKERS", "3")
-
-    ctl = SquidController()
-    out = ctl._render_icap_include()
-
-    assert out.count("icap_service adblock_req ") == 1
-    assert out.count("icap_service adblock_req_2 ") == 1
-    assert out.count("icap_service adblock_req_3 ") == 1
-    assert out.count("icap://127.0.0.1:24000/adblockreq") == 1
-    assert out.count("icap://127.0.0.1:24001/adblockreq") == 1
-    assert out.count("icap://127.0.0.1:24002/adblockreq") == 1
-    assert "icap://127.0.0.1:24003/avrespmod" in out
-    assert "icap://127.0.0.1:24004/avrespmod" in out
-    assert "icap://127.0.0.1:24005/avrespmod" in out
-    assert (
-        "adaptation_service_set adblock_req_set adblock_req adblock_req_2 adblock_req_3"
-        in out
-    )
-    assert "adaptation_service_set av_resp_set av_resp av_resp_2 av_resp_3" in out
-    assert "icap_service av_resp respmod_precache" in out
-    assert "bypass=on" in out
-    assert "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE" in out
-
-
-@pytest.mark.parametrize(
-    ("raw_workers", "expected_workers"),
-    [(" ", 1), ("malformed", 1), ("0", 1), ("2", 2), ("99", 4)],
-)
-def test_render_icap_include_uses_shared_worker_normalization(
-    monkeypatch, raw_workers: str, expected_workers: int
-) -> None:
-    from services.squid_core import SquidController
-
-    monkeypatch.setenv("SQUID_WORKERS", raw_workers)
-    monkeypatch.setenv("CICAP_PORT", "24000")
-    monkeypatch.setenv("CICAP_AV_PORT", "25000")
+    monkeypatch.setenv("SQUID_WORKERS", squid_workers)
+    monkeypatch.delenv("CLAMD_HOST", raising=False)
 
     out = SquidController()._render_icap_include()
 
-    assert out.count("icap_service adblock_req") == expected_workers
-    assert out.count("icap_service av_resp") == expected_workers
-    assert f"icap://127.0.0.1:{24000 + expected_workers - 1}/adblockreq" in out
-    assert f"icap://127.0.0.1:{25000 + expected_workers - 1}/avrespmod" in out
+    assert out.count("icap_service ") == 3
+    assert (
+        "icap_service adblock_req reqmod_precache icap://127.0.0.1:24000/adblockreq bypass=on"
+        in out
+    )
+    assert "icap_service av_req reqmod_precache icap://127.0.0.1:24001/avrespmod" in out
+    assert (
+        "icap_service av_resp respmod_precache icap://127.0.0.1:24001/avrespmod" in out
+    )
+    assert "adaptation_service_set adblock_req_set adblock_req\n" in out
+    assert "adaptation_service_set av_req_set av_req\n" in out
+    assert "adaptation_service_set av_resp_set av_resp\n" in out
+    assert "_2" not in out
+    assert "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE" in out
 
 
-def test_render_icap_include_preserves_non_overlapping_explicit_av_base(
-    monkeypatch,
-) -> None:
+def test_render_icap_include_preserves_explicit_ports(monkeypatch) -> None:
 
     from services.squid_core import SquidController  # type: ignore
 
     monkeypatch.setenv("CICAP_PORT", "24000")
     monkeypatch.setenv("CICAP_AV_PORT", "25000")
-    monkeypatch.setenv("SQUID_WORKERS", "3")
+    monkeypatch.setenv("CICAP_AV_RESP_PORT", "26000")
+    monkeypatch.setenv("CLAMD_HOST", "clamd.example.internal")
 
     out = SquidController()._render_icap_include()
 
-    assert "icap://127.0.0.1:24002/adblockreq" in out
-    assert "icap://127.0.0.1:25000/avrespmod" in out
-    assert "icap://127.0.0.1:25002/avrespmod" in out
-
-
-def test_generate_icap_include_uses_supplied_workers_over_environment(
-    monkeypatch, tmp_path
-) -> None:
-
-    from services.squid_core import (  # type: ignore
-        SquidController,
-        _cached_icap_include_path,
-    )
-
-    include_path = tmp_path / "20-icap.conf"
-    monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
-    monkeypatch.setenv("ADBLOCK_ENABLED", "1")
-    monkeypatch.setenv("CICAP_PORT", "26000")
-    monkeypatch.setenv("CICAP_AV_PORT", "26001")
-    monkeypatch.setenv("SQUID_WORKERS", "1")
-    _cached_icap_include_path.cache_clear()
-
-    ok, message = SquidController().apply_icap_scaling(3, "")
-
-    assert ok, message
-    out = include_path.read_text(encoding="utf-8")
-    assert "icap_service adblock_req_3 " in out
-    assert "icap://127.0.0.1:26002/adblockreq" in out
-    assert "icap://127.0.0.1:26003/avrespmod" in out
-    assert "adaptation_access adblock_req_set allow icap_adblockable" in out
-    assert "adaptation_access adblock_req_set deny all" in out
-    assert "adaptation_access adblock_req_set allow all" not in out
-    assert "Accept-Encoding identity" not in out
+    assert "icap://127.0.0.1:24000/adblockreq" in out
+    assert "av_req reqmod_precache icap://127.0.0.1:25000/avrespmod" in out
+    assert "av_resp respmod_precache icap://127.0.0.1:26000/avrespmod" in out
 
 
 def test_render_icap_include_omits_adblock_routing_when_disabled(monkeypatch) -> None:
@@ -370,7 +317,7 @@ def test_materialize_clamav_runtime_files_uses_adblock_setting(
     assert "adaptation_access adblock_req_set deny all" in out
 
 
-def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
+def test_materialize_runtime_writes_one_helper_set_and_drops_per_worker_files(
     tmp_path,
     monkeypatch,
     isolated_squid_transaction_journal,
@@ -395,10 +342,20 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
         "Service echo srv_echo.so\n",
         encoding="utf-8",
     )
-    (supervisor_dir / "cicap_adblock_4.conf").write_text("stale\n", encoding="utf-8")
-    (supervisor_dir / "cicap_av_4.conf").write_text("stale\n", encoding="utf-8")
-    (supervisor_dir / "clamav_respmod_4.conf").write_text("stale\n", encoding="utf-8")
-    (cicap_dir / "c-icap-av-4.conf").write_text("stale\n", encoding="utf-8")
+    # Per-Squid-worker files written by earlier releases.
+    for instance in (1, 2):
+        (supervisor_dir / f"cicap_adblock_{instance}.conf").write_text(
+            "stale\n", encoding="utf-8"
+        )
+        (supervisor_dir / f"cicap_av_{instance}.conf").write_text(
+            "stale\n", encoding="utf-8"
+        )
+        (supervisor_dir / f"clamav_respmod_{instance}.conf").write_text(
+            "stale\n", encoding="utf-8"
+        )
+        (cicap_dir / f"c-icap-av-{instance}.conf").write_text(
+            "stale\n", encoding="utf-8"
+        )
 
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
     monkeypatch.setenv("VIRUS_SCAN_CONFIG_PATH", str(virus_path))
@@ -407,6 +364,7 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
     monkeypatch.setenv("CICAP_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.setenv("CICAP_PORT", "24000")
     monkeypatch.setenv("CICAP_AV_PORT", "24001")
+    monkeypatch.delenv("CICAP_AV_RESP_PORT", raising=False)
     monkeypatch.setenv("CLAMD_HOST", "clamd-proxy")
     _cached_icap_include_path.cache_clear()
     _cached_virus_scan_config_path.cache_clear()
@@ -417,38 +375,47 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
         return type("Proc", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
 
     controller = SquidController(cmd_run=fake_run)
+    config = "workers 3\n# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n"
 
-    ok, detail = controller.materialize_clamav_runtime_files(
-        "workers 3\n# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n",
-    )
+    ok, detail = controller.materialize_clamav_runtime_files(config)
 
     assert ok, detail
-    assert not (supervisor_dir / "cicap_adblock_4.conf").exists()
-    assert not (supervisor_dir / "cicap_av_4.conf").exists()
-    assert not (supervisor_dir / "clamav_respmod_4.conf").exists()
-    assert not (cicap_dir / "c-icap-av-4.conf").exists()
-    assert (supervisor_dir / "cicap_adblock_3.conf").exists()
-    assert (supervisor_dir / "cicap_av_3.conf").exists()
-    assert (supervisor_dir / "clamav_respmod_3.conf").exists()
-    av_conf = (cicap_dir / "c-icap-av-3.conf").read_text(encoding="utf-8")
-    assert "Port 127.0.0.1:24005" in av_conf
+    assert sorted(path.name for path in supervisor_dir.iterdir()) == [
+        "cicap_adblock.conf",
+        "cicap_av.conf",
+        "clamav_respmod.conf",
+    ]
+    assert sorted(path.name for path in cicap_dir.iterdir()) == [
+        "c-icap-av.conf",
+        "c-icap.conf",
+    ]
+    av_conf = (cicap_dir / "c-icap-av.conf").read_text(encoding="utf-8")
+    assert "Port 127.0.0.1:24001" in av_conf
+    assert f"PidFile {tmp_path / 'run'}/c-icap-av.pid" in av_conf
     assert "AccessLog" not in av_conf
     assert (
         'command=/bin/sh -c \'export CLAMD_HOST="clamd-proxy" CLAMD_PORT="3310" CLAMAV_REQUIRED="1";'
-        in (supervisor_dir / "cicap_av_1.conf").read_text(encoding="utf-8")
+        in (supervisor_dir / "cicap_av.conf").read_text(encoding="utf-8")
     )
-    assert '--port "24008"' in (supervisor_dir / "clamav_respmod_3.conf").read_text(
-        encoding="utf-8"
-    )
-    assert "--fail-closed" in (supervisor_dir / "clamav_respmod_1.conf").read_text(
+    respmod = (supervisor_dir / "clamav_respmod.conf").read_text(encoding="utf-8")
+    assert '--port "24002"' in respmod
+    assert "--fail-closed" in respmod
+    assert '--port "24000"' in (supervisor_dir / "cicap_adblock.conf").read_text(
         encoding="utf-8"
     )
     assert ["supervisorctl", "-c", "/etc/supervisord.conf", "reread"] in commands
     assert ["supervisorctl", "-c", "/etc/supervisord.conf", "update"] in commands
     include_text = include_path.read_text(encoding="utf-8")
-    assert "icap://127.0.0.1:24002/adblockreq" in include_text
-    assert "icap://127.0.0.1:24005/avrespmod" in include_text
-    assert "icap://127.0.0.1:24008/avrespmod" in include_text
+    assert "icap://127.0.0.1:24000/adblockreq" in include_text
+    assert "av_req reqmod_precache icap://127.0.0.1:24001/avrespmod" in include_text
+    assert "av_resp respmod_precache icap://127.0.0.1:24002/avrespmod" in include_text
+
+    # Idempotent: the converged files are not rewritten (no apply loop).
+    commands.clear()
+    ok, detail = controller.materialize_clamav_runtime_files(config)
+    assert ok, detail
+    assert "already current" in detail
+    assert commands == []
 
 
 def test_ci_remote_clamd_startup_supervisor_files_are_runtime_noop(
@@ -469,14 +436,14 @@ def test_ci_remote_clamd_startup_supervisor_files_are_runtime_noop(
         "Service echo srv_echo.so\n",
         encoding="utf-8",
     )
-    (cicap_dir / "c-icap-av-1.conf").write_text(
-        "PidFile /var/run/c-icap/c-icap-av-1.pid\n"
+    (cicap_dir / "c-icap-av.conf").write_text(
+        "PidFile /var/run/c-icap/c-icap-av.pid\n"
         "Port 127.0.0.1:24001\n"
         "Service echo srv_echo.so\n",
         encoding="utf-8",
     )
-    (supervisor_dir / "cicap_adblock_1.conf").write_text(
-        """[program:cicap_adblock_1]
+    (supervisor_dir / "cicap_adblock.conf").write_text(
+        """[program:cicap_adblock]
 command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "14000" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=unexpected
@@ -494,13 +461,13 @@ stdout_logfile_maxbytes=0
 """,
         encoding="utf-8",
     )
-    (supervisor_dir / "cicap_av_1.conf").write_text(
-        f"""[program:cicap_av_1]
+    (supervisor_dir / "cicap_av.conf").write_text(
+        f"""[program:cicap_av]
 # Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
 # Keep the backend probe inside the supervisor child process. RouterOS/supervisord
 # otherwise logs the short-lived probe helper as an unknown reaped pid whenever
 # clamd is unavailable.
-command=/bin/sh -c 'export CLAMD_HOST="clamav.edge-2.internal" CLAMD_PORT="3311" CLAMAV_REQUIRED="0"; rm -f "/var/run/c-icap/c-icap-av-1.pid"; exec /usr/local/bin/cicap_av_runner.py "{cicap_dir / "c-icap-av-1.conf"}"'
+command=/bin/sh -c 'export CLAMD_HOST="clamav.edge-2.internal" CLAMD_PORT="3311" CLAMAV_REQUIRED="0"; rm -f "/var/run/c-icap/c-icap-av.pid"; exec /usr/local/bin/cicap_av_runner.py "{cicap_dir / "c-icap-av.conf"}"'
 autostart=true
 autorestart=true
 priority=11
@@ -511,8 +478,8 @@ stdout_logfile_maxbytes=0
 """,
         encoding="utf-8",
     )
-    (supervisor_dir / "clamav_respmod_1.conf").write_text(
-        """[program:clamav_respmod_1]
+    (supervisor_dir / "clamav_respmod.conf").write_text(
+        """[program:clamav_respmod]
 command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "24002" --clamd-host "clamav.edge-2.internal" --clamd-port "3311" --clamd-timeout "5" --client-timeout "2" --max-connections "64" --max-scans "16" --fail-open'
 autostart=true
 autorestart=true
@@ -541,8 +508,7 @@ stdout_logfile_maxbytes=0
     monkeypatch.delenv("CLAMAV_RESPMOD_MAX_SCANS", raising=False)
 
     changed, paths = SquidController()._sync_icap_supervisor_runtime_files(
-        workers=1,
-        config_text="workers 1\n",
+        config_text="workers 2\n",
     )
 
     assert changed is False
@@ -568,7 +534,7 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
     (cicap_dir / "c-icap.conf").write_text(
         "Service echo srv_echo.so\n", encoding="utf-8"
     )
-    (supervisor_dir / "clamav_respmod_1.conf").write_text(
+    (supervisor_dir / "clamav_respmod.conf").write_text(
         "stale remote helper\n", encoding="utf-8"
     )
 
@@ -588,9 +554,9 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
     )
 
     assert ok, detail
-    assert not (supervisor_dir / "clamav_respmod_1.conf").exists()
+    assert not (supervisor_dir / "clamav_respmod.conf").exists()
 
-    assert (supervisor_dir / "cicap_av_1.conf").exists()
+    assert (supervisor_dir / "cicap_av.conf").exists()
     include_text = (tmp_path / "20-icap.conf").read_text(encoding="utf-8")
     assert (
         "icap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod"
@@ -606,13 +572,13 @@ def test_runtime_supervisor_sanitizes_clamd_shell_tokens(monkeypatch) -> None:
     monkeypatch.setenv("CLAMD_HOST", 'clamd"; touch /tmp/pwned; #')
     monkeypatch.setenv("CLAMD_PORT", "70000")
 
-    files = SquidController()._render_icap_supervisor_files(workers=1)
+    files = SquidController()._render_icap_supervisor_files()
     rendered = "\n".join(files.values())
 
     assert 'clamd"; touch /tmp/pwned; #' not in rendered
     assert 'CLAMD_HOST="127.0.0.1"' in rendered
     assert 'CLAMD_PORT="3310"' in rendered
-    assert "clamav_respmod_1" not in "\n".join(str(path) for path in files)
+    assert "clamav_respmod" not in "\n".join(str(path) for path in files)
 
 
 def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:
@@ -620,24 +586,23 @@ def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> N
     from services.squidctl import SquidController  # type: ignore
 
     monkeypatch.setenv("SQUID_WORKERS", "2")
+    monkeypatch.delenv("CICAP_PORT", raising=False)
+    monkeypatch.delenv("CICAP_AV_PORT", raising=False)
+    monkeypatch.delenv("CLAMD_HOST", raising=False)
     ctl = SquidController()
     out = ctl._render_icap_include(
         "# BEGIN SQUID-UI CLAMAV SETTINGS\n# clamav_fail_mode: closed\n# END SQUID-UI CLAMAV SETTINGS\n"
     )
 
     assert (
-        "icap_service av_req reqmod_precache icap://127.0.0.1:14002/avrespmod bypass=off"
+        "icap_service av_req reqmod_precache icap://127.0.0.1:14001/avrespmod bypass=off"
         in out
     )
     assert (
-        "icap_service av_req_2 reqmod_precache icap://127.0.0.1:14003/avrespmod bypass=off"
+        "icap_service av_resp respmod_precache icap://127.0.0.1:14001/avrespmod bypass=off"
         in out
     )
-    assert (
-        "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=off"
-        in out
-    )
-    assert "adaptation_service_set av_req_set av_req av_req_2" in out
+    assert "adaptation_service_set av_req_set av_req\n" in out
 
 
 def test_render_icap_include_keeps_body_methods_when_preview_is_disabled() -> None:
@@ -2043,43 +2008,31 @@ def test_squid_normalize_migrates_hyphenated_versioned_adblock_service() -> None
     ) < normalized.index("http_access allow all")
 
 
-def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
+def test_squid_icap_include_keeps_a_stable_adblock_service_name() -> None:
+    # The helper reloads artifacts in process (SIGHUP), so the service never
+    # disappears and needs no per-artifact name to reset Squid's health state.
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
-    controller._adblock_icap_revision_token = ""
-    unversioned = controller._render_icap_include("")
+    rendered = controller._render_icap_include("")
     assert (
         "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on"
-        in unversioned
+        in rendered
     )
-    assert "adaptation_service_set adblock_req_set adblock_req" in unversioned
-
-    controller.set_adblock_icap_revision_token("abc123:unsafe value")
-    versioned = controller._render_icap_include("")
+    assert "adaptation_service_set adblock_req_set adblock_req\n" in rendered
+    assert "adblockreq?rev=" not in rendered
     assert (
-        "icap_service adblock_req_abc123unsafevalue reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on"
-        in versioned
+        "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE" in rendered
     )
-    assert (
-        "adaptation_service_set adblock_req_set adblock_req_abc123unsafevalue"
-        in versioned
-    )
-    assert "adblockreq?rev=" not in versioned
-    assert (
-        "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE"
-        in versioned
-    )
-    assert "acl adblock_regex_allow url_regex -i" not in versioned
-    assert "acl adblock_regex_block url_regex -i" not in versioned
-    assert "http_access deny adblock_regex_block" not in versioned
+    assert "acl adblock_regex_allow url_regex -i" not in rendered
+    assert "acl adblock_regex_block url_regex -i" not in rendered
+    assert "http_access deny adblock_regex_block" not in rendered
 
 
 def test_squid_icap_include_never_renders_legacy_regex_shortcut() -> None:
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
-    controller._adblock_icap_revision_token = ""
     rendered = controller._render_icap_include("")
 
     assert "adblock_regex_allow" not in rendered
@@ -2087,50 +2040,33 @@ def test_squid_icap_include_never_renders_legacy_regex_shortcut() -> None:
     assert "http_access deny adblock_regex_block" not in rendered
 
 
-def test_icap_port_bases_normalize_invalid_overflow_and_overlap() -> None:
-    from services.squid_core import (  # type: ignore
-        _clamav_respmod_stream_port_base,
-        _icap_port_bases,
-    )
+def test_icap_ports_normalize_invalid_and_colliding_ports() -> None:
+    from services.squid_core import _icap_ports  # type: ignore
 
-    assert _icap_port_bases(4, adblock_port="0", av_port="65536") == (14000, 14004)
-    assert _icap_port_bases(4, adblock_port="65533", av_port="65532") == (
+    assert _icap_ports(adblock_port="0", av_port="65536", respmod_port="-1") == (
         14000,
-        65532,
+        14001,
+        14002,
     )
-    assert _icap_port_bases(4, adblock_port="65532", av_port="65529") == (
-        65532,
+    assert _icap_ports(adblock_port="24000", av_port="24000", respmod_port="24001") == (
+        24000,
+        24001,
+        24002,
+    )
+    assert _icap_ports(adblock_port="1", av_port="65535", respmod_port="") == (
         1,
-    )
-    assert (
-        _clamav_respmod_stream_port_base(
-            4,
-            adblock_port="65532",
-            av_port="65529",
-            respmod_port="-1",
-        )
-        == 5
+        65535,
+        2,
     )
 
 
-def test_icap_port_bases_preserve_valid_explicit_layout() -> None:
-    from services.squid_core import (  # type: ignore
-        _clamav_respmod_stream_port_base,
-        _icap_port_bases,
-    )
+def test_icap_ports_preserve_valid_explicit_layout() -> None:
+    from services.squid_core import _icap_ports  # type: ignore
 
-    assert _icap_port_bases(3, adblock_port="24000", av_port="25000") == (
+    assert _icap_ports(adblock_port="24000", av_port="25000", respmod_port="26000") == (
         24000,
         25000,
-    )
-    assert (
-        _clamav_respmod_stream_port_base(
-            3,
-            adblock_port="24000",
-            av_port="25000",
-            respmod_port="26000",
-        )
-        == 26000
+        26000,
     )
 
 
@@ -2139,21 +2075,23 @@ def test_entrypoint_icap_port_normalization_matches_runtime_helpers() -> None:
     import re
     from pathlib import Path
 
+    from services.squid_core import _icap_ports  # type: ignore
+
     entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
     match = re.search(
-        r"^icap_base_is_usable\(\) \{.*?^CICAP_AV_RESP_PORT=.*?$",
+        r"^icap_port_or_default\(\) \{.*?^CICAP_AV_RESP_PORT=.*?$",
         entrypoint,
         flags=re.MULTILINE | re.DOTALL,
     )
     assert match is not None
 
-    def normalize(workers: int, **ports: str) -> tuple[int, int, int]:
+    def normalize(**ports: str) -> tuple[int, int, int]:
         result = run_test_process(
             [
                 "sh",
                 "-eu",
                 "-c",
-                f'WORKERS={workers}\n{match.group(0)}\nprintf \'%s %s %s\\n\' "$CICAP_PORT" "$CICAP_AV_PORT" "$CICAP_AV_RESP_PORT"',
+                f'{match.group(0)}\nprintf \'%s %s %s\\n\' "$CICAP_PORT" "$CICAP_AV_PORT" "$CICAP_AV_RESP_PORT"',
             ],
             check=True,
             capture_output=True,
@@ -2162,12 +2100,22 @@ def test_entrypoint_icap_port_normalization_matches_runtime_helpers() -> None:
         )
         return tuple(map(int, result.stdout.split()))  # type: ignore[return-value]
 
-    assert normalize(
-        4, CICAP_PORT="0", CICAP_AV_PORT="65536", CICAP_AV_RESP_PORT="-1"
-    ) == (14000, 14004, 14008)
-    assert normalize(
-        4, CICAP_PORT="65532", CICAP_AV_PORT="65529", CICAP_AV_RESP_PORT="65530"
-    ) == (65532, 1, 5)
-    assert normalize(
-        3, CICAP_PORT="24000", CICAP_AV_PORT="25000", CICAP_AV_RESP_PORT="26000"
-    ) == (24000, 25000, 26000)
+    for ports in (
+        {"CICAP_PORT": "0", "CICAP_AV_PORT": "65536", "CICAP_AV_RESP_PORT": "-1"},
+        {
+            "CICAP_PORT": "24000",
+            "CICAP_AV_PORT": "24000",
+            "CICAP_AV_RESP_PORT": "24001",
+        },
+        {"CICAP_PORT": "1", "CICAP_AV_PORT": "65535", "CICAP_AV_RESP_PORT": ""},
+        {
+            "CICAP_PORT": "24000",
+            "CICAP_AV_PORT": "25000",
+            "CICAP_AV_RESP_PORT": "26000",
+        },
+    ):
+        assert normalize(**ports) == _icap_ports(
+            adblock_port=ports["CICAP_PORT"],
+            av_port=ports["CICAP_AV_PORT"],
+            respmod_port=ports["CICAP_AV_RESP_PORT"],
+        )

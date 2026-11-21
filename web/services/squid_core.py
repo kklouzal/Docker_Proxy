@@ -29,7 +29,7 @@ from services.forwarding_canary_config import (
     forwarding_canary_port,
 )
 from services.logutil import log_exception_throttled
-from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
+from services.runtime_helpers import security_env_bool
 from services.squid_host_overrides import active_overrides as active_host_overrides
 from services.squid_host_overrides import apply_host_overrides
 from services.squid_listeners import (
@@ -151,22 +151,14 @@ def _sanitize_clamd_host(value: object) -> str:
     return host
 
 
-def _icap_base_is_usable(port: int, workers: int) -> bool:
-    return 1 <= port <= 65536 - workers
-
-
-def _allocate_icap_base(candidate: int, workers: int, *occupied: int) -> int:
-    max_base = 65536 - workers
-    if not _icap_base_is_usable(candidate, workers):
-        candidate = 1
-    for _ in range(max_base):
-        if all(
-            not (candidate < base + workers and base < candidate + workers)
-            for base in occupied
-        ):
-            return candidate
-        candidate = candidate + 1 if candidate < max_base else 1
-    msg = "no usable ICAP listener range"
+def _allocate_icap_port(candidate: int, *occupied: int) -> int:
+    """Return candidate, or the next free port (wrapping) when it is taken."""
+    port = candidate
+    for _ in range(len(occupied) + 1):
+        if port not in occupied:
+            return port
+        port = port + 1 if port < 65535 else 1
+    msg = "no usable ICAP listener port"
     raise ValueError(msg)
 
 
@@ -177,47 +169,42 @@ def _allocate_icap_base(candidate: int, workers: int, *occupied: int) -> int:
 SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS = 50
 
 
-def _icap_port_bases(
-    workers: int, *, adblock_port: object = None, av_port: object = None
-) -> tuple[int, int]:
-    count = normalize_icap_worker_count(workers)
-    adblock_base = _parse_port(
-        os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
-        14000,
-    )
-    if not _icap_base_is_usable(adblock_base, count):
-        adblock_base = 14000
-    adblock_base = _allocate_icap_base(adblock_base, count)
-    av_base = _parse_port(
-        os.environ.get("CICAP_AV_PORT") if av_port is None else av_port,
-        14001,
-    )
-    if not _icap_base_is_usable(av_base, count):
-        av_base = 14001
-    av_base = _allocate_icap_base(av_base, count, adblock_base)
-    return adblock_base, av_base
-
-
-def _clamav_respmod_stream_port_base(
-    workers: int,
+def _icap_ports(
     *,
     adblock_port: object = None,
     av_port: object = None,
     respmod_port: object = None,
-) -> int:
-    count = normalize_icap_worker_count(workers)
-    adblock_base, av_base = _icap_port_bases(
-        count,
-        adblock_port=adblock_port,
-        av_port=av_port,
+) -> tuple[int, int, int]:
+    """Listener ports of the adblock, c-icap AV and streaming RESPMOD helpers.
+
+    One helper of each kind serves every Squid worker: an
+    ``adaptation_service_set`` is an ordered failover list, so additional
+    instances were standbys that never took load. The adblock helper scales
+    with ``ADBLOCK_ICAP_PROCESSES`` workers sharing its port instead.
+    docker/entrypoint.sh allocates the same ports.
+    """
+    adblock = _parse_port(
+        os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
+        14000,
     )
-    stream_base = _parse_port(
-        os.environ.get("CICAP_AV_RESP_PORT") if respmod_port is None else respmod_port,
-        av_base + count,
+    av = _allocate_icap_port(
+        _parse_port(
+            os.environ.get("CICAP_AV_PORT") if av_port is None else av_port,
+            14001,
+        ),
+        adblock,
     )
-    if not _icap_base_is_usable(stream_base, count):
-        stream_base = av_base + count
-    return _allocate_icap_base(stream_base, count, adblock_base, av_base)
+    respmod = _allocate_icap_port(
+        _parse_port(
+            os.environ.get("CICAP_AV_RESP_PORT")
+            if respmod_port is None
+            else respmod_port,
+            av + 1 if av < 65535 else 1,
+        ),
+        adblock,
+        av,
+    )
+    return adblock, av, respmod
 
 
 def _clamd_host_is_remote(host: object) -> bool:
@@ -386,7 +373,6 @@ class SquidController:
             "/var/lib/squid-flask-proxy/squid.conf",
         )
         self._run = cmd_run
-        self._adblock_icap_revision_token = ""
         # Startup has no reliable access to the UI database. Keep fresh/missing
         # state disabled; runtime reconciliation and UI apply paths overwrite
         # this from persisted adblock_settings, while an explicit env opt-in is
@@ -398,17 +384,13 @@ class SquidController:
     def _transaction_runtime_paths(self, candidate_config: str = "") -> list[Path]:
         current_config = self.get_current_config()
         expected_runtime_paths: set[Path] = set()
-        # Journal the complete bounded namespace, not only paths implied by the
-        # pre-transaction config. This covers worker expansion and shrink even
-        # when a process dies before stale managed fragments are removed.
+        # Journal the files both configs render plus every managed file on
+        # disk, so a process that dies before stale fragments are removed is
+        # still recovered.
         for config_text in dict.fromkeys((current_config, candidate_config)):
-            for workers in range(1, 5):
-                expected_runtime_paths.update(
-                    self._render_icap_supervisor_files(
-                        workers=workers,
-                        config_text=config_text,
-                    )
-                )
+            expected_runtime_paths.update(
+                self._render_icap_supervisor_files(config_text=config_text)
+            )
         return sorted(
             {
                 self._icap_include_path(),
@@ -1053,26 +1035,23 @@ class SquidController:
         self._atomic_write_file(str(path), content)
         return True
 
-    def _runtime_icap_workers(self, config_text: str | None = None) -> int:
-        parsed = self._extract_workers(config_text or "")
-        if parsed is not None:
-            return normalize_icap_worker_count(parsed)
-        return normalize_icap_worker_count(os.environ.get("SQUID_WORKERS") or "1")
-
     def _managed_icap_runtime_paths(self) -> set[Path]:
         paths: set[Path] = set()
         supervisor_dir = self._supervisor_include_dir()
         if supervisor_dir.exists():
             paths.add(supervisor_dir / "icap.conf")
+            # The patterns also match the per-Squid-worker files
+            # (cicap_adblock_1.conf, ...) of earlier releases, so syncing
+            # removes them.
             for pattern in (
-                "cicap_adblock_*.conf",
-                "cicap_av_*.conf",
-                "clamav_respmod_*.conf",
+                "cicap_adblock*.conf",
+                "cicap_av*.conf",
+                "clamav_respmod*.conf",
             ):
                 paths.update(supervisor_dir.glob(pattern))
         cicap_dir = self._cicap_config_dir()
         if cicap_dir.exists():
-            paths.update(cicap_dir.glob("c-icap-av-*.conf"))
+            paths.update(cicap_dir.glob("c-icap-av*.conf"))
         return paths
 
     def _snapshot_managed_icap_runtime_files(self) -> dict[Path, str | None]:
@@ -1097,14 +1076,14 @@ class SquidController:
         for path, content in snapshot.items():
             self._restore_runtime_file_snapshot(path, content)
 
-    def _render_cicap_av_config(self, instance: int, port: int) -> str | None:
+    def _render_cicap_av_config(self, port: int) -> str | None:
         base_path = self._cicap_base_config_path()
         try:
             text = base_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         run_dir = self._cicap_run_dir()
-        pid_line = f"PidFile {run_dir}/c-icap-av-{instance}.pid"
+        pid_line = f"PidFile {run_dir}/c-icap-av.pid"
         port_line = f"Port 127.0.0.1:{port}"
         lines: list[str] = []
         saw_pid = False
@@ -1134,19 +1113,16 @@ class SquidController:
     def _render_icap_supervisor_files(
         self,
         *,
-        workers: int,
         config_text: str | None = None,
     ) -> dict[Path, str]:
         # Must stay byte-identical to the files docker/entrypoint.sh writes at
         # boot: any difference makes the first runtime ICAP reconciliation
         # treat the supervisor files as changed and pause/restart Squid.
-        count = normalize_icap_worker_count(workers)
         options = _effective_clamav_options(extract_clamav_options(config_text or ""))
         supervisor_dir = self._supervisor_include_dir()
         cicap_dir = self._cicap_config_dir()
         run_dir = self._cicap_run_dir()
-        adblock_base, av_base = _icap_port_bases(count)
-        resp_base = _clamav_respmod_stream_port_base(count)
+        adblock_port, av_port, resp_port = _icap_ports()
         clamd_host = _sanitize_clamd_host(os.environ.get("CLAMD_HOST"))
         clamd_port = _parse_port(os.environ.get("CLAMD_PORT"), 3310)
         remote_clamd = _clamd_host_is_remote(clamd_host)
@@ -1163,18 +1139,10 @@ class SquidController:
         respmod_max_scans = (
             os.environ.get("CLAMAV_RESPMOD_MAX_SCANS") or "16"
         ).strip() or "16"
-        rendered: dict[Path, str] = {}
-
-        for index in range(count):
-            instance = index + 1
-            adblock_port = adblock_base + index
-            av_port = av_base + index
-            resp_port = resp_base + index
-            av_conf = cicap_dir / f"c-icap-av-{instance}.conf"
-            av_pid = run_dir / f"c-icap-av-{instance}.pid"
-            rendered[
-                supervisor_dir / f"cicap_adblock_{instance}.conf"
-            ] = f"""[program:cicap_adblock_{instance}]
+        av_conf = cicap_dir / "c-icap-av.conf"
+        av_pid = run_dir / "c-icap-av.pid"
+        rendered: dict[Path, str] = {
+            supervisor_dir / "cicap_adblock.conf": f"""[program:cicap_adblock]
 command=/bin/sh -c 'exec python3 /app/tools/adblock_icap_server.py --host 127.0.0.1 --port "{adblock_port}" --db /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite --access-log /var/log/cicap-access.log'
 autostart=true
 autorestart=unexpected
@@ -1189,10 +1157,8 @@ stderr_logfile=/dev/stderr
 stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
-"""
-            rendered[
-                supervisor_dir / f"cicap_av_{instance}.conf"
-            ] = f"""[program:cicap_av_{instance}]
+""",
+            supervisor_dir / "cicap_av.conf": f"""[program:cicap_av]
 # Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
 # Keep the backend probe inside the supervisor child process. RouterOS/supervisord
 # otherwise logs the short-lived probe helper as an unknown reaped pid whenever
@@ -1205,14 +1171,15 @@ stderr_logfile=/dev/stderr
 stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
-"""
-            av_config = self._render_cicap_av_config(instance, av_port)
-            if av_config is not None:
-                rendered[av_conf] = av_config
-            if remote_clamd:
-                rendered[
-                    supervisor_dir / f"clamav_respmod_{instance}.conf"
-                ] = f"""[program:clamav_respmod_{instance}]
+""",
+        }
+        av_config = self._render_cicap_av_config(av_port)
+        if av_config is not None:
+            rendered[av_conf] = av_config
+        if remote_clamd:
+            rendered[
+                supervisor_dir / "clamav_respmod.conf"
+            ] = f"""[program:clamav_respmod]
 command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "{resp_port}" --clamd-host "{clamd_host}" --clamd-port "{clamd_port}" --clamd-timeout "{clamd_timeout}" --client-timeout "{respmod_client_timeout}" --max-connections "{respmod_max_connections}" --max-scans "{respmod_max_scans}" {fail_mode_arg}'
 autostart=true
 autorestart=true
@@ -1227,16 +1194,12 @@ stdout_logfile_maxbytes=0
     def _sync_icap_supervisor_runtime_files(
         self,
         *,
-        workers: int,
         config_text: str | None = None,
     ) -> tuple[bool, list[str]]:
         supervisor_dir = self._supervisor_include_dir()
         if not supervisor_dir.exists():
             return False, []
-        rendered = self._render_icap_supervisor_files(
-            workers=workers,
-            config_text=config_text,
-        )
+        rendered = self._render_icap_supervisor_files(config_text=config_text)
         desired_paths = set(rendered)
         stale_paths = self._managed_icap_runtime_paths() - desired_paths
         changed: list[str] = []
@@ -1249,25 +1212,16 @@ stdout_logfile_maxbytes=0
                 changed.append(str(path))
         return bool(changed), changed
 
-    def set_adblock_icap_revision_token(self, token: object) -> None:
-        raw = re.sub(r"[^A-Za-z0-9_.-]", "", str(token or ""))[:32]
-        self._adblock_icap_revision_token = raw
-
     def set_adblock_enabled(self, enabled: object) -> None:
         self._adblock_routing_enabled = bool(enabled)
 
     def _render_icap_include(
         self,
         config_text: str | None = None,
-        workers: int | None = None,
         *,
         adblock_enabled: bool | None = None,
     ) -> str:
-        if workers is None:
-            workers = os.environ.get("SQUID_WORKERS") or "1"
-        icap_instances = normalize_icap_worker_count(workers)
-        adblock_icap_port, cicap_av_port = _icap_port_bases(icap_instances)
-        clamav_respmod_port = _clamav_respmod_stream_port_base(icap_instances)
+        adblock_port, av_port, resp_port = _icap_ports()
         use_stream_respmod = _clamd_host_is_remote(
             os.environ.get("CLAMD_HOST", "127.0.0.1"),
         )
@@ -1282,37 +1236,15 @@ stdout_logfile_maxbytes=0
         file_security_policy = render_file_security_policy_config(
             clamav_options
         ).strip()
-        # Version the Squid ICAP service name with the active artifact while
-        # keeping the adblock ICAP helper URI stable. Squid tracks ICAP service health
-        # and persistent connections by service object; changing the local service
-        # name after an artifact reload prevents stale bypass/broken-service state
-        # without sending the helper an unsupported query-string service path.
-        adblock_service_name = "adblock_req"
-        adblock_token = (self._adblock_icap_revision_token or "").strip()
-        if adblock_token:
-            adblock_service_name = f"adblock_req_{adblock_token}"
-        adblock_services = []
-        av_req_services = []
-        av_resp_services = []
-        lines = []
-        for index in range(icap_instances):
-            suffix = "" if index == 0 else f"_{index + 1}"
-            adblock_name = f"{adblock_service_name}{suffix}"
-            av_req_name = f"av_req{suffix}"
-            av_resp_name = f"av_resp{suffix}"
-            adblock_services.append(adblock_name)
-            av_req_services.append(av_req_name)
-            av_resp_services.append(av_resp_name)
-            av_resp_port = (
-                clamav_respmod_port if use_stream_respmod else cicap_av_port
-            ) + index
-            lines.extend(
-                [
-                    f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass={adblock_bypass}",
-                    f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
-                    f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
-                ]
-            )
+        av_resp_port = resp_port if use_stream_respmod else av_port
+        # The helpers reload artifacts and flush caches in process (SIGHUP), so
+        # a stable service name is safe: Squid never sees the helper go away
+        # for those changes.
+        lines = [
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{adblock_port}/adblockreq bypass={adblock_bypass}",
+            f"icap_service av_req reqmod_precache icap://127.0.0.1:{av_port}/avrespmod bypass={av_bypass}",
+            f"icap_service av_resp respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
+        ]
         routing_enabled = (
             getattr(self, "_adblock_routing_enabled", True)
             if adblock_enabled is None
@@ -1331,9 +1263,9 @@ stdout_logfile_maxbytes=0
 
         lines.extend(
             [
-                f"adaptation_service_set adblock_req_set {' '.join(adblock_services)}",
-                f"adaptation_service_set av_req_set {' '.join(av_req_services)}",
-                f"adaptation_service_set av_resp_set {' '.join(av_resp_services)}",
+                "adaptation_service_set adblock_req_set adblock_req",
+                "adaptation_service_set av_req_set av_req",
+                "adaptation_service_set av_resp_set av_resp",
                 f"acl icap_adblockable method {_ADBLOCK_ICAP_METHODS}",
                 *adblock_access_lines,
             ]
@@ -1341,18 +1273,6 @@ stdout_logfile_maxbytes=0
         if file_security_policy:
             lines.extend(["", file_security_policy])
         return "\n".join(lines) + "\n"
-
-    def _generate_icap_include(
-        self,
-        workers: int,
-        config_text: str | None = None,
-    ) -> None:
-        out_path = self._icap_include_path()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_if_changed(
-            out_path,
-            self._render_icap_include(config_text, workers=workers),
-        )
 
     def materialize_clamav_runtime_files(
         self,
@@ -1483,8 +1403,11 @@ stdout_logfile_maxbytes=0
     ) -> SquidRuntimeMaterializationResult:
         try:
             normalized = self.normalize_config_text(config_text or "")
-            workers = self._runtime_icap_workers(normalized)
-            os.environ["SQUID_WORKERS"] = str(workers)
+            workers = self._extract_workers(normalized)
+            if workers is not None:
+                # Later consumers in this process (webfilter helper sizing)
+                # follow the applied worker count.
+                os.environ["SQUID_WORKERS"] = str(max(1, min(workers, 4)))
             options = _effective_clamav_options(extract_clamav_options(normalized))
             policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
             logger.debug(
@@ -1514,16 +1437,12 @@ stdout_logfile_maxbytes=0
                 icap_path,
                 self._render_icap_include(
                     normalized,
-                    workers=workers,
                     adblock_enabled=adblock_enabled,
                 ),
             ):
                 changed.append(str(icap_path))
             supervisor_changed, supervisor_paths = (
-                self._sync_icap_supervisor_runtime_files(
-                    workers=workers,
-                    config_text=normalized,
-                )
+                self._sync_icap_supervisor_runtime_files(config_text=normalized)
             )
             if supervisor_changed:
                 squid_was_running = any(
@@ -1680,18 +1599,6 @@ stdout_logfile_maxbytes=0
                 exc,
                 default="supervisorctl failed. Check server logs for details.",
             )
-
-    def apply_icap_scaling(
-        self,
-        workers: int,
-        config_text: str | None = None,
-    ) -> tuple[bool, str]:
-        try:
-            self._generate_icap_include(workers, config_text)
-            return True, "ICAP include updated."
-        except Exception as exc:
-            logger.exception("ICAP scaling apply failed")
-            return False, public_error_message(exc)
 
     def validate_config_text(self, config_text: str) -> tuple[bool, str]:
         normalized_config = self.normalize_config_text(config_text)
@@ -3017,46 +2924,6 @@ stdout_logfile_maxbytes=0
             runtime_restart_applied = runtime_result.squid_restarted
 
             if workers_changed:
-                ok_scale, scale_details = self.apply_icap_scaling(
-                    new_workers or 1,
-                    config_text=normalized_config,
-                )
-                if not ok_scale:
-                    if Path(backup_path).exists():
-                        Path(backup_path).replace(self.squid_conf_path)
-                    try:
-                        self._restore_runtime_file_snapshot(
-                            icap_include_path,
-                            old_icap_include,
-                        )
-                        self._restore_runtime_file_snapshot(
-                            virus_scan_config_path,
-                            old_virus_scan_config,
-                        )
-                        self._restore_managed_icap_runtime_files(old_icap_runtime_files)
-                    except Exception:
-                        log_exception_throttled(
-                            logger,
-                            "squid_core.revert_icap_runtime",
-                            interval_seconds=300.0,
-                            message="Failed to revert generated ICAP runtime files",
-                        )
-                    self._supervisor_reread_update()
-                    rollback_ok, rollback_detail = (
-                        self._restore_last_known_good_config_locked(
-                            reason=scale_details or "Failed to scale ICAP processes.",
-                            fallback_config=current,
-                        )
-                    )
-                    failure_result = rollback_detail or (
-                        scale_details or "Failed to scale ICAP processes."
-                    )
-                    if rollback_ok:
-                        journal.complete(detail=failure_result, recovered=True)
-                    else:
-                        journal.recovery_required(failure_result)
-                    return False, failure_result
-
                 ok_restart, restart_details = self._clear_disk_cache_locked()
                 if not ok_restart:
                     if Path(backup_path).exists():
@@ -3102,8 +2969,6 @@ stdout_logfile_maxbytes=0
                 journal.phase("persisted_lkg_written")
 
                 message = (restart_details or "Squid restarted.").strip()
-                if scale_details:
-                    message = (message + "\n" + scale_details).strip()
                 journal.complete(detail=message)
                 return True, message
 
