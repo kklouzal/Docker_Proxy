@@ -319,9 +319,11 @@ def fetch_site_from_headers(headers: dict[str, str] | None) -> str:
 
 
 def _decision_for_matches(matches: list[_RuleMatcher]) -> AdblockDecision:
-    # uBO precedence: important block > exception > block. `important` only
-    # applies to block filters (_RuleMatcher), so no exception outranks it.
+    # AdGuard rule priorities (the only spec defining `@@...$important`):
+    # important exception > important block > exception > block, across all
+    # lists. uBO and ABP agree on the last three tiers.
     for action, important, reason in (
+        ("allow", True, "important-exception"),
         ("block", True, "important-rule-match"),
         ("allow", False, "exception"),
         ("block", False, "rule-match"),
@@ -415,9 +417,7 @@ class _RuleMatcher:
         self.rule = rule
         self.action = rule.get("action")
         behavior_options = set(rule.get("behavior_options") or [])
-        # uBO: `important` is a block-filter option; an `@@...$important`
-        # exception is an ordinary exception (owner decision O5).
-        self.important = "important" in behavior_options and self.action == "block"
+        self.important = "important" in behavior_options
         self.case_sensitive = "match-case" in behavior_options
         self.unusable = False
         self.included_methods: frozenset[str] | None = None

@@ -2403,34 +2403,78 @@ def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
     assert engine.decide("https://unknown-allow.example/a").blocked is True
 
 
-def test_important_on_exception_is_ignored(tmp_path: Path) -> None:
-    # uBO: `important` is a block-filter option. `@@...$important` acts as an
-    # ordinary exception: it beats normal blocks but not `$important` blocks.
+_PRECEDENCE_RULES = (
+    "||tier.example^",
+    "@@||tier.example/allow/",
+    "||tier.example/allow/important/$important",
+    "@@||tier.example/allow/important/override/$important",
+)
+
+
+@pytest.mark.parametrize(
+    "lists",
+    [
+        pytest.param([("sample", list(_PRECEDENCE_RULES))], id="one-list"),
+        pytest.param(
+            [(f"list{index}", [rule]) for index, rule in enumerate(_PRECEDENCE_RULES)],
+            id="one-list-per-tier",
+        ),
+        pytest.param(
+            [(f"list{index}", [rule]) for index, rule in enumerate(_PRECEDENCE_RULES)][
+                ::-1
+            ],
+            id="reversed-list-order",
+        ),
+    ],
+)
+def test_rule_precedence_follows_adguard_priorities(
+    tmp_path: Path, lists: list[tuple[str, list[str]]]
+) -> None:
+    # AdGuard KB "Rule priorities": @@ adds 10^5, $important 10^6, so
+    # @@$important > $important block > @@ > block, whatever list holds them.
+    from tools import adblock_compile as ac  # type: ignore
+
+    db_path = tmp_path / "request_lookup.sqlite"
+    ac._write_request_lookup_index(str(db_path), lists, ac._Aggregate())
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+    expected = {
+        "https://tier.example/x.js": (True, "rule-match", 0),
+        "https://tier.example/allow/x.js": (False, "exception", 1),
+        "https://tier.example/allow/important/x.js": (
+            True,
+            "important-rule-match",
+            2,
+        ),
+        "https://tier.example/allow/important/override/x.js": (
+            False,
+            "important-exception",
+            3,
+        ),
+    }
+    list_of = {rule: key for key, rules in lists for rule in rules}
+    for url, (blocked, reason, tier) in expected.items():
+        decision = engine.decide(url, headers={"Sec-Fetch-Dest": "script"})
+        assert (decision.blocked, decision.reason) == (blocked, reason), url
+        assert decision.raw == _PRECEDENCE_RULES[tier]
+        assert decision.list_key == list_of[_PRECEDENCE_RULES[tier]]
+
+
+def test_important_exception_also_beats_plain_blocks(tmp_path: Path) -> None:
     db_path = _build_lookup_db(
         tmp_path,
-        [
-            "||vip.example^$important",
-            "@@||vip.example/ok^$important",
-            "@@||vip.example/plain^",
-            "||normal.example^",
-            "@@||normal.example/ok^$important",
-        ],
+        ["||vip.example^", "@@||vip.example/ok^$important"],
     )
 
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
 
-    for url in ("https://vip.example/ok", "https://vip.example/plain"):
-        decision = engine.decide(url)
-        assert decision.blocked is True
-        assert decision.reason == "important-rule-match"
-        assert decision.raw == "||vip.example^$important"
-    allowed = engine.decide("https://normal.example/ok")
-    assert allowed.blocked is False
-    assert allowed.reason == "exception"
-    assert allowed.raw == "@@||normal.example/ok^$important"
-    assert engine.decide("https://normal.example/other").blocked is True
+    allowed = engine.decide("https://vip.example/ok")
+    assert (allowed.blocked, allowed.reason) == (False, "important-exception")
+    assert engine.decide("https://vip.example/other").blocked is True
 
 
 _NAVIGATION = {
