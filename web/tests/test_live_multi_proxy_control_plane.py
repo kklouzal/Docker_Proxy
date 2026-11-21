@@ -146,7 +146,7 @@ def test_live_proxies_page_renders_registered_remote_proxy(
     response = multi_proxy_admin.admin_request("/proxies")
     assert response.status == 200
     assert "Edge 2" in response.text
-    assert "Observability (24h)" in response.text
+    assert "Traffic (24h)" in response.text
 
 
 def test_live_clamav_page_uses_selected_remote_proxy_health(
@@ -162,9 +162,7 @@ def test_live_clamav_page_uses_selected_remote_proxy_health(
     assert local_response.status == 200
     assert "clamav.edge-2.internal:3311" in remote_response.text
     assert "127.0.0.1:24001" in remote_response.text
-    assert (
-        "Enable changes the upload and download AV policy only" in remote_response.text
-    )
+    assert "switches both together" in remote_response.text
     assert "clamav.edge-2.internal:3311" not in local_response.text
 
 

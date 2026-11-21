@@ -88,7 +88,7 @@ def test_live_observability_cache_performance_and_exports_use_real_proxy_logs(
         timeout_seconds=120.0,
     )
     assert "Slowest requests" in performance_page.text
-    assert "Traffic facets" in performance_page.text
+    assert "Performance summary" in performance_page.text
 
     cache_export = admin_client.admin_request(
         "/observability/export?pane=cache&window=3600"

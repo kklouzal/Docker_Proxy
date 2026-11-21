@@ -229,8 +229,12 @@ def test_live_squid_config_rejects_invalid_manual_apply_without_changing_active_
         timeout_seconds=90.0,
     )
 
+    # A rejected apply re-renders the editor with the submitted text instead
+    # of redirecting to the saved config.
     assert response.status == 200
-    assert query_params(response.url).get("error") == ["1"]
+    assert query_params(response.url).get("error") is None
+    assert "previous config kept" in response.text
+    assert "not_a_real_squid_directive definitely-invalid" in response.text
     assert active_config_text(LIVE_CONFIG.primary_proxy_id) == original_config
     wait_for_proxy_management_payload()
 

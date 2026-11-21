@@ -19,7 +19,7 @@ def test_live_monitoring_pages_link_back_to_observability(
     assert index_response.status == 200
     assert "Observability" in index_response.text
     assert "SSL incidents" in index_response.text
-    assert "AV controls" in index_response.text
+    assert "Security signals" in index_response.text
 
     clamav_response = admin_client.admin_request("/clamav?window=3600")
     assert clamav_response.status == 200
@@ -27,9 +27,7 @@ def test_live_monitoring_pages_link_back_to_observability(
     assert "Open security pane" in clamav_response.text
     assert "AV c-icap service" in clamav_response.text
     assert "Clamd backend" in clamav_response.text
-    assert (
-        "Enable changes the upload and download AV policy only" in clamav_response.text
-    )
+    assert "switches both together" in clamav_response.text
 
     for path in ("/adblock?window=3600", "/webfilter", "/sslfilter"):
         response = admin_client.admin_request(path)
