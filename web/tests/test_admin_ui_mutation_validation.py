@@ -551,7 +551,9 @@ adaptation_access av_resp_set allow icap_av_scanable
     assert "# file_security_preset: monitor" in config_text
     assert "# file_security_block_archives: on" in config_text
     assert "# file_security_block_risky_extensions: off" in config_text
-    assert "# file_security_block_nested_archives: off" in config_text
+    # Retired no-op options in the saved block are dropped, not an error.
+    assert "file_security_block_nested_archives" not in config_text
+    assert "file_security_quarantine_metadata" not in config_text
     assert "# file_security_block_executable_content: off" in config_text
 
 
@@ -613,7 +615,6 @@ def test_clamav_toggle_flips_scan_directions_without_dropping_blocking_policy(
     assert "# file_security_scan_uploads: off" in config_text
     assert "# file_security_block_risky_extensions: on" in config_text
     assert "# file_security_block_archives: on" in config_text
-    assert "# file_security_block_nested_archives: on" in config_text
     assert "# file_security_block_executable_content: on" in config_text
 
 

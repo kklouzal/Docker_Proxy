@@ -151,8 +151,8 @@ class _AdblockProxyMetaAliasConn:
                 ]
             )
         if compact.startswith("SELECT k, v FROM adblock_proxy_meta"):
-            if params == ("edge-a", "cache_flush_requested"):
-                return _FakeSqlResult([("cache_flush_requested", "123")])
+            if params == ("edge-a", "enabled"):
+                return _FakeSqlResult([("enabled", "1")])
             return _FakeSqlResult()
         msg = f"Unexpected SQL: {compact}"
         raise AssertionError(msg)
@@ -320,7 +320,7 @@ def test_latest_apply_resolves_proxy_alias_before_read(monkeypatch) -> None:
     )
 
 
-def test_cache_flush_read_failure_is_not_reported_as_no_request(monkeypatch) -> None:
+def test_proxy_meta_read_failure_propagates(monkeypatch) -> None:
     store_module = _import_adblock_store_module()
     store = store_module.AdblockStore()
 
@@ -342,11 +342,14 @@ def test_cache_flush_read_failure_is_not_reported_as_no_request(monkeypatch) -> 
         lambda conn, proxy_id: SimpleNamespace(proxy_id="edge-a"),
     )
 
-    with pytest.raises(RuntimeError, match="adblock meta read failed"):
-        store.get_cache_flush_requested()
+    with (
+        pytest.raises(RuntimeError, match="adblock meta read failed"),
+        store._connect() as conn,
+    ):
+        store._get_proxy_meta(conn, "enabled", "0")
 
 
-def test_cache_flush_read_resolves_proxy_alias(monkeypatch) -> None:
+def test_proxy_meta_read_resolves_proxy_alias(monkeypatch) -> None:
     store_module = _import_adblock_store_module()
     conn = _AdblockProxyMetaAliasConn()
     store = store_module.AdblockStore()
@@ -355,13 +358,14 @@ def test_cache_flush_read_resolves_proxy_alias(monkeypatch) -> None:
 
     token = set_proxy_id("live")
     try:
-        assert store.get_cache_flush_requested() == 123
+        with store._connect() as meta_conn:
+            assert store._get_proxy_meta(meta_conn, "enabled", "0") == "1"
     finally:
         reset_proxy_id(token)
 
     assert any(
         query.startswith("SELECT k, v FROM adblock_proxy_meta")
-        and params == ("edge-a", "cache_flush_requested")
+        and params == ("edge-a", "enabled")
         for query, params in conn.queries
     )
 

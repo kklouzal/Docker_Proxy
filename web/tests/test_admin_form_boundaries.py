@@ -674,9 +674,7 @@ def test_pac_builder_reports_reconcile_queue_failure(monkeypatch, tmp_path) -> N
     assert store.profiles[1].name == "Office LAN"
 
 
-def test_adblock_cache_flush_queues_single_runtime_refresh(
-    monkeypatch, tmp_path
-) -> None:
+def test_adblock_retired_flush_cache_action_is_ignored(monkeypatch, tmp_path) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
 
@@ -687,12 +685,9 @@ def test_adblock_cache_flush_queues_single_runtime_refresh(
     ):
         response = loaded.module._handle_adblock_post(store)
 
-    assert _params(response.location)["cache_flushed"] == ["1"]
-    assert store.cache_flush_requested == 1
-    assert [
-        operation.operation_type for operation in loaded.operation_ledger.operations
-    ] == ["adblock_refresh"]
-    assert loaded.operation_ledger.operations[-1].subject == "Adblock runtime refresh"
+    assert _params(response.location) == {"proxy_id": ["default"]}
+    assert store.refresh_requested == 0
+    assert loaded.operation_ledger.operations == []
 
 
 def test_adblock_list_save_queues_runtime_refresh(monkeypatch, tmp_path) -> None:
@@ -770,9 +765,7 @@ def test_adblock_runtime_toggle_queues_only_selected_proxy_without_shared_refres
         (
             {"action": "save_lists", "enabled_default": "on"},
             lambda store: (
-                store.refresh_requested == 1
-                and store.statuses[0].enabled is True
-                and store.cache_flush_requested == 0
+                store.refresh_requested == 1 and store.statuses[0].enabled is True
             ),
         ),
         (
@@ -785,20 +778,11 @@ def test_adblock_runtime_toggle_queues_only_selected_proxy_without_shared_refres
                 store.refresh_requested == 1
                 and store.settings["cache_ttl"] == 900
                 and store.settings["cache_max"] == 100
-                and store.cache_flush_requested == 0
             ),
         ),
         (
             {"action": "refresh"},
-            lambda store: (
-                store.refresh_requested == 1 and store.cache_flush_requested == 0
-            ),
-        ),
-        (
-            {"action": "flush_cache"},
-            lambda store: (
-                store.cache_flush_requested == 1 and store.refresh_requested == 0
-            ),
+            lambda store: store.refresh_requested == 1,
         ),
     ],
 )
@@ -828,7 +812,6 @@ def test_adblock_mutations_report_runtime_refresh_queue_failure(
     assert params["error"] == ["1"]
     assert "runtime refresh was not queued" in params["msg"][0]
     assert "refresh_requested" not in params
-    assert "cache_flushed" not in params
     assert assert_mutation(store)
     assert loaded.operation_ledger.operations == []
 
@@ -860,11 +843,16 @@ def test_adblock_runtime_toggle_reports_selected_proxy_queue_failure(
     assert store.refresh_requested == 0
 
 
-def test_adblock_cache_flush_targets_active_artifact_revision_and_hash(
+def _fail_refresh_flag_read() -> int:
+    msg = "adblock meta unavailable"
+    raise RuntimeError(msg)
+
+
+def test_adblock_refresh_targets_active_artifact_when_refresh_flag_is_unreadable(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
-    store.refresh_requested = 0
+    store.get_refresh_requested = _fail_refresh_flag_read
     summary = SimpleNamespace(
         revision_id=17,
         artifact_sha256="abc123def456",
@@ -885,7 +873,7 @@ def test_adblock_cache_flush_targets_active_artifact_revision_and_hash(
     )
 
     with loaded.module.app.test_request_context(
-        "/adblock", method="POST", data={"action": "flush_cache"}
+        "/adblock", method="POST", data={"action": "refresh"}
     ):
         response = loaded.module._handle_adblock_post(store)
 
@@ -901,11 +889,11 @@ def test_adblock_refresh_without_active_artifact_queues_unverifiable_artifact_ta
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
-    store.request_cache_flush()
+    store.get_refresh_requested = _fail_refresh_flag_read
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
 
     with loaded.module.app.test_request_context(
-        "/adblock", method="POST", data={"action": "flush_cache"}
+        "/adblock", method="POST", data={"action": "refresh"}
     ):
         response = loaded.module._handle_adblock_post(store)
 

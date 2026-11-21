@@ -1411,15 +1411,13 @@ stdout_logfile_maxbytes=0
             options = _effective_clamav_options(extract_clamav_options(normalized))
             policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
             logger.debug(
-                "ClamAV file policy applied: preset=%s fail-%s scan_downloads=%s scan_uploads=%s risky_extensions=%s archive_block=%s nested_archives=%s quarantine_metadata=%s size_caps=%s/%s",
+                "ClamAV file policy applied: preset=%s fail-%s scan_downloads=%s scan_uploads=%s risky_extensions=%s archive_block=%s size_caps=%s/%s",
                 options.get("file_security_preset"),
                 "open" if clamav_fail_open(options) else "closed",
                 options.get("file_security_scan_downloads"),
                 options.get("file_security_scan_uploads"),
                 options.get("file_security_block_risky_extensions"),
                 options.get("file_security_block_archives"),
-                options.get("file_security_block_nested_archives"),
-                options.get("file_security_quarantine_metadata"),
                 options.get("file_security_max_upload_size"),
                 options.get("file_security_max_download_size"),
             )

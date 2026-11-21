@@ -5297,11 +5297,6 @@ def _handle_adblock_post(store: Any):
         if response := _queue_adblock_or_error(action="manual refresh", store=store):
             return response
         return _redirect_to("adblock", refresh_requested="1")
-    if action == "flush_cache":
-        store.request_cache_flush()
-        if response := _queue_adblock_or_error(action="cache flush", store=store):
-            return response
-        return _redirect_to("adblock", cache_flushed="1")
     return _redirect_to("adblock")
 
 

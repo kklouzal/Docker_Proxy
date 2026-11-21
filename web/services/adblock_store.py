@@ -379,7 +379,6 @@ class AdblockStore:
             legacy_enabled = "1" if str(row[0]).strip() == "1" else "0"
 
         for key in (
-            "cache_flush_requested",
             "cicap_access_pos",
             "cicap_access_inode",
         ):
@@ -950,20 +949,6 @@ class AdblockStore:
         if int(observed) > 0:
             self._with_db_write_retry(write)
 
-    def request_cache_flush(self) -> None:
-        def write() -> None:
-            with self._connect() as conn:
-                self._set_proxy_meta(conn, "cache_flush_requested", str(_now()))
-
-        self._with_db_write_retry(write)
-
-    def mark_cache_flushed(self) -> None:
-        def write() -> None:
-            with self._connect() as conn:
-                self._set_proxy_meta(conn, "cache_flush_requested", "0")
-
-        self._with_db_write_retry(write)
-
     def get_settings_version(self) -> int:
         with self._connect() as conn:
             row = conn.execute(
@@ -1013,13 +998,6 @@ class AdblockStore:
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
-
-    def get_cache_flush_requested(self) -> int:
-        # Read failures propagate so the sync retries later instead of
-        # treating a pending operator flush request as absent.
-        with self._connect() as conn:
-            raw_requested = self._get_proxy_meta(conn, "cache_flush_requested", "0")
-        return int(raw_requested or 0)
 
     def list_statuses(self) -> list[ListStatus]:
         with self._connect() as conn:

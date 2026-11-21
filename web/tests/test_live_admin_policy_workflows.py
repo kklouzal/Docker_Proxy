@@ -737,14 +737,6 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
         assert refresh_response.status == 200
         assert query_params(refresh_response.url).get("refresh_requested") == ["1"]
 
-        flush_response = admin_client.admin_post_form(
-            "/adblock",
-            {"action": "flush_cache"},
-            csrf_path="/adblock",
-            timeout_seconds=90.0,
-        )
-        assert flush_response.status == 200
-        assert query_params(flush_response.url).get("cache_flushed") == ["1"]
         wait_for_proxy_management_payload()
         wait_for_proxy_fixture_response(admin_client, "/health", timeout_seconds=120.0)
 
@@ -771,7 +763,6 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
             cache_max=int(original_settings.get("cache_max") or 0),
         )
         store.clear_refresh_requested(store.get_refresh_requested())
-        _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.mark_cache_flushed)
 
 
 def test_live_proxy_sync_materializes_adblock_artifact_revision(
@@ -799,7 +790,6 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
         created_by="live-tests",
         source_kind="live-fixture",
     )
-    _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
     pre_sync_page = admin_client.admin_request("/adblock")
     assert "Ad-block rules on " in pre_sync_page.text
     assert (
@@ -838,10 +828,6 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
         "/adblock",
         "Adblock artifact applied",
         timeout_seconds=30.0,
-    )
-    assert (
-        _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.get_cache_flush_requested)
-        == 0
     )
 
 

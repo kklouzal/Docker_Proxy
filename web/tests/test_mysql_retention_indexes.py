@@ -111,11 +111,12 @@ def test_adblock_retention_indexes_bootstrap():
         "ALTER TABLE adblock_events ADD INDEX idx_adblock_events_ts_id (ts, id)" in sql
     )
     for key in (
-        "cache_flush_requested",
         "cicap_access_pos",
         "cicap_access_inode",
     ):
         assert ("default", key) in conn.params
+    # The cache-flush request was retired; its meta key is no longer seeded.
+    assert ("default", "cache_flush_requested") not in conn.params
     # Migration 36 retired the never-read cache counters and write-only meta.
     assert "adblock_cache_stats" not in sql
     for key in ("cache_last_flush", "cache_current_size"):

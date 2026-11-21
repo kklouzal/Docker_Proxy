@@ -3182,81 +3182,36 @@ class ProxyRuntime:
         operations: list[Any] | None = None,
     ) -> dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
-        store = self.adblock_store
-        store.init_db()
-        flush_requested = bool(store.get_cache_flush_requested())
+        self.adblock_store.init_db()
         current_sha = self._current_adblock_artifact_sha()
 
         if revision_meta is None:
-            if not flush_requested:
-                return {
-                    "ok": True,
-                    "proxy_id": self.proxy_id,
-                    "changed": False,
-                    "artifact_changed": False,
-                    "cache_flushed": False,
-                    "revision_id": None,
-                    "adblock_settings_version": None,
-                    "artifact_sha256": current_sha,
-                    "current_adblock_artifact_sha256": current_sha,
-                    "detail": "No active adblock artifact is available.",
-                }
-
-            ok_restart, restart_detail = (
-                self._refresh_adblock_service_without_squid_restart()
-            )
-            if ok_restart:
-                try:
-                    store.mark_cache_flushed()
-                except Exception as exc:
-                    clear_detail = public_error_message(
-                        exc,
-                        default="Failed to clear adblock cache flush request.",
-                    )
-                    detail = "\n".join(
-                        part
-                        for part in (restart_detail.strip(), clear_detail)
-                        if str(part or "").strip()
-                    ).strip()
-                    return {
-                        "ok": False,
-                        "proxy_id": self.proxy_id,
-                        "changed": True,
-                        "artifact_changed": False,
-                        "cache_flushed": False,
-                        "revision_id": None,
-                        "artifact_sha256": current_sha,
-                        "detail": detail,
-                    }
             return {
-                "ok": ok_restart,
+                "ok": True,
                 "proxy_id": self.proxy_id,
-                "changed": True,
+                "changed": False,
                 "artifact_changed": False,
-                "cache_flushed": bool(ok_restart),
                 "revision_id": None,
+                "adblock_settings_version": None,
                 "artifact_sha256": current_sha,
-                "detail": restart_detail.strip() or "Adblock runtime restarted.",
+                "current_adblock_artifact_sha256": current_sha,
+                "detail": "No active adblock artifact is available.",
             }
 
         # Force sync should refresh policy/config/PAC state, but it must not churn the
         # adblock ICAP helper when the active artifact is already materialized. Live
         # policy workflows can issue many forced syncs in quick succession; reloading
         # cicap_adblock on every no-op sync would rebuild its engines and empty its
-        # decision caches for nothing. Cache flush remains an explicit reload trigger.
+        # decision caches for nothing.
         artifact_changed = bool(revision_meta.artifact_sha256 != current_sha)
         integrity_detail = ""
-        if (
-            not artifact_changed
-            and not flush_requested
-            and self.services.current_adblock_sha_reader is None
-        ):
+        if not artifact_changed and self.services.current_adblock_sha_reader is None:
             integrity_ok, integrity_detail = self._adblock_materialization_integrity(
                 revision_meta.artifact_sha256,
                 current_sha=current_sha,
             )
             artifact_changed = not integrity_ok
-        if not artifact_changed and not flush_requested:
+        if not artifact_changed:
             applied = None
             try:
                 applied = self.adblock_artifacts.latest_apply(
@@ -3301,7 +3256,6 @@ class ProxyRuntime:
                         "changed": False,
                         "adblock_changed": False,
                         "artifact_changed": False,
-                        "cache_flushed": False,
                         "revision_id": revision_meta.revision_id,
                         "artifact_sha256": revision_meta.artifact_sha256,
                         "detail": detail,
@@ -3312,7 +3266,6 @@ class ProxyRuntime:
                 "changed": False,
                 "adblock_changed": False,
                 "artifact_changed": False,
-                "cache_flushed": False,
                 "revision_id": revision_meta.revision_id,
                 "application_id": getattr(applied, "application_id", None),
                 "adblock_settings_version": getattr(
@@ -3323,87 +3276,78 @@ class ProxyRuntime:
                 "detail": "Proxy is already using the active adblock artifact.",
             }
 
-        if artifact_changed:
-            revision = self.adblock_artifacts.get_active_artifact()
-            if revision is None:
-                return {
-                    "ok": False,
-                    "proxy_id": self.proxy_id,
-                    "changed": False,
-                    "artifact_changed": False,
-                    "cache_flushed": False,
-                    "revision_id": revision_meta.revision_id,
-                    "artifact_sha256": revision_meta.artifact_sha256,
-                    "detail": "Active adblock artifact metadata was present, but the full artifact could not be loaded.",
-                }
-            apply_revision_id = revision.revision_id
-            apply_artifact_sha256 = revision.artifact_sha256
-            snapshot_root = self._snapshot_adblock_compiled_dir()
+        revision = self.adblock_artifacts.get_active_artifact()
+        if revision is None:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "artifact_changed": False,
+                "revision_id": revision_meta.revision_id,
+                "artifact_sha256": revision_meta.artifact_sha256,
+                "detail": "Active adblock artifact metadata was present, but the full artifact could not be loaded.",
+            }
+        apply_revision_id = revision.revision_id
+        apply_artifact_sha256 = revision.artifact_sha256
+        snapshot_root = self._snapshot_adblock_compiled_dir()
+        try:
+            materialize_archive_to_directory(
+                self.adblock_compiled_dir,
+                archive_blob=revision.archive_blob,
+                artifact_sha256=revision.artifact_sha256,
+            )
+            integrity_ok, post_apply_detail = self._adblock_materialization_integrity(
+                revision.artifact_sha256,
+                current_sha=revision.artifact_sha256,
+            )
+            if not integrity_ok:
+                msg = (
+                    "Materialized adblock artifact failed validation: "
+                    f"{post_apply_detail}"
+                )
+                # A ValueError subclass: the apply record shows the reason.
+                raise AdblockArtifactArchiveError(msg)
+        except Exception as exc:
+            detail = public_error_message(
+                exc,
+                default="Failed to materialize adblock artifact.",
+            )
+            rollback_detail = ""
             try:
-                materialize_archive_to_directory(
-                    self.adblock_compiled_dir,
-                    archive_blob=revision.archive_blob,
-                    artifact_sha256=revision.artifact_sha256,
+                self._restore_adblock_compiled_snapshot(snapshot_root)
+                rollback_detail = "Restored previous adblock compiled artifact."
+            except Exception as rollback_exc:
+                rollback_detail = public_error_message(
+                    rollback_exc,
+                    default="Failed to restore previous adblock artifact.",
                 )
-                integrity_ok, post_apply_detail = (
-                    self._adblock_materialization_integrity(
-                        revision.artifact_sha256,
-                        current_sha=revision.artifact_sha256,
-                    )
-                )
-                if not integrity_ok:
-                    msg = (
-                        "Materialized adblock artifact failed validation: "
-                        f"{post_apply_detail}"
-                    )
-                    # A ValueError subclass: the apply record shows the reason.
-                    raise AdblockArtifactArchiveError(msg)
-            except Exception as exc:
-                detail = public_error_message(
-                    exc,
-                    default="Failed to materialize adblock artifact.",
-                )
-                rollback_detail = ""
-                try:
-                    self._restore_adblock_compiled_snapshot(snapshot_root)
-                    rollback_detail = "Restored previous adblock compiled artifact."
-                except Exception as rollback_exc:
-                    rollback_detail = public_error_message(
-                        rollback_exc,
-                        default="Failed to restore previous adblock artifact.",
-                    )
-                with suppress(Exception):
-                    shutil.rmtree(snapshot_root, ignore_errors=True)
-                if rollback_detail:
-                    detail = f"{detail}\n{rollback_detail}"
-                applied = self.adblock_artifacts.record_apply_result(
-                    self.proxy_id,
-                    revision.revision_id,
-                    ok=False,
-                    detail=detail,
-                    applied_by="proxy",
-                    artifact_sha256=revision.artifact_sha256,
-                )
-                return {
-                    "ok": False,
-                    "proxy_id": self.proxy_id,
-                    "changed": False,
-                    "artifact_changed": False,
-                    "cache_flushed": False,
-                    "revision_id": revision.revision_id,
-                    "application_id": applied.application_id,
-                    "artifact_sha256": revision.artifact_sha256,
-                    "detail": detail,
-                }
-        else:
-            apply_revision_id = revision_meta.revision_id
-            apply_artifact_sha256 = revision_meta.artifact_sha256
-            snapshot_root = ""
+            with suppress(Exception):
+                shutil.rmtree(snapshot_root, ignore_errors=True)
+            if rollback_detail:
+                detail = f"{detail}\n{rollback_detail}"
+            applied = self.adblock_artifacts.record_apply_result(
+                self.proxy_id,
+                revision.revision_id,
+                ok=False,
+                detail=detail,
+                applied_by="proxy",
+                artifact_sha256=revision.artifact_sha256,
+            )
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "artifact_changed": False,
+                "revision_id": revision.revision_id,
+                "application_id": applied.application_id,
+                "artifact_sha256": revision.artifact_sha256,
+                "detail": detail,
+            }
 
         ok_restart, restart_detail = (
             self._refresh_adblock_service_without_squid_restart()
         )
-        if not ok_restart and artifact_changed and snapshot_root:
+        if not ok_restart:
             rollback_detail_parts = [
                 restart_detail.strip()
                 or "adblock ICAP helper failed after adblock artifact materialization.",
@@ -3447,61 +3391,41 @@ class ProxyRuntime:
                 "changed": False,
                 "artifact_changed": False,
                 "artifact_rolled_back": True,
-                "cache_flushed": False,
                 "revision_id": revision.revision_id,
                 "application_id": applied.application_id,
                 "artifact_sha256": revision.artifact_sha256,
                 "detail": detail,
             }
 
-        if artifact_changed and snapshot_root:
-            with suppress(Exception):
-                shutil.rmtree(snapshot_root, ignore_errors=True)
-        cache_flush_detail = ""
-        cache_flushed = False
-        if ok_restart and flush_requested:
-            try:
-                store.mark_cache_flushed()
-                cache_flushed = True
-            except Exception as exc:
-                cache_flush_detail = public_error_message(
-                    exc,
-                    default="Failed to clear adblock cache flush request.",
-                )
+        with suppress(Exception):
+            shutil.rmtree(snapshot_root, ignore_errors=True)
         detail_parts = [restart_detail.strip() or "Adblock artifact applied."]
         if integrity_detail.strip():
             detail_parts.append(
                 f"Reapplied artifact because local materialization was stale: {integrity_detail.strip()}",
             )
-        if cache_flush_detail.strip():
-            detail_parts.append(cache_flush_detail.strip())
         detail = "\n".join(part for part in detail_parts if part).strip()
-        result_ok = bool(ok_restart and not cache_flush_detail)
         applied = self.adblock_artifacts.record_apply_result(
             self.proxy_id,
             apply_revision_id,
-            ok=result_ok,
+            ok=True,
             detail=detail,
             applied_by="proxy",
             artifact_sha256=apply_artifact_sha256,
         )
-        adblock_runtime_changed = bool(artifact_changed or flush_requested)
         return {
-            "ok": result_ok,
+            "ok": True,
             "proxy_id": self.proxy_id,
-            "changed": adblock_runtime_changed,
-            "adblock_changed": adblock_runtime_changed,
-            "artifact_changed": artifact_changed,
-            "cache_flushed": cache_flushed,
+            "changed": True,
+            "adblock_changed": True,
+            "artifact_changed": True,
             "revision_id": apply_revision_id,
             "application_id": applied.application_id,
             "adblock_settings_version": getattr(
                 revision_meta, "settings_version", None
             ),
             "artifact_sha256": apply_artifact_sha256,
-            "current_adblock_artifact_sha256": apply_artifact_sha256
-            if result_ok
-            else current_sha,
+            "current_adblock_artifact_sha256": apply_artifact_sha256,
             "detail": detail,
         }
 
