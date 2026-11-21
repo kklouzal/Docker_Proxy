@@ -450,7 +450,6 @@ def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:
         "file_security_scan_uploads": True,
         "file_security_block_risky_extensions": True,
         "file_security_block_archives": False,
-        "file_security_block_nested_archives": False,
         "file_security_block_executable_content": True,
     }
 
@@ -461,7 +460,6 @@ def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:
     assert options["file_security_scan_uploads"] is True
     assert options["file_security_block_risky_extensions"] is True
     assert options["file_security_block_archives"] is True
-    assert options["file_security_block_nested_archives"] is True
     assert options["file_security_block_executable_content"] is True
 
 
@@ -474,7 +472,6 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
         "file_security_scan_uploads": True,
         "file_security_block_risky_extensions": True,
         "file_security_block_archives": True,
-        "file_security_block_nested_archives": True,
         "file_security_block_executable_content": True,
     }
 
@@ -487,7 +484,6 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
     assert options["file_security_scan_uploads"] is False
     assert options["file_security_block_risky_extensions"] is False
     assert options["file_security_block_archives"] is False
-    assert options["file_security_block_nested_archives"] is False
     assert options["file_security_block_executable_content"] is False
 
 
@@ -502,7 +498,6 @@ def test_clamav_preset_change_preserves_explicit_checked_matching_current_value(
         "file_security_scan_uploads": True,
         "file_security_block_risky_extensions": True,
         "file_security_block_archives": True,
-        "file_security_block_nested_archives": True,
         "file_security_block_executable_content": True,
     }
 
@@ -517,7 +512,6 @@ def test_clamav_preset_change_preserves_explicit_checked_matching_current_value(
     assert options["file_security_preset"] == "monitor"
     assert options["file_security_block_archives"] is True
     assert options["file_security_block_risky_extensions"] is False
-    assert options["file_security_block_nested_archives"] is False
     assert options["file_security_block_executable_content"] is False
 
 
@@ -726,3 +720,32 @@ def test_size_field_browser_pattern_matches_server_validation() -> None:
         assert bool(browser_pattern.fullmatch(sample)) == bool(
             forms._SIZE_RE.fullmatch(sample)
         ), sample
+
+
+def test_clamav_retired_noop_options_in_saved_block_are_ignored() -> None:
+    from services.clamav_config_forms import (
+        apply_clamav_options_to_config,
+        extract_clamav_options,
+        render_file_security_policy_config,
+    )
+
+    saved = """http_port 3128
+# BEGIN SQUID-UI CLAMAV SETTINGS
+# clamav_fail_mode: closed
+# file_security_preset: strict
+# file_security_block_nested_archives: on
+# file_security_quarantine_metadata: on
+# END SQUID-UI CLAMAV SETTINGS
+"""
+
+    options = extract_clamav_options(saved)
+
+    assert options["clamav_fail_mode"] == "closed"
+    assert "file_security_block_nested_archives" not in options
+    assert "file_security_quarantine_metadata" not in options
+    rewritten = apply_clamav_options_to_config(saved, options)
+    assert "nested_archives" not in rewritten
+    assert "quarantine" not in rewritten
+    policy = render_file_security_policy_config(options)
+    assert "Nested archive" not in policy
+    assert "Quarantine" not in policy

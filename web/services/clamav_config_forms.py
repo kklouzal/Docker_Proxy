@@ -21,13 +21,11 @@ DEFAULTS: dict[str, Any] = {
     "file_security_risky_extensions": "exe dll msi bat cmd scr ps1 vbs jar apk",
     "file_security_block_archives": False,
     "file_security_archive_extensions": "zip 7z rar tar gz bz2 xz iso",
-    "file_security_block_nested_archives": False,
     "file_security_block_executable_content": False,
     "file_security_executable_extensions": "exe dll msi scr jar apk",
     "file_security_blocked_mime_types": "application/x-msdownload application/x-msdos-program application/x-ms-installer",
     "file_security_max_download_size": "0",
     "file_security_max_upload_size": "0",
-    "file_security_quarantine_metadata": True,
     "virus_scan_scan_file_types": "TEXT DATA BINARY",
     "virus_scan_send_percent_data": 5,
     "virus_scan_start_send_percent_after": "2M",
@@ -42,11 +40,9 @@ _PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
         "file_security_scan_uploads": False,
         "file_security_block_risky_extensions": False,
         "file_security_block_archives": False,
-        "file_security_block_nested_archives": False,
         "file_security_block_executable_content": False,
         "file_security_max_download_size": "0",
         "file_security_max_upload_size": "0",
-        "file_security_quarantine_metadata": True,
     },
     "balanced": {},
     "strict": {
@@ -54,11 +50,9 @@ _PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
         "file_security_scan_uploads": True,
         "file_security_block_risky_extensions": True,
         "file_security_block_archives": True,
-        "file_security_block_nested_archives": True,
         "file_security_block_executable_content": True,
         "file_security_max_download_size": "0",
         "file_security_max_upload_size": "0",
-        "file_security_quarantine_metadata": True,
     },
 }
 
@@ -69,13 +63,11 @@ _PRESET_MANAGED_FIELDS: tuple[str, ...] = (
     "file_security_risky_extensions",
     "file_security_block_archives",
     "file_security_archive_extensions",
-    "file_security_block_nested_archives",
     "file_security_block_executable_content",
     "file_security_executable_extensions",
     "file_security_blocked_mime_types",
     "file_security_max_download_size",
     "file_security_max_upload_size",
-    "file_security_quarantine_metadata",
 )
 
 _SIZE_RE = re.compile(r"^(?:0|[1-9][0-9]*)(?:[KMG])?$", re.IGNORECASE)
@@ -276,14 +268,6 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         placeholder="zip 7z rar tar gz bz2 xz iso",
     ),
     _field(
-        "file_security_block_nested_archives",
-        "archives",
-        "Block nested archives",
-        "Policy metadata",
-        "checkbox",
-        help_text="No effect: nothing in this deployment inspects archive nesting. The choice is only written as a comment in squid.conf.",
-    ),
-    _field(
         "file_security_max_download_size",
         "size",
         "Maximum download size",
@@ -309,14 +293,6 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "text",
         help_text="Space or comma separated upload Content-Type hints to block when executable-content blocking is enabled.",
         placeholder="application/x-msdownload application/x-ms-installer",
-    ),
-    _field(
-        "file_security_quarantine_metadata",
-        "diagnostics",
-        "Record quarantine metadata",
-        "Policy diagnostics",
-        "checkbox",
-        help_text="No effect: no quarantine store exists. The choice is only written as a comment in squid.conf.",
     ),
     _field(
         "virus_scan_send_percent_data",
@@ -404,7 +380,6 @@ CLAMAV_SECTIONS = (
                 (
                     "file_security_block_archives",
                     "file_security_archive_extensions",
-                    "file_security_block_nested_archives",
                 ),
             ),
             ClamavGroupSpec(
@@ -418,12 +393,6 @@ CLAMAV_SECTIONS = (
                 "Upload content-type hints",
                 "Blocks uploads by their Content-Type header (not by file contents) when executable blocking is on.",
                 ("file_security_blocked_mime_types",),
-            ),
-            ClamavGroupSpec(
-                "diagnostics",
-                "Diagnostics",
-                "Recorded preference only; see the note on the control.",
-                ("file_security_quarantine_metadata",),
             ),
             ClamavGroupSpec(
                 "streaming",
@@ -632,14 +601,6 @@ def render_file_security_policy_config(
         lines.append(
             f"acl file_security_executable_mime req_header Content-Type -i {_render_regex_tokens(blocked_mimes)}",
         )
-    if opts["file_security_block_nested_archives"]:
-        lines.append(
-            "# Nested archive blocking is recorded as policy metadata for downstream scanners.",
-        )
-    if opts["file_security_quarantine_metadata"]:
-        lines.append(
-            "# Quarantine metadata is retained in the managed policy block for audit trails.",
-        )
 
     if opts["file_security_scan_uploads"]:
         lines.extend(
@@ -749,10 +710,6 @@ def normalize_clamav_options(values: Mapping[str, Any] | None = None) -> dict[st
             source.get("file_security_archive_extensions"),
             str(preset_defaults["file_security_archive_extensions"]),
         ),
-        "file_security_block_nested_archives": _clean_bool(
-            source.get("file_security_block_nested_archives"),
-            bool(preset_defaults["file_security_block_nested_archives"]),
-        ),
         "file_security_block_executable_content": _clean_bool(
             source.get("file_security_block_executable_content"),
             bool(preset_defaults["file_security_block_executable_content"]),
@@ -777,10 +734,6 @@ def normalize_clamav_options(values: Mapping[str, Any] | None = None) -> dict[st
         "file_security_max_upload_size": _clean_size(
             source.get("file_security_max_upload_size"),
             str(preset_defaults["file_security_max_upload_size"]),
-        ),
-        "file_security_quarantine_metadata": _clean_bool(
-            source.get("file_security_quarantine_metadata"),
-            bool(preset_defaults["file_security_quarantine_metadata"]),
         ),
         "virus_scan_scan_file_types": _clean_scan_types(
             source.get("virus_scan_scan_file_types"),
