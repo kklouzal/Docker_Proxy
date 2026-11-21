@@ -239,7 +239,7 @@ def test_admin_error_pages_route_lists_and_previews_templates(
     assert "Policy · Error Pages" in body
     assert "ERR_ACCESS_DENIED" in body
     assert "ERR_WEBFILTER_BLOCKED" in body
-    assert "Open in new tab" in body
+    assert "(opens in new tab)" in body
     pages = loaded.module.list_error_pages()
     squid_count = sum(1 for item in pages if not item.custom)
     custom_count = sum(1 for item in pages if item.custom)

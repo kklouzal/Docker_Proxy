@@ -84,7 +84,7 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
     assert "Upload and download scanning are independently configurable" in html
     assert "GET and HEAD response coverage" in html
     assert "POST, PUT, and PATCH request coverage" in html
-    assert "Compact baseline for file policy behavior" in html
+    assert "Starting point for file policy" in html
     # The RESPMOD exemptions documented in the README are visible to operators.
     assert "Server-Sent Events" in html
     assert '<span class="mono">206</span> partial responses' in html
@@ -393,7 +393,7 @@ def test_operations_css_is_merged_into_shared_theme() -> None:
 def test_error_pages_template_keeps_minimal_error_pages_layout() -> None:
     html = (TEMPLATES / "error_pages.html").read_text(encoding="utf-8")
 
-    assert "Error Pages | Docker Proxy" in html
+    assert "Error Pages · Docker Proxy" in html
     assert 'class="hero-card"' in html
     assert 'class="grid cards-3"' in html
     assert 'class="grid two-col"' in html

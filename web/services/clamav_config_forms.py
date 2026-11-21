@@ -137,7 +137,6 @@ class ClamavSectionSpec:
     key: str
     label: str
     description: str
-    apply_note: str
     groups: tuple[ClamavGroupSpec, ...]
 
 
@@ -175,7 +174,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Failure behavior",
         "icap_service ... bypass / virus_scan.PassOnError",
         "select",
-        help_text="Fail-open keeps browsing available if AV ICAP or clamd fails. Fail-closed blocks affected transfers when scanning cannot complete.",
+        help_text="Fail-open keeps browsing available if AV ICAP or clamd fails. Fail-closed blocks affected transfers when scanning cannot complete. CLAMAV_REQUIRED=1 on the proxy forces fail-closed.",
         choices=(_choice("open", "Fail open"), _choice("closed", "Fail closed")),
     ),
     _field(
@@ -197,7 +196,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Scan downloads",
         "adaptation_access av_resp_set",
         "checkbox",
-        help_text="Send eligible GET responses through ClamAV RESPMod scanning.",
+        help_text="Scan GET and HEAD response bodies (RESPMOD).",
     ),
     _field(
         "file_security_scan_uploads",
@@ -205,7 +204,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Scan uploads",
         "adaptation_access av_req_set",
         "checkbox",
-        help_text="Optional: send POST, PUT, and PATCH request bodies through ClamAV REQMod scanning where Squid/c-icap can adapt the request. Off by default.",
+        help_text="Scan POST, PUT, and PATCH request bodies (REQMOD). Off in the Balanced and Monitor presets.",
     ),
     _field(
         "virus_scan_scan_file_types",
@@ -213,7 +212,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Scan data types",
         "virus_scan.ScanFileTypes",
         "text",
-        help_text="Space-separated c-icap data classes. The packaged module default is TEXT DATA BINARY.",
+        help_text="Space-separated c-icap data classes; default TEXT DATA BINARY.",
         placeholder="TEXT DATA BINARY",
     ),
     _field(
@@ -222,7 +221,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Maximum object size",
         "virus_scan.MaxObjectSize",
         "text",
-        help_text="Largest response object c-icap will scan. Use c-icap size syntax such as 64M, 128M, or 1G.",
+        help_text="Largest object c-icap scans, e.g. 64M or 1G. Downloads scanned by the streaming helper (remote clamd) use CLAMAV_STREAM_MAX_BYTES instead.",
         placeholder="128M",
     ),
     _field(
@@ -282,7 +281,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Block nested archives",
         "Policy metadata",
         "checkbox",
-        help_text="Records the stricter policy intent for downstream ICAP/content engines. Squid URL ACLs cannot prove nested archive structure by themselves.",
+        help_text="No effect: nothing in this deployment inspects archive nesting. The choice is only written as a comment in squid.conf.",
     ),
     _field(
         "file_security_max_download_size",
@@ -317,7 +316,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Record quarantine metadata",
         "Policy diagnostics",
         "checkbox",
-        help_text="Keep sample metadata in the managed policy block for diagnostics/quarantine workflows without storing file contents.",
+        help_text="No effect: no quarantine store exists. The choice is only written as a comment in squid.conf.",
     ),
     _field(
         "virus_scan_send_percent_data",
@@ -325,7 +324,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Early-send percentage",
         "virus_scan.SendPercentData",
         "number",
-        help_text="Percentage of response data c-icap may stream before the scan fully completes. Keep below 100 to reserve a tail for final blocking.",
+        help_text="Share of a response c-icap may pass on before its scan completes. Keep below 100 so a tail is held for blocking.",
         minimum=0,
         maximum=99,
         step=1,
@@ -336,7 +335,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Start early-send after",
         "virus_scan.StartSendPercentDataAfter",
         "text",
-        help_text="Amount of response data c-icap should receive before early-send begins. Default 2M keeps small objects fully buffered until scanned while still allowing progress on large downloads.",
+        help_text="Bytes c-icap holds before early-send starts; default 2M, so smaller objects are scanned whole.",
         placeholder="2M",
     ),
     _field(
@@ -353,7 +352,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Default engine override",
         "virus_scan.DefaultEngine",
         "text",
-        help_text="Usually blank. Leaving this unset lets virus_scan choose the first available engine after clamd_mod registers.",
+        help_text="Usually blank, so virus_scan uses the first engine that registers (clamd).",
         placeholder="auto",
     ),
 )
@@ -362,13 +361,12 @@ CLAMAV_SECTIONS = (
     ClamavSectionSpec(
         "virus_scan",
         "File security policy",
-        "Schema-backed controls for file scanning, file blocking, c-icap virus_scan behavior, and Squid AV ICAP failure behavior.",
-        "Applies to the selected proxy by storing managed settings in the active config revision; the proxy materializes /etc/virus_scan.conf and the local ICAP include during sync.",
+        "Scanning, file blocking, and failure behavior.",
         (
             ClamavGroupSpec(
                 "preset",
                 "Preset",
-                "Start with a compact policy posture, then adjust specific controls only when needed.",
+                "Pick a starting point, then adjust individual controls.",
                 ("file_security_preset",),
             ),
             ClamavGroupSpec(
@@ -380,7 +378,7 @@ CLAMAV_SECTIONS = (
             ClamavGroupSpec(
                 "coverage",
                 "Scan coverage",
-                "Uploads and downloads sent to c-icap virus_scan plus object classes handled by the scanner.",
+                "Which transfers are scanned. Data types and maximum object size are c-icap settings: they apply to uploads, and to downloads only when clamd runs in the proxy container.",
                 (
                     "file_security_scan_downloads",
                     "file_security_scan_uploads",
@@ -412,31 +410,31 @@ CLAMAV_SECTIONS = (
             ClamavGroupSpec(
                 "size",
                 "Size thresholds",
-                "Optional hard caps for transfers that should be blocked before or during body handling.",
+                "Optional hard size limits enforced by Squid.",
                 ("file_security_max_download_size", "file_security_max_upload_size"),
             ),
             ClamavGroupSpec(
                 "types",
                 "Upload content-type hints",
-                "Request Content-Type blocking where the existing Squid request path can enforce it. This is header-based, not deep file sniffing.",
+                "Blocks uploads by their Content-Type header (not by file contents) when executable blocking is on.",
                 ("file_security_blocked_mime_types",),
             ),
             ClamavGroupSpec(
                 "diagnostics",
                 "Diagnostics",
-                "Policy metadata that supports quarantine and audit trails without storing file contents.",
+                "Recorded preference only; see the note on the control.",
                 ("file_security_quarantine_metadata",),
             ),
             ClamavGroupSpec(
                 "streaming",
                 "Download streaming",
-                "Early-send controls that balance download UX against retaining enough response body to block infected objects.",
+                "c-icap early-send. Applies only when clamd runs in the proxy container; with a remote clamd the streaming helper delivers downloads (see Notes).",
                 ("virus_scan_send_percent_data", "virus_scan_start_send_percent_after"),
             ),
             ClamavGroupSpec(
                 "responses",
                 "Response behavior",
-                "ICAP response and engine-selection behavior for clean scans.",
+                "c-icap response and engine options.",
                 ("virus_scan_allow_204_on", "virus_scan_default_engine"),
             ),
         ),

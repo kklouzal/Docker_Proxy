@@ -399,7 +399,7 @@ def test_live_pac_a_then_b_operation_truth_preserves_latest_materialization(
     )
 
     pre_sync_page = admin_client.admin_request("/pac")
-    assert "Selected proxy PAC runtime evidence" in pre_sync_page.text
+    assert "PAC status on " in pre_sync_page.text
     assert (
         "PAC materialization pending" in pre_sync_page.text
         or "Saved/runtime PAC mismatch" in pre_sync_page.text
@@ -801,7 +801,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     )
     _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
     pre_sync_page = admin_client.admin_request("/adblock")
-    assert "Selected proxy adblock runtime evidence" in pre_sync_page.text
+    assert "Ad-block rules on " in pre_sync_page.text
     assert (
         "Built/runtime adblock mismatch" in pre_sync_page.text
         or "Built, not runtime-verified" in pre_sync_page.text

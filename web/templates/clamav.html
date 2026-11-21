@@ -1,14 +1,14 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
 
-{% block title %}ClamAV | Docker Proxy{% endblock %}
+{% block title %}ClamAV · Docker Proxy{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Antivirus controls</span>
     <h1 class="page-title">ClamAV</h1>
-    <p class="page-subtitle">REQMOD/RESPMOD antivirus policy and health for {{ active_proxy.display_name }}.</p>
+    <p class="page-subtitle">Antivirus scanning of downloads and uploads on {{ active_proxy.display_name }}.</p>
     <div class="hero-badges">
       <span class="badge {{ 'ok' if clamav_enabled else 'danger' }}">{{ 'Active' if clamav_enabled else 'Disabled' }}</span>
       <span class="badge {{ 'ok' if health and health.ok else 'warn' }}">{{ 'Healthy' if health and health.ok else 'Needs attention' }}</span>
@@ -21,17 +21,15 @@
   </div>
 </section>
 
-{% call scope_notice('proxy', 'Selected proxy only', 'Enable/disable state, health checks, and test actions here affect only ' ~ active_proxy.display_name ~ '.') %}
-<div>This page is intentionally per-proxy so you can validate AV behavior one runtime at a time.</div>
-{% endcall %}
+{% call scope_notice('proxy', 'Selected proxy only', 'Settings, health checks, and tests on this page affect only ' ~ active_proxy.display_name ~ '.') %}{% endcall %}
 
 <div class="actions">
   <form method="post" action="{{ url_for('clamav_toggle') }}">
     {{ csrf_field() }}
     {% if clamav_enabled %}
-      <button class="btn" type="submit" name="action" value="disable">Disable</button>
+      <button class="btn" type="submit" name="action" value="disable" data-confirm-message="Stop scanning downloads and uploads on {{ active_proxy.display_name }}?">Disable scanning</button>
     {% else %}
-      <button class="btn primary" type="submit" name="action" value="enable">Enable</button>
+      <button class="btn primary" type="submit" name="action" value="enable">Enable scanning</button>
     {% endif %}
   </form>
 
@@ -55,8 +53,11 @@
 </div>
 
 
+{% if request.args.get('toggle_error') %}
+  <div class="banner error"><span class="badge danger">Not changed</span><div class="banner-copy"><span class="small">Scanning was not switched; the active config was kept.</span>{% if request.args.get('toggle_msg') %}<pre class="small pre-wrap">{{ request.args.get('toggle_msg') }}</pre>{% endif %}</div></div>
+{% endif %}
 {% if settings_ok == '1' %}
-  <div class="banner success"><span class="badge warn">Apply queued</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were validated and saved for {{ active_proxy.display_name }}; runtime application is queued asynchronously and is not proven yet. Watch the queued operation detail below for apply status.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
+  <div class="banner success"><span class="badge warn">Apply queued</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were validated and saved for {{ active_proxy.display_name }}; runtime application is queued asynchronously and is not proven yet.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
 {% elif settings_ok == '0' %}
   <div class="banner error"><span class="badge danger">Settings failed</span><div class="banner-copy"><span class="small">ClamAV/c-icap settings were not queued for runtime application; the active config revision was kept or restored.</span>{% if settings_msg %}<pre class="small pre-wrap">{{ settings_msg }}</pre>{% endif %}</div></div>
 {% endif %}
@@ -65,16 +66,13 @@
   <div class="card-header">
     <div>
       <h2 class="card-title">ClamAV and c-icap settings</h2>
-      <div class="small">Schema-backed controls for Squid AV ICAP failure behavior and the container-local <span class="mono">/etc/virus_scan.conf</span> runtime file.</div>
+      <div class="small">Saved in {{ active_proxy.display_name }}'s config revision; the proxy writes <span class="mono">/etc/virus_scan.conf</span> and its ICAP include when it syncs.</div>
     </div>
     <span class="badge {{ 'warn' if clamav_options.clamav_fail_mode == 'closed' else 'ok' }}">Fail {{ clamav_options.clamav_fail_mode }}</span>
   </div>
   <div class="card-body">
     <form class="form config-form-shell" id="clamav-settings-form" action="{{ url_for('clamav_settings') }}" method="post" data-config-form="clamav">
       {{ csrf_field() }}
-      <div class="surface-note small">
-        Fail-open keeps browsing available when AV ICAP or clamd is unavailable. Fail-closed changes both Squid's AV ICAP <span class="mono">bypass</span> behavior and c-icap <span class="mono">virus_scan.PassOnError</span> so affected transfers fail instead of passing unscanned.
-      </div>
       {% for section in clamav_sections %}
         <section class="config-safe-section">
           <div class="config-safe-section-heading">
@@ -82,7 +80,6 @@
               <h3>{{ section.label }}</h3>
               <p class="small">{{ section.description }}</p>
             </div>
-            <span class="badge">{{ section.apply_note }}</span>
           </div>
           {% for group in section.groups %}
             <div class="config-field-group">
@@ -140,7 +137,7 @@
         <article class="stat-card">
           <span class="stat-label">Scanning</span>
           <strong class="stat-value">{{ 'Active' if clamav_enabled else 'Disabled' }}</strong>
-          <span class="small">Enable changes upload and download AV policy only</span>
+          <span class="small">Downloads or uploads scanned</span>
         </article>
         <article class="stat-card">
           <span class="stat-label">Downloads</span>
@@ -155,7 +152,7 @@
         <article class="stat-card">
           <span class="stat-label">Preset</span>
           <strong class="stat-value">{{ clamav_options.file_security_preset|capitalize }}</strong>
-          <span class="small">Compact baseline for file policy behavior</span>
+          <span class="small">Starting point for file policy</span>
         </article>
         <article class="stat-card">
           <span class="stat-label">AV c-icap service</span>
@@ -230,12 +227,6 @@
               <td class="mono">{{ clamd_health.target if clamd_health else 'unavailable' }}</td>
               <td class="small">{{ clamd_health.detail if clamd_health else 'unavailable' }}</td>
             </tr>
-            <tr>
-              <td>Proxy AV scanning</td>
-              <td><span class="badge {{ 'ok' if clamav_enabled else 'warn' }}">{{ 'Active' if clamav_enabled else 'Disabled' }}</span></td>
-              <td class="mono">squid.conf</td>
-              <td class="small">Enable changes the upload and download AV policy only; it does not start or stop daemons.</td>
-            </tr>
           </tbody>
         </table>
       </div>
@@ -250,35 +241,29 @@
     <div class="card-body">
       <div class="surface-note small">
         Current AV failure mode is <strong>fail-{{ clamav_options.clamav_fail_mode }}</strong>.
-        Fail-open renders Squid <span class="mono">bypass=on</span> and c-icap <span class="mono">virus_scan.PassOnError on</span> so browsing continues unscanned during scanner outages; fail-closed renders <span class="mono">bypass=off</span> and <span class="mono">PassOnError off</span> so affected transfers fail instead.
+        Fail-open renders Squid <span class="mono">bypass=on</span> and c-icap <span class="mono">virus_scan.PassOnError on</span> so browsing continues unscanned during scanner outages; fail-closed renders <span class="mono">bypass=off</span> and <span class="mono">PassOnError off</span> so affected transfers fail instead. The download streaming helper follows the same mode. <span class="mono">CLAMAV_REQUIRED=1</span> on the proxy forces fail-closed.
       </div>
       <div class="surface-note small">
-        The <strong>Enable</strong> button changes the proxy's AV policy only. It does <strong>not</strong> supervise or start the <span class="mono">clamd</span> daemon or the AV <span class="mono">c-icap</span> service.
+        Upload and download scanning are independently configurable above. <strong>Enable/Disable scanning</strong> switches both together and leaves the rest of the policy alone; it does not start or stop <span class="mono">clamd</span> or the ICAP services.
       </div>
       <div class="surface-note small">
-        Upload and download scanning are independently configurable inside this policy. The top-level enable button is a convenience control that flips both scan directions together without changing the rest of the file-blocking policy.
-      </div>
-      <div class="surface-note small">
-        AV scanning behavior is controlled by proxy-local ICAP services inside the selected proxy container. The upload service uses c-icap <span class="mono">virus_scan</span>; the download/RESPMOD service uses a local INSTREAM helper when <span class="mono">CLAMD_HOST</span> is non-local. Both forward scan bytes to the configured ClamAV daemon at <span class="mono">CLAMD_HOST:CLAMD_PORT</span>.
+        Uploads are scanned by c-icap <span class="mono">virus_scan</span> in the proxy container. Downloads use the same service when clamd is local, and a streaming INSTREAM helper when <span class="mono">CLAMD_HOST</span> is remote. Both send data to clamd at <span class="mono">CLAMD_HOST:CLAMD_PORT</span>.
       </div>
       <div class="surface-note small">
         Download scanning covers complete GET/HEAD response bodies. Range requests, <span class="mono">206</span> partial responses, and Server-Sent Events (request <span class="mono">Accept</span> names <span class="mono">text/event-stream</span> <em>and</em> the reply is <span class="mono">text/event-stream</span>) are not sent to RESPMOD because they are partial or unbounded; URL-extension file-security blocks still apply to them. Responses larger than <span class="mono">CLAMAV_STREAM_MAX_BYTES</span> (256 MiB by default) are never labelled clean: fail-open delivers them unscanned, fail-closed blocks them.
       </div>
       <div class="surface-note small">
-        Downloads are delivered while they are scanned: only the newest part of a response (at least 256 KiB and at least 1% of its length; 1 KiB for HTML and JavaScript, so pages render while they load) is held back until ClamAV's verdict. SVG, PDF and responses without a usable Content-Type are held whole until the verdict instead. Small infected files get the 403 block page; a larger infected download is cut off before that held-back part, so the browser reports the download as failed and the file is never complete. Squid does not cache the aborted response.
+        With a remote clamd, downloads are delivered while they are scanned: only the newest part of a response (at least 256 KiB and at least 1% of its length; 1 KiB for HTML and JavaScript, so pages render while they load) is held back until ClamAV's verdict. SVG, PDF and responses without a usable Content-Type are held whole until the verdict instead. Small infected files get the 403 block page; a larger infected download is cut off before that held-back part, so the browser reports the download as failed and the file is never complete. Squid does not cache the aborted response.
       </div>
     </div>
   </section>
 
   <section class="card">
     <div class="card-header">
-      <h2 class="card-title">Observability handoff</h2>
+      <h2 class="card-title">ICAP activity</h2>
       <span class="badge">last {{ window_label }}</span>
     </div>
     <div class="card-body stack-list">
-      <div class="surface-note small">
-        AV request traces, ICAP latency, suspicious findings, and correlated request evidence now live in <strong>Observability</strong> so operators do not have to bounce between multiple monitoring pages.
-      </div>
       <div class="summary-grid">
         <div class="stat compact-stat">
           <div class="stat-k">AV ICAP events</div>
@@ -293,6 +278,7 @@
           <div class="stat-v">{{ clamav_icap_summary.max_icap_time_ms }} ms</div>
         </div>
       </div>
+      <div class="surface-note small">Scan findings, matching requests, and ICAP latency are in Observability.</div>
       <div class="actions">
         <a class="btn primary" href="{{ url_for('observability', pane='security', window=window) }}">Open security pane</a>
         <a class="btn" href="{{ url_for('observability', pane='performance', window=window) }}">Open performance pane</a>

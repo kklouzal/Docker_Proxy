@@ -172,7 +172,7 @@ def test_adblock_runtime_state_requires_selected_proxy_apply_revision_and_hash(
     assert state["latest_apply_ok"] is None
     assert state["operation_status"] == "failed"
     assert state["operation_matches_active"] is False
-    assert "targets a different artifact revision/hash" in state["detail"]
+    assert "for a different artifact revision/hash" in state["detail"]
 
 
 def test_adblock_runtime_state_reconciles_only_with_selected_proxy_apply_hash(
@@ -271,4 +271,4 @@ def test_pac_runtime_state_ignores_stale_operations_for_other_fingerprints(
     assert state["state"] == "reconciled"
     assert state["operation_id"] == stale_same_proxy.operation_id
     assert state["operation_matches_desired"] is False
-    assert "targets a different PAC fingerprint" in state["detail"]
+    assert "a different PAC fingerprint" in state["detail"]

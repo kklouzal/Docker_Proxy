@@ -5238,7 +5238,7 @@ def test_pac_runtime_state_selected_proxy_requires_runtime_current_sha(
     assert state["state"] == "unknown"
     assert state["current_pac_sha"] == ""
     assert state["operation_matches_desired"] is True
-    assert "did not report enough PAC SHA evidence" in state["detail"]
+    assert "has not reported which PAC it serves" in state["detail"]
 
 
 def test_pac_runtime_state_no_desired_unavailable_and_stale_operation(
@@ -5327,11 +5327,11 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert "Selected proxy PAC runtime evidence" in text
+    assert "PAC status on " in text
     assert "PAC materialization pending" in text
     assert f"#{edge_b_operation.operation_id} pending" in text
     assert f"#{edge_a_operation.operation_id} succeeded" not in text
-    assert "Saved PAC profiles/URL are desired state" in text
+    assert "Saved PAC profiles take effect once" in text
 
 
 def test_pac_runtime_state_does_not_treat_unfingerprinted_operation_as_current(
@@ -5543,10 +5543,10 @@ def test_adblock_runtime_card_isolates_selected_proxy_partial_convergence(
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert "Selected proxy adblock runtime evidence" in text
+    assert "Ad-block rules on " in text
     assert "Adblock apply running" in text
     assert f"#{edge_b_operation.operation_id} running" in text
-    assert "Shared compiled artifacts are built state" in text
+    assert "A compiled revision takes effect once" in text
     assert "edge a applied" not in text
 
 

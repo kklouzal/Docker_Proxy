@@ -1045,6 +1045,10 @@ a.brand:hover{
 }
 
 /* Web filtering category tiles */
+.error-token-guidance > .grid{
+  padding: 0 16px 16px;
+}
+
 /* Grid items default to min-width:auto; let the list table scroll inside
    its .table-wrap instead of widening (and being clipped by) the card. */
 .adblock-lists-form{
