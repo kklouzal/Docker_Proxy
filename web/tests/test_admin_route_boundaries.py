@@ -3386,7 +3386,7 @@ def test_observability_metrics_returns_partial_payload_on_collector_failure(
         def cache_savings(self, **_kwargs):
             return {"estimated_saved_bytes": 42}
 
-        def security_overview(self, **_kwargs):
+        def security_summary(self, **_kwargs):
             return {
                 "summary": {
                     "combined_blocks": 7,
@@ -3428,7 +3428,7 @@ def test_observability_metrics_emits_cache_miss_bytes_as_numeric_value(
         def performance_overview(self, **_kwargs):
             return {}
 
-        def security_overview(self, **_kwargs):
+        def security_summary(self, **_kwargs):
             return {"summary": {}}
 
     loaded = load_admin_app(
@@ -3521,7 +3521,7 @@ def test_observability_metrics_reuses_short_lived_section_cache(
                 "top_policy_tags": [{"label": "Finance\\Restricted", "count": 2}],
             }
 
-        def security_overview(self, **_kwargs):
+        def security_summary(self, **_kwargs):
             self.security_calls += 1
             return {
                 "summary": {
@@ -3946,6 +3946,32 @@ def test_observability_ssl_exclusion_candidates_offer_no_bump_quick_action(
     assert text.count('action="/ssl-errors/exclude') == 1
     assert 'name="domain" value="broken.example"' in text
     assert ">No-bump domain<" in text
+
+
+def test_observability_ssl_pane_reports_no_bump_exclusion_outcome(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=SslPaneRowsObservability(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    queued = client.get(
+        "/observability?pane=ssl&q=broken.example&policy_queue=1"
+    ).get_data(as_text=True)
+    unqueued = client.get(
+        "/observability?pane=ssl&q=broken.example&policy_error=1&policy_msg=queue+down"
+    ).get_data(as_text=True)
+    rejected = client.get(
+        "/observability?pane=ssl&error=1&msg=Invalid+domain."
+    ).get_data(as_text=True)
+
+    assert "No-bump exclusion for broken.example saved" in queued
+    assert "was saved, but proxy reconciliation was not queued. queue down" in unqueued
+    assert "No-bump exclusion was not saved. Invalid domain." in rejected
 
 
 def test_observability_remediation_scopes_row_actions_by_subject_and_kind(

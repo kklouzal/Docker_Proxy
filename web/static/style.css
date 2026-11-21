@@ -2040,3 +2040,94 @@ pre{
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: color-mix(in srgb, var(--danger) 92%, white);
 }
+
+/* Observability and policy-request pages (observability.html, requests.html):
+   compact row actions and bounded long values. */
+.obs-truncate{
+  display:inline-block;
+  vertical-align: bottom;
+  max-width: 44ch;
+  overflow:hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obs-clamp{
+  display:-webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  max-width: 48ch;
+  overflow:hidden;
+  overflow-wrap: anywhere;
+}
+
+.obs-nowrap{
+  white-space: nowrap;
+}
+
+.obs-issue,
+.obs-note{
+  min-width: 24ch;
+}
+
+.obs-link{
+  border-bottom: 1px dotted rgba(255,255,255,.35);
+}
+
+.obs-link:hover,
+.obs-link:focus-visible{
+  border-bottom-style: solid;
+  color: var(--accent);
+}
+
+.stack-sm.obs-start > *,
+.stack-sm > .obs-truncate{
+  justify-self: start;
+  width: auto;
+}
+
+.obs-actions{
+  display:flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.obs-actions form{
+  margin: 0;
+}
+
+.obs-actions .btn,
+.card-header .obs-header-link{
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 599px){
+  .obs-truncate{ max-width: 26ch; }
+  .obs-clamp{ max-width: 30ch; }
+  .obs-actions{ justify-content: flex-start; }
+}
+
+.policy-review-form{
+  width: 300px;
+}
+
+.policy-review-form > .btn,
+.policy-review-form > .checkbox-inline{
+  justify-self: start;
+  width: auto;
+}
+
+.table td > .obs-truncate,
+.table td > .stack-sm > .obs-truncate{
+  max-width: min(44ch, 100%);
+}
+
+.policy-review-form textarea{
+  min-height: 0;
+  font-family: inherit;
+}

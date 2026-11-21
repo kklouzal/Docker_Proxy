@@ -101,7 +101,10 @@ def test_observability_route_and_export_degrade_to_empty_payloads(
 
     page = client.get("/observability?pane=destinations&q=db-password")
     assert page.status_code == 200
-    assert "db password" not in page.get_data(as_text=True).lower()
+    page_body = page.get_data(as_text=True)
+    assert "db password" not in page_body.lower()
+    # A failed query must not read as "no activity in this window".
+    assert "could not be loaded from MySQL" in page_body
 
     remediation = client.get("/observability?pane=remediation&q=db-password")
     assert remediation.status_code == 200
@@ -575,3 +578,29 @@ def test_audit_write_failure_is_logged_without_failing_the_action(
         module._record_audit_event("audit_failure_probe", ok=True)
 
     assert "Failed to record Admin UI audit event 'audit_failure_probe'" in caplog.text
+
+
+class OverviewExportQueries:
+    def summary(self, **_kwargs):
+        return {"request_records": 9, "cache_hits": 3, "clients": 2}
+
+    def overview_bundle(self, **_kwargs) -> NoReturn:
+        msg = "the overview export only needs the window summary"
+        raise AssertionError(msg)
+
+
+def test_observability_overview_export_uses_summary_only(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, observability_queries=OverviewExportQueries()
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    export = client.get("/observability/export?pane=overview")
+
+    assert export.status_code == 200
+    lines = export.get_data(as_text=True).splitlines()
+    assert lines[0] == "metric;value"
+    assert "request_records;9" in lines
+    assert "cache_hits;3" in lines
+    assert "adblock_icap_events;0" in lines

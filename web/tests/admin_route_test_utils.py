@@ -704,6 +704,9 @@ class FakeObservabilityQueries:
     def security_overview(self, **_kwargs: Any) -> dict[str, Any]:
         return {"av_rows": [], "adblock_rows": [], "webfilter_rows": []}
 
+    def security_summary(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"summary": {}}
+
     def performance_overview(self, **_kwargs: Any) -> dict[str, Any]:
         return {"slow_requests": [], "slow_icap_events": []}
 

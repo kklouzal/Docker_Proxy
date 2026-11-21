@@ -1,11 +1,11 @@
 {% extends "layout.html" %}
-{% block title %}Policy Requests | Docker Proxy{% endblock %}
+{% block title %}Policy Requests · Docker Proxy{% endblock %}
 {% block content %}
 <section class="page-hero">
   <div class="page-hero-copy">
     <span class="page-eyebrow">Policy workflow</span>
     <h1 class="page-title">Policy exception requests</h1>
-    <p class="page-subtitle">Review block-page submissions for {{ active_proxy.display_name }}; actions apply to the selected proxy only. Only webfilter approvals create enforced client-IP + domain exceptions on the selected proxy. Adblock, ClamAV, download, and MIME requests are review items only; reject or close them instead of approving.</p>
+    <p class="page-subtitle">Review block-page submissions for {{ active_proxy.display_name }}; actions apply to the selected proxy only. Only webfilter approvals create enforced client-IP + domain exceptions. Ad-block, ClamAV, download, and MIME requests are for review only: reject them instead of approving.</p>
   </div>
 </section>
 
@@ -15,29 +15,27 @@
 <section class="card" aria-labelledby="pending-requests-heading">
   <div class="card-header">
     <h2 id="pending-requests-heading" class="card-title">Pending requests</h2>
-    <span class="badge">{{ pending_requests|length }} row{{ '' if pending_requests|length == 1 else 's' }}</span>
+    <span class="badge">{{ pending_requests|length }} pending</span>
   </div>
   <div class="card-body">
     {% if pending_requests %}
     <div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Time</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Method</th><th scope="col">Type</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
+      <thead><tr><th scope="col">Submitted</th><th scope="col">Client</th><th scope="col">Request</th><th scope="col">Block</th><th scope="col">User note</th><th scope="col">Review</th></tr></thead>
       <tbody>
       {% for r in pending_requests %}
       <tr>
-        <td>{{ fmt_ts(r.created_ts) }}</td>
-        <td>{{ r.proxy_id }}</td>
+        <td><span class="small obs-nowrap">{{ fmt_ts(r.created_ts) }}</span></td>
         <td><code>{{ r.client_ip }}</code></td>
-        <td><code>{{ r.domain }}</code><br><small>{{ r.request_url }}</small></td>
-        <td>{% if r.method %}<code>{{ r.method }}</code>{% else %}<span class="muted">Any</span>{% endif %}</td>
-        <td>{{ r.block_type }}{% if r.category %}<br><small>{{ r.category }}</small>{% endif %}</td>
-        <td>{{ r.user_note }}</td>
+        <td><div class="stack-sm"><code class="obs-truncate" title="{{ r.domain }}">{{ r.domain }}</code><span class="small muted">{% if r.method %}{{ r.method }}{% else %}Any method{% endif %}</span>{% if r.request_url %}<span class="small muted obs-truncate" title="{{ r.request_url }}">{{ r.request_url }}</span>{% endif %}</div></td>
+        <td><div class="stack-sm obs-start"><span class="badge">{{ r.block_type }}</span>{% if r.category %}<span class="small muted">{{ r.category }}</span>{% endif %}</div></td>
+        <td class="obs-note">{% if r.user_note %}<span class="small obs-clamp" title="{{ r.user_note }}">{{ r.user_note }}</span>{% else %}<span class="small muted">None</span>{% endif %}</td>
         <td>
-          <form method="post" class="stack-sm" aria-label="Review request {{ r.id }} for {{ r.domain }}">
+          <form method="post" class="stack-sm policy-review-form" aria-label="Review request {{ r.id }} for {{ r.domain }}">
             {{ csrf_field() }}
             <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}">
             <input type="hidden" name="request_id" value="{{ r.id }}">
             <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
-            <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
+            <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Optional"></textarea>
             {% if not r.approval_unavailable_reason %}
             <label for="duration-seconds-{{ r.id }}" class="small">Approval duration</label>
             <select id="duration-seconds-{{ r.id }}" name="duration_seconds">
@@ -46,12 +44,12 @@
               <option value="604800">7 days</option>
               <option value="2592000">30 days</option>
             </select>
-            <label class="checkbox-inline"><input type="checkbox" name="duration_mode" value="indefinite"> Indefinite</label>
+            <label class="checkbox-inline"><input class="check" type="checkbox" name="duration_mode" value="indefinite"> No expiry</label>
             {% else %}
-            <p class="small">{{ r.approval_unavailable_reason }}</p>
+            <p class="small muted">{{ r.approval_unavailable_reason }}</p>
             {% endif %}
             <div class="button-row">
-              {% if not r.approval_unavailable_reason %}<button class="btn" name="action" value="approve">Approve</button>{% endif %}
+              {% if not r.approval_unavailable_reason %}<button class="btn primary" name="action" value="approve">Approve</button>{% endif %}
               <button class="btn ghost" name="action" value="reject">Reject</button>
             </div>
           </form>
@@ -60,7 +58,7 @@
       {% endfor %}
       </tbody>
     </table></div>
-    {% else %}<p>No pending requests.</p>{% endif %}
+    {% else %}<div class="surface-note small">No pending requests. Requests appear here when a user submits the form on a block page.</div>{% endif %}
   </div>
 </section>
 
@@ -72,25 +70,24 @@
   <div class="card-body">
     {% if exceptions %}
     <div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Status</th><th scope="col">Proxy</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Method</th><th scope="col">Expires</th><th scope="col">Note</th><th scope="col">Action</th></tr></thead>
+      <thead><tr><th scope="col">Status</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Method</th><th scope="col">Expires</th><th scope="col">Admin note</th><th scope="col">Action</th></tr></thead>
       <tbody>
       {% for e in exceptions %}
       <tr>
-        <td>{% if e.effective_status == 'not_applicable' %}not applicable<br><small>Safe Browsing verdicts cannot be exempted; this exception has no effect.</small>{% else %}{{ e.effective_status }}{% endif %}</td>
-        <td>{{ e.proxy_id }}</td>
+        <td>{% if e.effective_status == 'not_applicable' %}not applicable<br><small class="muted">Safe Browsing verdicts cannot be exempted; this exception has no effect.</small>{% else %}{{ e.effective_status }}{% endif %}</td>
         <td><code>{{ e.client_ip }}</code></td>
-        <td><code>{{ e.domain }}</code></td>
+        <td><code class="obs-truncate" title="{{ e.domain }}">{{ e.domain }}</code></td>
         <td>{% if e.method %}<code>{{ e.method }}</code>{% else %}<span class="muted">Any</span>{% endif %}</td>
-        <td>{% if e.expires_ts %}{{ fmt_ts(e.expires_ts) }}{% else %}Indefinite{% endif %}</td>
-        <td>{{ e.admin_note }}</td>
+        <td><span class="small obs-nowrap">{% if e.expires_ts %}{{ fmt_ts(e.expires_ts) }}{% else %}No expiry{% endif %}</span></td>
+        <td>{% if e.admin_note %}<span class="small obs-clamp" title="{{ e.admin_note }}">{{ e.admin_note }}</span>{% endif %}</td>
         <td>
           {% if e.can_revoke %}
-          <form method="post" class="stack-sm" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}">
+          <form method="post" class="stack-sm policy-review-form" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}" data-confirm-message="Revoke the exception for {{ e.client_ip }} to {{ e.domain }}?">
             {{ csrf_field() }}
             <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}">
             <input type="hidden" name="exception_id" value="{{ e.id }}">
             <label for="revocation-note-{{ e.id }}" class="small">Revocation note</label>
-            <input id="revocation-note-{{ e.id }}" name="admin_note" placeholder="Revocation note">
+            <input id="revocation-note-{{ e.id }}" name="admin_note" placeholder="Optional">
             <button class="btn ghost" name="action" value="revoke">Revoke</button>
           </form>
           {% endif %}
@@ -99,22 +96,26 @@
       {% endfor %}
       </tbody>
     </table></div>
-    {% else %}<p>No exceptions recorded.</p>{% endif %}
+    {% else %}<div class="surface-note small">No exceptions recorded. Approving a webfilter request creates one.</div>{% endif %}
   </div>
 </section>
 
 <section class="card" aria-labelledby="recent-requests-heading">
   <div class="card-header">
     <h2 id="recent-requests-heading" class="card-title">Recent requests</h2>
+    <span class="badge">latest {{ recent_requests|length }}</span>
   </div>
   <div class="card-body">
     {% if recent_requests %}
-    <ul>
-      {% for r in recent_requests[:50] %}
-      <li><strong>{{ r.status }}</strong> · {{ r.proxy_id }} · <code>{{ r.client_ip }}</code> · <code>{{ r.domain }}</code> · {% if r.method %}<code>{{ r.method }}</code>{% else %}<span class="muted">Any method</span>{% endif %} · {{ fmt_ts(r.created_ts) }}</li>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th scope="col">Status</th><th scope="col">Client</th><th scope="col">Domain</th><th scope="col">Method</th><th scope="col">Block</th><th scope="col">Submitted</th></tr></thead>
+      <tbody>
+      {% for r in recent_requests %}
+      <tr><td>{{ r.status }}</td><td><code>{{ r.client_ip }}</code></td><td><code class="obs-truncate" title="{{ r.domain }}">{{ r.domain }}</code></td><td>{% if r.method %}<code>{{ r.method }}</code>{% else %}<span class="muted">Any</span>{% endif %}</td><td>{{ r.block_type }}</td><td><span class="small obs-nowrap">{{ fmt_ts(r.created_ts) }}</span></td></tr>
       {% endfor %}
-    </ul>
-    {% else %}<p>No requests recorded.</p>{% endif %}
+      </tbody>
+    </table></div>
+    {% else %}<div class="surface-note small">No requests recorded.</div>{% endif %}
   </div>
 </section>
 {% endblock %}
