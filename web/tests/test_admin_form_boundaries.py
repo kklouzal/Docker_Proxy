@@ -40,23 +40,41 @@ def _assert_latest_pac_refresh_matches_desired(loaded, store) -> str:
     return desired_sha
 
 
-def test_adblock_shared_settings_clamp_invalid_values_and_request_refresh(
+def test_adblock_shared_settings_reject_invalid_values_and_request_refresh(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
     loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+    before = dict(store.settings)
+    for cache_ttl, cache_max, expected in (
+        ("not-int", "100", "TTL seconds must be an integer."),
+        ("900", "-10", "Maximum entries must be between 0 and 1000000."),
+        ("", "100", "TTL seconds is required."),
+        ("604801", "100", "TTL seconds must be between 0 and 604800."),
+    ):
+        with loaded.module.app.test_request_context(
+            "/adblock",
+            method="POST",
+            data={
+                "action": "save_settings",
+                "cache_ttl": cache_ttl,
+                "cache_max": cache_max,
+            },
+        ):
+            rejected = loaded.module._handle_adblock_post(store)
+        assert _params(rejected.location)["invalid"] == [expected]
+    assert store.settings == before
+    assert store.refresh_requested == 0
+    assert loaded.operation_ledger.operations == []
+
     with loaded.module.app.test_request_context(
         "/adblock",
         method="POST",
-        data={
-            "action": "save_settings",
-            "cache_ttl": "not-int",
-            "cache_max": "-10",
-        },
+        data={"action": "save_settings", "cache_ttl": "900", "cache_max": "0"},
     ):
         response = loaded.module._handle_adblock_post(store)
-    assert response.status_code in {301, 302, 303}
-    assert store.settings["cache_ttl"] == 3600
+    assert _params(response.location)["saved"] == ["cache"]
+    assert store.settings["cache_ttl"] == 900
     assert store.settings["cache_max"] == 0
     assert store.refresh_requested == 1
     operation = loaded.operation_ledger.operations[-1]

@@ -23,10 +23,10 @@
   </div>
 </section>
 
-{% call scope_notice('mixed', 'Shared subscriptions + selected proxy runtime', 'Subscription lists and cache defaults are shared. Ad-block routing, cache metrics, and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
+{% call scope_notice('mixed', 'Shared subscriptions + selected proxy runtime', 'Subscription lists and cache defaults are shared by all proxies. Ad-block routing and activity belong only to ' ~ active_proxy.display_name ~ '.') %}
 <ul class="scope-details-list">
-  <li><strong>Shared:</strong> cache defaults, enabled subscription lists, compiled artifact, and manual subscription refresh.</li>
-  <li><strong>{{ active_proxy.display_name }} only:</strong> ad-block routing enablement, live cache statistics, recent blocks, and flush-cache requests.</li>
+  <li><strong>Shared:</strong> subscription lists, decision cache defaults, the compiled artifact, and manual refresh.</li>
+  <li><strong>{{ active_proxy.display_name }} only:</strong> ad-block routing, block statistics, and ICAP activity.</li>
 </ul>
 {% endcall %}
 
@@ -39,6 +39,17 @@
   </div>
 {% endif %}
 
+{% if request.args.get('invalid') %}
+  <div class="banner error">
+    <span class="badge danger">Not saved</span>
+    <div class="banner-copy"><span class="small">{{ request.args.get('invalid') }}</span></div>
+  </div>
+{% elif request.args.get('saved') in ('lists', 'routing', 'cache') %}
+  <div class="banner success">
+    <span class="badge ok">Saved</span>
+    <div class="banner-copy"><span class="small">{{ {'lists': 'Subscription lists saved; a rebuild is queued.', 'routing': 'Ad-block routing saved for ' ~ active_proxy.display_name ~ '.', 'cache': 'Decision cache settings saved.'}[request.args.get('saved')] }}</span></div>
+  </div>
+{% endif %}
 {% if request.args.get('error') %}
   <div class="banner error">
     <span class="badge danger">Refresh not queued</span>
@@ -60,22 +71,16 @@
     <div class="card-body">
       <form method="post" action="{{ url_for('adblock') }}">
         {{ csrf_field() }}
+        <label class="check-row">
+          <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
+          Route eligible requests through ad blocking on {{ active_proxy.display_name }}
+        </label>
         <div class="actions">
           <button class="btn primary" type="submit" name="action" value="save_runtime">Save routing</button>
         </div>
 
-        <div class="form-grid-3">
-          <div>
-            <label class="small field-note">Enabled</label>
-            <label class="check-row">
-              <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
-              Route eligible requests through ad blocking on {{ active_proxy.display_name }}
-            </label>
-          </div>
-        </div>
-
         <div class="surface-note small">
-          Disabled means Squid does not route eligible requests to the adblock ICAP service on this proxy. CONNECT tunnel setup is never sent to ad blocking because it lacks reliable URL and request-context evidence.
+          When off, Squid does not send requests to the ad-block ICAP service on this proxy. CONNECT tunnel setup is never ad-blocked: it carries no full URL to match.
         </div>
       </form>
     </div>
@@ -118,13 +123,13 @@
     </div>
 
     <div class="card-body">
-      <form method="post" action="{{ url_for('adblock') }}">
+      <form class="adblock-lists-form" method="post" action="{{ url_for('adblock') }}">
         {{ csrf_field() }}
         <div class="actions">
           <button class="btn primary" type="submit" name="action" value="save_lists">Save lists</button>
           <button class="btn" type="submit" name="action" value="refresh">Update now</button>
           {% if refresh_no_lists %}<span class="small">No lists enabled — check one and click “Save lists” first.</span>{% endif %}
-          {% if refresh_requested %}<span class="small">Refresh requested — downloads run in background (may take ~30s).</span>{% endif %}
+          {% if refresh_requested %}<span class="small">Refresh requested; lists download and rebuild in the background.</span>{% endif %}
         </div>
 
         <div class="table-wrap"><table class="table">
@@ -165,7 +170,7 @@
 
         <div class="surface-note small">
           If no lists are enabled, the shared artifact contains no blocking rules. A proxy with runtime routing disabled does not call the adblock ICAP service.
-          Lists refresh automatically about every 12 hours after a successful download. Next refresh times assume the service is running.
+          Lists refresh automatically {% if update_interval_seconds % 3600 == 0 %}every {{ update_interval_seconds // 3600 }} hour{{ '' if update_interval_seconds == 3600 else 's' }}{% else %}every {{ (update_interval_seconds / 3600)|round(1) }} hours{% endif %} after a successful download.
         </div>
       </form>
     </div>
@@ -259,7 +264,7 @@
         </div>
       {% else %}
         <div class="surface-note small">
-          No active compiled artifact was found. Save or refresh enabled subscriptions and wait for the background builder before expecting proxies to enforce ad-block updates.
+          No compiled artifact yet. Enable lists and save, or click Update now; proxies enforce new rules once the background build finishes.
         </div>
       {% endif %}
       {% if artifact_build.last_failed or artifact_build.pending or artifact_build.download_pending or artifact_build.version_stale or artifact_build.lists_stale %}
@@ -290,13 +295,10 @@
   <section class="card split-right">
     <div class="card-header">
       <div>
-        <h2 class="card-title">Observability handoff</h2>
-        <div class="small">Traffic traces and block evidence now live in the shared observability hub.</div>
+        <h2 class="card-title">ICAP activity</h2>
+        <div class="small">Ad-block ICAP calls on the selected proxy.</div>
       </div>
-      <div class="actions">
-        {{ scope_chip('proxy') }}
-        <span class="badge">single pane of glass</span>
-      </div>
+      {{ scope_chip('proxy') }}
     </div>
     <div class="card-body stack-list">
       <div class="summary-grid">
@@ -314,7 +316,7 @@
         </div>
       </div>
       <div class="surface-note small">
-        Recent ad-block blocks, correlated requests, and slow ICAP samples were moved out of this control page so operators can investigate everything from the same observability workflow.
+        Recent blocks, matching requests, and slow ICAP calls are in Observability.
       </div>
       <div class="actions">
         <a class="btn primary" href="{{ url_for('observability', pane='security', window=window) }}">Open security pane</a>

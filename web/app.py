@@ -5263,7 +5263,8 @@ def _handle_adblock_post(store: Any):
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="list save", store=store):
             return response
-    elif action == "save_runtime":
+        return _redirect_to("adblock", saved="lists")
+    if action == "save_runtime":
         enabled = request.form.get("adblock_enabled") == "on"
         store.set_runtime_enabled(enabled)
         if response := _queue_adblock_or_error(
@@ -5272,20 +5273,23 @@ def _handle_adblock_post(store: Any):
             runtime_enabled=enabled,
         ):
             return response
-    elif action == "save_settings":
-        cur = store.get_settings()
-        cache_ttl = _bounded_int(
-            request.form.get("cache_ttl"),
-            default=int(cur.get("cache_ttl") or 0),
-            minimum=0,
-            maximum=7 * 24 * 3600,
-        )
-        cache_max = _bounded_int(
-            request.form.get("cache_max"),
-            default=int(cur.get("cache_max") or 0),
-            minimum=0,
-            maximum=1_000_000,
-        )
+        return _redirect_to("adblock", saved="routing")
+    if action == "save_settings":
+        try:
+            cache_ttl = _required_bounded_int(
+                request.form.get("cache_ttl"),
+                field_label="TTL seconds",
+                minimum=0,
+                maximum=7 * 24 * 3600,
+            )
+            cache_max = _required_bounded_int(
+                request.form.get("cache_max"),
+                field_label="Maximum entries",
+                minimum=0,
+                maximum=1_000_000,
+            )
+        except ValueError as exc:
+            return _redirect_to("adblock", invalid=str(exc))
         changed = store.set_shared_settings(cache_ttl=cache_ttl, cache_max=cache_max)
         if changed:
             store.request_refresh_now()
@@ -5294,14 +5298,15 @@ def _handle_adblock_post(store: Any):
                 store=store,
             ):
                 return response
-    elif action == "refresh":
+        return _redirect_to("adblock", saved="cache")
+    if action == "refresh":
         if not any(st.enabled for st in store.list_statuses()):
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="manual refresh", store=store):
             return response
         return _redirect_to("adblock", refresh_requested="1")
-    elif action == "flush_cache":
+    if action == "flush_cache":
         store.request_cache_flush()
         if response := _queue_adblock_or_error(action="cache flush", store=store):
             return response
