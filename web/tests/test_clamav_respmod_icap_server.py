@@ -2759,7 +2759,9 @@ def test_burst_respmod_requests_close_each_exchange_and_succeed() -> None:
                         _sample_respmod_request(port).replace(
                             b"hello", f"h{index:04d}".encode("ascii")
                         ),
-                        timeout=1.0,
+                        # The contract is that every exchange succeeds, not
+                        # a latency bound; a loaded CI runner needs slack.
+                        timeout=10.0,
                     )
                 )
             )
@@ -2768,7 +2770,7 @@ def test_burst_respmod_requests_close_each_exchange_and_succeed() -> None:
         for worker in workers:
             worker.start()
         for worker in workers:
-            worker.join(timeout=2)
+            worker.join(timeout=15)
         icap_server.shutdown()
         thread.join(timeout=1)
 
