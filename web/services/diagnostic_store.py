@@ -171,6 +171,7 @@ _REQUEST_SELECT_COLUMNS = (
     "response_cf_mitigated, response_alt_svc"
 )
 
+_COVERED_REQUEST_DIMENSIONS = frozenset({"bump_mode", "client_ip", "domain"})
 _REQUEST_DIMENSIONS: dict[str, str] = {
     "client_ip": "client_ip",
     "user_agent": "user_agent",
@@ -419,6 +420,11 @@ def _nearest_row_sort_key(
         -row_ts,
         id_sort,
     )
+
+
+def _request_window_index_hint(since: int | None) -> str:
+    """Pin windowed request reads to the (proxy_id, ts) range (see activity_summary)."""
+    return "FORCE INDEX (idx_diagnostic_requests_proxy_ts)" if since is not None else ""
 
 
 def _nearest_rows(
@@ -1421,8 +1427,10 @@ class DiagnosticStore:
         domain: str = "",
         master_xaction: str = "",
         service: str = "",
+        trusted_condition: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        """Newest ICAP rows; ``trusted_condition`` is a constant SQL predicate, never input."""
         where = ["proxy_id = %s"]
         params: list[Any] = [get_proxy_id()]
         if since is not None:
@@ -1441,6 +1449,8 @@ class DiagnosticStore:
         if normalized_service:
             where.append("service_family = %s")
             params.append(normalized_service)
+        if trusted_condition:
+            where.append(trusted_condition)
         if search:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
@@ -1541,87 +1551,135 @@ class DiagnosticStore:
         service: str = "",
         icap_limit_per_transaction: int = 5,
     ) -> list[dict[str, Any]]:
-        normalized_domain = _normalize_hostish(domain) or _extract_domain(url)
-        center = int(around_ts or _now())
+        return self.list_request_candidates_for_policy_events(
+            [
+                {
+                    "ts": around_ts,
+                    "url": url,
+                    "client_ip": client_ip,
+                    "domain": domain,
+                },
+            ],
+            window_seconds=window_seconds,
+            limit=limit,
+            service=service,
+            icap_limit_per_transaction=icap_limit_per_transaction,
+        )[0]
+
+    def list_request_candidates_for_policy_events(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        window_seconds: int = 300,
+        limit: int = 5,
+        service: str = "",
+        icap_limit_per_transaction: int = 5,
+    ) -> list[list[dict[str, Any]]]:
+        """Nearest request rows for each policy event (``ts``, ``url``, ``client_ip``, ``domain``).
+
+        One connection serves every event, and the related ICAP rows of all
+        matched transactions are fetched in one query.
+        """
+        if not events:
+            return []
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
         branch_lim = min(200, max(lim * 4, lim))
         self.init_db()
+        proxy_id = get_proxy_id()
 
-        normalized_client_ip = (client_ip or "").strip()
-        base_where = ["proxy_id = %s"]
-        base_params: list[Any] = [get_proxy_id()]
-        if normalized_client_ip:
-            base_where.append("client_ip = %s")
-            base_params.append(normalized_client_ip)
-        like_parts: list[str] = []
-        like_params: list[Any] = []
-        if normalized_domain:
-            like_parts.append("domain = %s")
-            like_params.append(normalized_domain)
-        raw_url = (url or "").strip()
-        if raw_url:
-            like_parts.append("url LIKE %s ESCAPE '\\\\'")
-            like_params.append(f"%{_escape_like(raw_url)}%")
-        elif normalized_domain:
-            like_parts.append("url LIKE %s ESCAPE '\\\\'")
-            like_params.append(f"%{_escape_like(normalized_domain)}%")
-        if like_parts:
-            base_where.append("(" + " OR ".join(like_parts) + ")")
-            base_params.extend(like_params)
-
-        base_where_sql = " AND ".join(base_where)
-        select_sql = f"""
-                SELECT
-                    {_REQUEST_SELECT_COLUMNS}, id
-                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
-                WHERE {base_where_sql}
-                  AND {{window_predicate}}
-                ORDER BY {{order_by}}
-                LIMIT %s
-                """
-
+        matched: list[tuple[int, list[dict[str, Any]]]] = []
         with self._connect() as conn:
-            before_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
-                ),
-                (*base_params, center - window_i, center, branch_lim),
-            ).fetchall()
-            after_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id ASC",
-                ),
-                (*base_params, center, center + window_i, branch_lim),
-            ).fetchall()
+            for event in events:
+                url = str(event.get("url") or "")
+                normalized_domain = _normalize_hostish(
+                    str(event.get("domain") or "")
+                ) or _extract_domain(url)
+                center = int(event.get("ts") or 0) or _now()
+                normalized_client_ip = str(event.get("client_ip") or "").strip()
+                base_where = ["proxy_id = %s"]
+                base_params: list[Any] = [proxy_id]
+                if normalized_client_ip:
+                    base_where.append("client_ip = %s")
+                    base_params.append(normalized_client_ip)
+                like_parts: list[str] = []
+                like_params: list[Any] = []
+                if normalized_domain:
+                    like_parts.append("domain = %s")
+                    like_params.append(normalized_domain)
+                raw_url = url.strip()
+                if raw_url:
+                    like_parts.append("url LIKE %s ESCAPE '\\\\'")
+                    like_params.append(f"%{_escape_like(raw_url)}%")
+                elif normalized_domain:
+                    like_parts.append("url LIKE %s ESCAPE '\\\\'")
+                    like_params.append(f"%{_escape_like(normalized_domain)}%")
+                if like_parts:
+                    base_where.append("(" + " OR ".join(like_parts) + ")")
+                    base_params.extend(like_params)
 
-        normalized_rows = [
-            _normalize_request_row(row)
-            for row in _nearest_rows(
-                list(before_rows) + list(after_rows),
-                center=center,
-                limit=lim,
-                id_index=29,
-            )
-        ]
+                base_where_sql = " AND ".join(base_where)
+                select_sql = f"""
+                        SELECT
+                            {_REQUEST_SELECT_COLUMNS}, id
+                        FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
+                        WHERE {base_where_sql}
+                          AND {{window_predicate}}
+                        ORDER BY {{order_by}}
+                        LIMIT %s
+                        """
+                before_rows = conn.execute(
+                    select_sql.format(
+                        window_predicate="ts BETWEEN %s AND %s",
+                        order_by="ts DESC, id DESC",
+                    ),
+                    (*base_params, center - window_i, center, branch_lim),
+                ).fetchall()
+                after_rows = conn.execute(
+                    select_sql.format(
+                        window_predicate="ts > %s AND ts <= %s",
+                        order_by="ts ASC, id ASC",
+                    ),
+                    (*base_params, center, center + window_i, branch_lim),
+                ).fetchall()
+                matched.append(
+                    (
+                        center,
+                        [
+                            _normalize_request_row(row)
+                            for row in _nearest_rows(
+                                list(before_rows) + list(after_rows),
+                                center=center,
+                                limit=lim,
+                                id_index=29,
+                            )
+                        ],
+                    ),
+                )
+
         icap_map = self._batch_list_icap_by_master_xactions(
-            [str(row.get("master_xaction") or "") for row in normalized_rows],
+            [
+                str(row.get("master_xaction") or "")
+                for _center, rows in matched
+                for row in rows
+            ],
             service=service,
             limit_per_transaction=icap_limit_per_transaction,
         )
 
-        out: list[dict[str, Any]] = []
-        for row in normalized_rows:
-            enriched = dict(row)
-            enriched["related_icap"] = icap_map.get(
-                str(row.get("master_xaction") or "").strip(),
-                [],
-            )
-            enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
-            enriched["correlation_kind"] = "domain_time"
-            out.append(enriched)
+        out: list[list[dict[str, Any]]] = []
+        for center, rows in matched:
+            enriched_rows: list[dict[str, Any]] = []
+            for row in rows:
+                enriched = dict(row)
+                enriched["related_icap"] = icap_map.get(
+                    str(row.get("master_xaction") or "").strip(),
+                    [],
+                )
+                enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
+                enriched["correlation_kind"] = "domain_time"
+                enriched_rows.append(enriched)
+            out.append(enriched_rows)
         return out
 
     def activity_summary(self, *, since: int | None = None) -> dict[str, int]:
@@ -1640,11 +1698,7 @@ class DiagnosticStore:
         # A bounded window must use the (proxy_id, ts) range: production
         # statistics intermittently flipped this aggregate to a full scan of
         # every retained row (466k rows, ~5.5 s instead of ~0.1 s).
-        request_index_hint = (
-            "FORCE INDEX (idx_diagnostic_requests_proxy_ts)"
-            if since is not None
-            else ""
-        )
+        request_index_hint = _request_window_index_hint(since)
 
         with self._connect() as conn:
             req_row = conn.execute(
@@ -1696,11 +1750,19 @@ class DiagnosticStore:
             params.append(int(since))
         where_sql = "WHERE " + " AND ".join(where)
 
+        # bump_mode, client_ip and domain have covering (proxy_id, <column>, ..., ts)
+        # indexes; the other dimensions need the pinned ts range to avoid a
+        # full-retention scan (measured 2.6 s -> 1.1 s for a 7-day window).
+        index_hint = (
+            ""
+            if column in _COVERED_REQUEST_DIMENSIONS
+            else _request_window_index_hint(since)
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT {column} AS value, COUNT(*) AS total, MAX(ts) AS last_seen
-                FROM diagnostic_requests
+                FROM diagnostic_requests {index_hint}
                 {where_sql}
                 GROUP BY {column}
                 ORDER BY total DESC, last_seen DESC
@@ -1827,7 +1889,7 @@ class DiagnosticStore:
                 f"""
                 SELECT
                     {_REQUEST_SELECT_COLUMNS}
-                FROM diagnostic_requests
+                FROM diagnostic_requests {_request_window_index_hint(since)}
                 {where_sql}
                 ORDER BY duration_ms DESC, ts DESC, id DESC
                 LIMIT %s

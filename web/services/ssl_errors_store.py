@@ -700,6 +700,33 @@ class SslErrorsStore:
             for r in rows
         ]
 
+    def window_totals(
+        self,
+        *,
+        since: int | None = None,
+        search: str = "",
+    ) -> dict[str, int]:
+        """Exact bucket/event totals for the filter, independent of any row limit."""
+        self.init_db()
+        where_sql, params = self._filtered_errors_where(since=since, search=search)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*), COALESCE(SUM(count), 0),
+                       COUNT(DISTINCT NULLIF(domain, '')),
+                       COALESCE(SUM(domain = ''), 0)
+                FROM ssl_errors
+                {where_sql}
+                """,
+                params,
+            ).fetchone()
+        return {
+            "bucket_count": int(row[0] or 0) if row else 0,
+            "total_events": int(row[1] or 0) if row else 0,
+            "known_domains": int(row[2] or 0) if row else 0,
+            "unknown_target_buckets": int(row[3] or 0) if row else 0,
+        }
+
     def top_domains(
         self,
         *,

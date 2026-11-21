@@ -37,6 +37,15 @@ from services.ui_support import (
 
 logger = logging.getLogger(__name__)
 
+# Windowed request aggregates without a better grouping index must range-scan
+# (proxy_id, ts): production statistics drift made the optimizer full-scan the
+# proxy's whole retention (466k rows, seconds) for a 24 h window (see 3a4ec5f).
+# Queries grouped by domain or client_ip keep the optimizer's choice, which uses
+# the (proxy_id, domain|client_ip, ts) indexes in group order.
+_REQUESTS_IN_WINDOW = (
+    "diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)"
+)
+
 
 def _pct(part: int, whole: int) -> float:
     if whole <= 0:
@@ -108,24 +117,47 @@ def _correlate_policy_events_with_requests(
     window_seconds: int,
     service: str = "",
 ) -> list[dict[str, Any]]:
+    """Attach nearby request candidates; a lookup failure is logged and flagged.
+
+    The block rows themselves stay valid evidence, so a failed lookup marks the
+    rows ``correlation_unavailable`` (shown as such) instead of failing the pane
+    or reading as "no request match".
+    """
     for row in rows:
         row["correlated_candidates"] = []
-        try:
-            candidates = diagnostic_store.list_request_candidates_for_policy_event(
-                around_ts=int(row.get("ts") or 0),
-                url=str(row.get("url") or ""),
-                client_ip=str(row.get("src_ip") or ""),
-                domain=str(row.get("domain") or ""),
-                window_seconds=max(120, min(int(window_seconds or 300), 900)),
-                limit=3,
-                service=service,
-            )
-            row["correlated_candidates"] = present_transaction_rows(
-                candidates,
-                icap_limit=3,
-            )
-        except Exception:
-            row["correlated_candidates"] = []
+        row["correlation_unavailable"] = False
+    if not rows:
+        return rows
+    try:
+        candidates = diagnostic_store.list_request_candidates_for_policy_events(
+            [
+                {
+                    "ts": int(row.get("ts") or 0),
+                    "url": str(row.get("url") or ""),
+                    "client_ip": str(row.get("src_ip") or ""),
+                    "domain": str(row.get("domain") or ""),
+                }
+                for row in rows
+            ],
+            window_seconds=max(120, min(int(window_seconds or 300), 900)),
+            limit=3,
+            service=service,
+        )
+    except Exception:
+        log_exception_throttled(
+            logger,
+            f"observability_queries.correlate_policy_events.{service or 'webfilter'}",
+            interval_seconds=300.0,
+            message="Observability could not match policy events to request records",
+        )
+        for row in rows:
+            row["correlation_unavailable"] = True
+        return rows
+    for row, row_candidates in zip(rows, candidates, strict=True):
+        row["correlated_candidates"] = present_transaction_rows(
+            row_candidates,
+            icap_limit=3,
+        )
     return rows
 
 
@@ -350,7 +382,7 @@ class ObservabilityQueries:
                     COUNT(DISTINCT client_ip) AS clients,
                     COUNT(DISTINCT domain) AS destinations,
                     COUNT(DISTINCT {tx_sql}) AS transactions
-                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
+                FROM {_REQUESTS_IN_WINDOW}
                 WHERE proxy_id = %s AND ts >= %s AND {_present_value_sql("domain")}
                 """,
                 (proxy_id, int(since)),
@@ -621,10 +653,8 @@ class ObservabilityQueries:
             order_by = "requests DESC, last_seen DESC"
 
         with self._connect() as conn:
-            total_row = conn.execute(
-                f"SELECT COUNT(*) FROM diagnostic_requests {where_sql}",
-                tuple(params),
-            ).fetchone()
+            # The window total is a window aggregate over every reason group,
+            # evaluated before LIMIT, so one scan yields both rows and total.
             rows = conn.execute(
                 f"""
                 SELECT
@@ -632,8 +662,9 @@ class ObservabilityQueries:
                     COUNT(*) AS requests,
                     COUNT(DISTINCT domain) AS domains,
                     COUNT(DISTINCT client_ip) AS clients,
-                    MAX(ts) AS last_seen
-                FROM diagnostic_requests
+                    MAX(ts) AS last_seen,
+                    SUM(COUNT(*)) OVER () AS total_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                 GROUP BY reason
                 ORDER BY {order_by}
@@ -642,7 +673,7 @@ class ObservabilityQueries:
                 (*params, lim),
             ).fetchall()
 
-        total_requests = int(total_row[0] or 0) if total_row else 0
+        total_requests = int(rows[0][5] or 0) if rows else 0
         return [
             {
                 "reason": str(row[0] or ""),
@@ -675,7 +706,12 @@ class ObservabilityQueries:
                 str(row.get("category_label") or row.get("category") or "Other")
             ] += int(row.get("count") or 0)
         return {
-            "summary": presented["summary"],
+            # Totals cover every bucket in the window; the rows are only the
+            # newest ``limit`` buckets.
+            "summary": {
+                **presented["summary"],
+                **store.window_totals(since=since, search=search),
+            },
             "rows": presented["rows"],
             "top_domains": present_ssl_top_domains(
                 store.top_domains(since=since, search=search, limit=10),
@@ -705,55 +741,78 @@ class ObservabilityQueries:
             search_columns=search_columns,
         )
 
-    def security_overview(
+    def _security_filters(
+        self,
+        *,
+        since: int,
+        search: str,
+    ) -> dict[str, tuple[str, list[Any]]]:
+        return {
+            "av": self._security_event_filters(
+                since=since,
+                search=search,
+                base_conditions=["service_family = 'av'"],
+                search_columns=(
+                    "domain",
+                    "url",
+                    "client_ip",
+                    "adapt_summary",
+                    "adapt_details",
+                ),
+            ),
+            "adblock": self._security_event_filters(
+                since=since,
+                search=search,
+                search_columns=("url", "src_ip"),
+            ),
+            "webfilter": self._security_event_filters(
+                since=since,
+                search=search,
+                search_columns=("url", "src_ip", "category"),
+            ),
+        }
+
+    def security_summary(
         self,
         *,
         since: int,
         search: str = "",
-        limit: int = 50,
+        top_limit: int = 10,
     ) -> dict[str, Any]:
-        lim = max(5, min(100, int(limit)))
-        search_value = (search or "").strip().lower()
-        diagnostic_store = get_diagnostic_store()
+        """Window totals and leaders for AV, ad-block and web-filter enforcement.
 
-        av_where_sql, av_params = self._security_event_filters(
-            since=since,
-            search=search,
-            base_conditions=["service_family = 'av'"],
-            search_columns=(
-                "domain",
-                "url",
-                "client_ip",
-                "adapt_summary",
-                "adapt_details",
-            ),
-        )
+        Every count is an aggregate over the whole window (no row sampling).
+        """
+        top_lim = max(1, min(10, int(top_limit)))
+        filters = self._security_filters(since=since, search=search)
+        av_where_sql, av_params = filters["av"]
+        adblock_where_sql, adblock_params = filters["adblock"]
+        webfilter_where_sql, webfilter_params = filters["webfilter"]
         av_finding_sql = self._av_finding_sql()
-
-        adblock_where_sql, adblock_params = self._security_event_filters(
-            since=since,
-            search=search,
-            search_columns=("url", "src_ip"),
-        )
-
-        webfilter_where_sql, webfilter_params = self._security_event_filters(
-            since=since,
-            search=search,
-            search_columns=("url", "src_ip", "category"),
-        )
 
         with self._connect() as conn:
             av_summary_row = conn.execute(
                 f"""
-                SELECT
-                    COUNT(*) AS events,
-                    COALESCE(SUM(CASE WHEN {av_finding_sql} THEN 1 ELSE 0 END), 0) AS findings,
-                    MAX(ts) AS last_seen
+                SELECT COUNT(*) AS events, MAX(ts) AS last_seen
                 FROM diagnostic_icap_events
                 {av_where_sql}
                 """,
                 tuple(av_params),
             ).fetchone()
+            # One scan of the findings yields the per-domain leaders and, as a
+            # window aggregate evaluated before LIMIT, the total finding count.
+            av_target_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS findings, MAX(ts) AS last_seen,
+                       SUM(COUNT(*)) OVER () AS total_findings
+                FROM diagnostic_icap_events
+                {av_where_sql} AND {av_finding_sql}
+                GROUP BY domain
+                ORDER BY findings DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*av_params, min(top_lim, 6)),
+            ).fetchall()
             adblock_summary_row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS blocks, COUNT(DISTINCT src_ip) AS clients, MAX(ts) AS last_seen
@@ -780,7 +839,7 @@ class ObservabilityQueries:
                 ORDER BY blocks DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*adblock_params, min(lim, 10)),
+                (*adblock_params, top_lim),
             ).fetchall()
             top_webfilter_category_rows = conn.execute(
                 f"""
@@ -791,7 +850,7 @@ class ObservabilityQueries:
                 ORDER BY blocks DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*webfilter_params, min(lim, 10)),
+                (*webfilter_params, top_lim),
             ).fetchall()
             top_webfilter_domain_rows = conn.execute(
                 f"""
@@ -803,8 +862,82 @@ class ObservabilityQueries:
                 ORDER BY blocks DESC, last_seen DESC
                 LIMIT %s
                 """,
-                (*webfilter_params, min(lim, 10)),
+                (*webfilter_params, top_lim),
             ).fetchall()
+
+        def _int_at(row: Any, index: int) -> int:
+            return int(row[index] or 0) if row else 0
+
+        adblock_blocks = _int_at(adblock_summary_row, 0)
+        webfilter_blocks = _int_at(webfilter_summary_row, 0)
+        return {
+            "summary": {
+                "av_events": _int_at(av_summary_row, 0),
+                "potential_findings": int(av_target_rows[0][3] or 0)
+                if av_target_rows
+                else 0,
+                "av_last_seen": _int_at(av_summary_row, 1),
+                "adblock_blocks": adblock_blocks,
+                "adblock_clients": _int_at(adblock_summary_row, 1),
+                "adblock_last_seen": _int_at(adblock_summary_row, 2),
+                "webfilter_blocks": webfilter_blocks,
+                "webfilter_clients": _int_at(webfilter_summary_row, 1),
+                "webfilter_categories": _int_at(webfilter_summary_row, 2),
+                "webfilter_last_seen": _int_at(webfilter_summary_row, 3),
+                "combined_blocks": adblock_blocks + webfilter_blocks,
+            },
+            "av_top_targets": [
+                {
+                    "label": str(row[0] or "") or "(no hostname)",
+                    "full_label": str(row[0] or "") or "(no hostname)",
+                    "count": int(row[1] or 0),
+                }
+                for row in av_target_rows
+            ],
+            "adblock_top_domains": [
+                {
+                    "domain": str(row[0] or ""),
+                    "blocks": int(row[1] or 0),
+                    "clients": int(row[2] or 0),
+                    "last_seen": int(row[3] or 0),
+                }
+                for row in top_adblock_domains_rows
+            ],
+            "webfilter_top_categories": [
+                {
+                    "category": str(row[0] or ""),
+                    "blocks": int(row[1] or 0),
+                    "last_seen": int(row[2] or 0),
+                }
+                for row in top_webfilter_category_rows
+            ],
+            "webfilter_top_domains": [
+                {
+                    "domain": str(row[0] or ""),
+                    "blocks": int(row[1] or 0),
+                    "clients": int(row[2] or 0),
+                    "last_seen": int(row[3] or 0),
+                }
+                for row in top_webfilter_domain_rows
+            ],
+        }
+
+    def security_overview(
+        self,
+        *,
+        since: int,
+        search: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        lim = max(5, min(100, int(limit)))
+        search_value = (search or "").strip().lower()
+        diagnostic_store = get_diagnostic_store()
+        payload = self.security_summary(since=since, search=search)
+        filters = self._security_filters(since=since, search=search)
+        adblock_where_sql, adblock_params = filters["adblock"]
+        webfilter_where_sql, webfilter_params = filters["webfilter"]
+
+        with self._connect() as conn:
             adblock_recent_rows = conn.execute(
                 f"""
                 SELECT ts, src_ip, method, url, http_status, list_key, rule_id, decision_action, decision_reason
@@ -813,7 +946,7 @@ class ObservabilityQueries:
                 ORDER BY ts DESC, id DESC
                 LIMIT %s
                 """,
-                (*adblock_params, min(max(lim * 2, 20), 100)),
+                (*adblock_params, lim),
             ).fetchall()
             webfilter_recent_rows = conn.execute(
                 f"""
@@ -823,18 +956,17 @@ class ObservabilityQueries:
                 ORDER BY ts DESC, id DESC
                 LIMIT %s
                 """,
-                (*webfilter_params, min(max(lim * 2, 20), 100)),
+                (*webfilter_params, lim),
             ).fetchall()
 
-        av_raw = diagnostic_store.list_recent_icap(
+        av_findings: list[dict[str, Any]] = []
+        for row in diagnostic_store.list_recent_icap(
             since=since,
             search=search_value,
             service="av",
-            limit=max(lim, 20),
-        )
-        av_enriched: list[dict[str, Any]] = []
-        av_target_counter: Counter[str] = Counter()
-        for row in av_raw:
+            trusted_condition=self._av_finding_sql(),
+            limit=lim,
+        ):
             event = dict(row)
             status = self._av_status(
                 str(event.get("adapt_summary") or ""),
@@ -844,22 +976,10 @@ class ObservabilityQueries:
             event["av_status"] = status
             event["av_status_label"] = meta["label"]
             event["av_status_tone"] = meta["tone"]
-            if status == "finding":
-                av_target_counter[
-                    str(event.get("target_display") or event.get("domain") or "-")
-                ] += 1
-            av_enriched.append(event)
-        av_enriched.sort(
-            key=lambda row: (
-                0
-                if row.get("av_status") == "finding"
-                else (1 if row.get("av_status") == "activity" else 2),
-                -int(row.get("ts") or 0),
-            ),
-        )
-        av_enriched = _correlate_icap_events_with_requests(
+            av_findings.append(event)
+        av_findings = _correlate_icap_events_with_requests(
             diagnostic_store,
-            av_enriched,
+            av_findings,
             icap_limit=3,
         )
 
@@ -890,11 +1010,6 @@ class ObservabilityQueries:
             }
             for row in webfilter_recent_rows
         ]
-        # Recent-event queries intentionally fetch extra rows for presentation work, but
-        # only the visible page needs request/ICAP correlation.  Correlating discarded
-        # rows causes several diagnostic-store queries (and connections) per event.
-        adblock_rows = adblock_rows[:lim]
-        webfilter_rows = webfilter_rows[:lim]
         correlation_window = int(time.time()) - int(since)
         adblock_rows = _correlate_policy_events_with_requests(
             diagnostic_store,
@@ -909,71 +1024,13 @@ class ObservabilityQueries:
         )
 
         return {
-            "summary": {
-                "av_events": int(av_summary_row[0] or 0) if av_summary_row else 0,
-                "potential_findings": int(av_summary_row[1] or 0)
-                if av_summary_row
-                else 0,
-                "av_last_seen": int(av_summary_row[2] or 0) if av_summary_row else 0,
-                "adblock_blocks": int(adblock_summary_row[0] or 0)
-                if adblock_summary_row
-                else 0,
-                "adblock_clients": int(adblock_summary_row[1] or 0)
-                if adblock_summary_row
-                else 0,
-                "adblock_last_seen": int(adblock_summary_row[2] or 0)
-                if adblock_summary_row
-                else 0,
-                "webfilter_blocks": int(webfilter_summary_row[0] or 0)
-                if webfilter_summary_row
-                else 0,
-                "webfilter_clients": int(webfilter_summary_row[1] or 0)
-                if webfilter_summary_row
-                else 0,
-                "webfilter_categories": int(webfilter_summary_row[2] or 0)
-                if webfilter_summary_row
-                else 0,
-                "webfilter_last_seen": int(webfilter_summary_row[3] or 0)
-                if webfilter_summary_row
-                else 0,
-                "combined_blocks": (
-                    int(adblock_summary_row[0] or 0) if adblock_summary_row else 0
-                )
-                + (int(webfilter_summary_row[0] or 0) if webfilter_summary_row else 0),
-            },
-            "av_rows": present_icap_events(av_enriched, limit=lim),
-            "av_top_targets": _badge_rows(av_target_counter, limit=6),
-            "adblock_rows": adblock_rows[:lim],
-            "adblock_top_domains": [
-                {
-                    "domain": str(row[0] or ""),
-                    "blocks": int(row[1] or 0),
-                    "clients": int(row[2] or 0),
-                    "last_seen": int(row[3] or 0),
-                }
-                for row in top_adblock_domains_rows
-            ],
-            "webfilter_rows": webfilter_rows[:lim],
-            "webfilter_top_categories": [
-                {
-                    "category": str(row[0] or ""),
-                    "blocks": int(row[1] or 0),
-                    "last_seen": int(row[2] or 0),
-                }
-                for row in top_webfilter_category_rows
-            ],
-            "webfilter_top_domains": [
-                {
-                    "domain": str(row[0] or ""),
-                    "blocks": int(row[1] or 0),
-                    "clients": int(row[2] or 0),
-                    "last_seen": int(row[3] or 0),
-                }
-                for row in top_webfilter_domain_rows
-            ],
+            **payload,
+            "av_rows": present_icap_events(av_findings, limit=lim),
+            "adblock_rows": adblock_rows,
+            "webfilter_rows": webfilter_rows,
             "notes": [
-                "AV findings are best-effort string matches over the AV ICAP trace stream. If the scanner logs only generic allow/clean messages, suspicious hits may not appear here.",
-                "Adblock and web-filter rows come from explicit block logs, so they are stronger evidence of enforcement than ICAP activity counts alone.",
+                "AV findings are keyword matches (found, EICAR, malware, virus, infect, trojan, blocked, deny) in the AV ICAP log. A scanner that logs only generic verdicts can block files without appearing here.",
+                "Ad-block and web-filter rows come from the explicit block logs, so they are direct evidence of enforcement.",
             ],
         }
 
@@ -1058,7 +1115,7 @@ class ObservabilityQueries:
                     COALESCE(SUM(CASE WHEN {hit_sql} THEN 1 ELSE 0 END), 0) AS hit_requests,
                     COALESCE(SUM(CASE WHEN {hit_sql} THEN bytes ELSE 0 END), 0) AS hit_bytes,
                     COALESCE(SUM(CASE WHEN NOT {hit_sql} THEN bytes ELSE 0 END), 0) AS miss_bytes
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                 """,
                 tuple(params),
@@ -1093,6 +1150,8 @@ class ObservabilityQueries:
             base_conditions=[_present_value_sql("client_ip")],
             search_columns=("client_ip", "domain", "url"),
         )
+        # Not pinned: (proxy_id, client_ip, ts, bytes) serves the total as an
+        # index skip scan and the per-client grouping in index order.
         with self._connect() as conn:
             total_row = conn.execute(
                 f"SELECT COALESCE(SUM(bytes), 0) FROM diagnostic_requests {where_sql}",
@@ -1176,7 +1235,7 @@ class ObservabilityQueries:
             rows = conn.execute(
                 f"""
                 SELECT domain, COUNT(*) AS requests, COUNT(DISTINCT client_ip) AS clients, COALESCE(SUM(bytes), 0) AS bytes_total, MAX(ts) AS last_seen
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                 GROUP BY domain
                 ORDER BY requests DESC, bytes_total DESC, last_seen DESC
@@ -1521,7 +1580,7 @@ class ObservabilityQueries:
                     COALESCE(SUM(bytes), 0) AS bytes_total,
                     COALESCE(SUM(CASE WHEN {hit_sql} THEN bytes ELSE 0 END), 0) AS cache_hit_bytes,
                     MAX(ts) AS last_seen
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                 GROUP BY group_key
                 ORDER BY bytes_total DESC, requests DESC, last_seen DESC
@@ -1846,7 +1905,7 @@ class ObservabilityQueries:
                 f"""
                 SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                        MAX(COALESCE(response_server, '')) AS sample_server
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                   AND (
                     LOWER(COALESCE(response_cf_mitigated, '')) = 'challenge'
@@ -1862,7 +1921,7 @@ class ObservabilityQueries:
                 f"""
                 SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                        MAX(COALESCE(response_alt_svc, '')) AS sample_alt_svc
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                   AND LOWER(COALESCE(response_alt_svc, '')) REGEXP '(^|[^a-z0-9])h3[-=]'
                 GROUP BY domain
@@ -1875,7 +1934,7 @@ class ObservabilityQueries:
                 f"""
                 SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                        MAX(COALESCE(response_content_type, '')) AS sample_type
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                   AND result_code LIKE 'TCP_MISS_ABORTED/%%'
                   AND (
@@ -1915,6 +1974,8 @@ class ObservabilityQueries:
                 """,
                 (*icap_params, query_lim),
             ).fetchall()
+            # Not pinned: the (proxy_id, result_code, ts) index serves this
+            # IN list ~50x better than the ts range.
             policy_denial_rows = conn.execute(
                 f"""
                 SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
@@ -1938,7 +1999,7 @@ class ObservabilityQueries:
                        MAX(ts) AS last_seen, MAX(url) AS sample_url,
                        MAX(result_code) AS sample_result,
                        MAX(COALESCE(response_server, '')) AS sample_server
-                FROM diagnostic_requests
+                FROM {_REQUESTS_IN_WINDOW}
                 {where_sql}
                   AND http_status IN (502, 503, 504)
                   AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
@@ -2008,7 +2069,7 @@ class ObservabilityQueries:
                     f"""
                     SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                            MAX(COALESCE(response_server, '')) AS sample_server
-                    FROM diagnostic_requests
+                    FROM {_REQUESTS_IN_WINDOW}
                     {source_where_sql}
                       AND (
                         LOWER(COALESCE(response_cf_mitigated, '')) = 'challenge'
@@ -2049,7 +2110,7 @@ class ObservabilityQueries:
                            MAX(ts) AS last_seen, MAX(url) AS sample_url,
                            MAX(result_code) AS sample_result,
                            MAX(COALESCE(response_server, '')) AS sample_server
-                    FROM diagnostic_requests
+                    FROM {_REQUESTS_IN_WINDOW}
                     {source_where_sql}
                       AND http_status IN (502, 503, 504)
                       AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
@@ -2067,7 +2128,7 @@ class ObservabilityQueries:
                     f"""
                     SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                            MAX(COALESCE(response_alt_svc, '')) AS sample_alt_svc
-                    FROM diagnostic_requests
+                    FROM {_REQUESTS_IN_WINDOW}
                     {source_where_sql}
                       AND LOWER(COALESCE(response_alt_svc, '')) REGEXP '(^|[^a-z0-9])h3[-=]'
                     GROUP BY domain
@@ -2083,7 +2144,7 @@ class ObservabilityQueries:
                     f"""
                     SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients, MAX(ts) AS last_seen,
                            MAX(COALESCE(response_content_type, '')) AS sample_type
-                    FROM diagnostic_requests
+                    FROM {_REQUESTS_IN_WINDOW}
                     {source_where_sql}
                       AND result_code LIKE 'TCP_MISS_ABORTED/%%'
                       AND (
@@ -2323,12 +2384,24 @@ class ObservabilityQueries:
                         evidence=str(
                             row.get("reason")
                             or row.get("category_label")
-                            or "SSL error bucket"
+                            or (
+                                f"{row.get('buckets') or 0} error buckets: "
+                                f"{row.get('categories')}"
+                                if row.get("categories")
+                                else "SSL error bucket"
+                            )
                         ),
                     ),
                 )
         except Exception:
-            pass
+            # SSL candidates are one suggestion source; the request/ICAP
+            # suggestions above remain valid, so log and keep them.
+            log_exception_throttled(
+                logger,
+                "observability_queries.remediation.ssl_candidates",
+                interval_seconds=300.0,
+                message="Remediation could not load SSL exclusion candidates",
+            )
 
         if search_value:
             suggestions = [
@@ -2479,6 +2552,7 @@ class ObservabilityQueries:
         resolve_hostnames: bool = False,
         summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Only what the overview pane renders; the specialist panes own the rest."""
         lim = max(3, min(10, int(limit)))
         summary_payload = summary or self.summary(since=since)
         total_requests = int(summary_payload.get("request_records") or 0)
@@ -2506,17 +2580,10 @@ class ObservabilityQueries:
                 sort="requests",
             ),
             "ssl": self.ssl_overview(since=since, search=search, limit=lim),
-            "security": self.security_overview(since=since, search=search, limit=lim),
-            "performance": self.performance_overview(
-                since=since,
-                limit=lim,
-                summary=summary_payload,
-            ),
-            "remediation": self.remediation_overview(
-                since=since,
-                search=search,
-                limit=lim,
-                summary=summary_payload,
+            "security": self.security_summary(since=since, search=search),
+            "slow_requests": present_transaction_rows(
+                get_diagnostic_store().slowest_requests(since=since, limit=lim),
+                icap_limit=0,
             ),
         }
 
