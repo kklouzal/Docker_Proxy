@@ -329,44 +329,10 @@ class ObservabilityQueries:
             params.extend(search_params)
         return "WHERE " + " AND ".join(where), params
 
-    @staticmethod
-    def _av_status(summary: str, details: str) -> str:
-        haystack = f"{summary} {details}".lower()
-        if any(
-            token in haystack
-            for token in (
-                "found",
-                "eicar",
-                "malware",
-                "virus",
-                "infect",
-                "trojan",
-                "blocked",
-                "deny",
-            )
-        ):
-            return "finding"
-        if any(token in haystack for token in ("clean", "allow", "passed")):
-            return "clean"
-        return "activity"
-
-    @staticmethod
-    def _av_status_meta(status: str) -> dict[str, str]:
-        normalized = (status or "activity").strip().lower()
-        if normalized == "finding":
-            return {"label": "Potential finding", "tone": "danger"}
-        if normalized == "clean":
-            return {"label": "Clean / allowed", "tone": "ok"}
-        return {"label": "General AV activity", "tone": "ghost"}
-
-    @staticmethod
-    def _av_finding_sql() -> str:
-        haystack = "LOWER(CONCAT(COALESCE(adapt_summary, ''), ' ', COALESCE(adapt_details, '')))"
-        return (
-            f"({haystack} LIKE '%%found%%' OR {haystack} LIKE '%%eicar%%' OR {haystack} LIKE '%%malware%%' "
-            f"OR {haystack} LIKE '%%virus%%' OR {haystack} LIKE '%%infect%%' OR {haystack} LIKE '%%trojan%%' "
-            f"OR {haystack} LIKE '%%blocked%%' OR {haystack} LIKE '%%deny%%')"
-        )
+    # An AV detection is an ICAP event whose scanner sent X-Infection-Found
+    # (ClamAV RESPMOD helper block page, c-icap virus_scan block); ingestion
+    # stores its Threat= name in av_threat.
+    _AV_FINDING_SQL = "av_threat <> ''"
 
     def summary(self, *, since: int) -> dict[str, Any]:
         proxy_id = get_proxy_id()
@@ -758,6 +724,7 @@ class ObservabilityQueries:
                     "client_ip",
                     "adapt_summary",
                     "adapt_details",
+                    "av_threat",
                 ),
             ),
             "adblock": self._security_event_filters(
@@ -788,7 +755,6 @@ class ObservabilityQueries:
         av_where_sql, av_params = filters["av"]
         adblock_where_sql, adblock_params = filters["adblock"]
         webfilter_where_sql, webfilter_params = filters["webfilter"]
-        av_finding_sql = self._av_finding_sql()
 
         with self._connect() as conn:
             av_summary_row = conn.execute(
@@ -806,7 +772,7 @@ class ObservabilityQueries:
                 SELECT domain, COUNT(*) AS findings, MAX(ts) AS last_seen,
                        SUM(COUNT(*)) OVER () AS total_findings
                 FROM diagnostic_icap_events
-                {av_where_sql} AND {av_finding_sql}
+                {av_where_sql} AND {self._AV_FINDING_SQL}
                 GROUP BY domain
                 ORDER BY findings DESC, last_seen DESC
                 LIMIT %s
@@ -870,12 +836,11 @@ class ObservabilityQueries:
 
         adblock_blocks = _int_at(adblock_summary_row, 0)
         webfilter_blocks = _int_at(webfilter_summary_row, 0)
+        av_findings = int(av_target_rows[0][3] or 0) if av_target_rows else 0
         return {
             "summary": {
                 "av_events": _int_at(av_summary_row, 0),
-                "potential_findings": int(av_target_rows[0][3] or 0)
-                if av_target_rows
-                else 0,
+                "potential_findings": av_findings,
                 "av_last_seen": _int_at(av_summary_row, 1),
                 "adblock_blocks": adblock_blocks,
                 "adblock_clients": _int_at(adblock_summary_row, 1),
@@ -884,7 +849,7 @@ class ObservabilityQueries:
                 "webfilter_clients": _int_at(webfilter_summary_row, 1),
                 "webfilter_categories": _int_at(webfilter_summary_row, 2),
                 "webfilter_last_seen": _int_at(webfilter_summary_row, 3),
-                "combined_blocks": adblock_blocks + webfilter_blocks,
+                "combined_blocks": av_findings + adblock_blocks + webfilter_blocks,
             },
             "av_top_targets": [
                 {
@@ -959,27 +924,15 @@ class ObservabilityQueries:
                 (*webfilter_params, lim),
             ).fetchall()
 
-        av_findings: list[dict[str, Any]] = []
-        for row in diagnostic_store.list_recent_icap(
-            since=since,
-            search=search_value,
-            service="av",
-            trusted_condition=self._av_finding_sql(),
-            limit=lim,
-        ):
-            event = dict(row)
-            status = self._av_status(
-                str(event.get("adapt_summary") or ""),
-                str(event.get("adapt_details") or ""),
-            )
-            meta = self._av_status_meta(status)
-            event["av_status"] = status
-            event["av_status_label"] = meta["label"]
-            event["av_status_tone"] = meta["tone"]
-            av_findings.append(event)
         av_findings = _correlate_icap_events_with_requests(
             diagnostic_store,
-            av_findings,
+            diagnostic_store.list_recent_icap(
+                since=since,
+                search=search_value,
+                service="av",
+                trusted_condition=self._AV_FINDING_SQL,
+                limit=lim,
+            ),
             icap_limit=3,
         )
 
@@ -1029,7 +982,7 @@ class ObservabilityQueries:
             "adblock_rows": adblock_rows,
             "webfilter_rows": webfilter_rows,
             "notes": [
-                "AV findings are keyword matches (found, EICAR, malware, virus, infect, trojan, blocked, deny) in the AV ICAP log. A scanner that logs only generic verdicts can block files without appearing here.",
+                "AV detections are the threats the scanner reported when it blocked a response or upload (ICAP X-Infection-Found). A download already streaming to the client when the scanner finds a threat is cut off instead and is not listed here; the ClamAV helper log records it.",
                 "Ad-block and web-filter rows come from the explicit block logs, so they are direct evidence of enforcement.",
             ],
         }
@@ -1266,13 +1219,13 @@ class ObservabilityQueries:
         where_sql, params = self._security_event_filters(
             since=since,
             search=search,
-            base_conditions=["service_family = 'av'", self._av_finding_sql()],
-            search_columns=("domain", "url", "client_ip", "adapt_summary"),
+            base_conditions=["service_family = 'av'", self._AV_FINDING_SQL],
+            search_columns=("domain", "url", "client_ip", "av_threat"),
         )
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT domain, client_ip, COUNT(*) AS attempts, MAX(ts) AS last_seen, MAX(adapt_summary) AS sample
+                SELECT domain, client_ip, COUNT(*) AS attempts, MAX(ts) AS last_seen, MAX(av_threat) AS sample
                 FROM diagnostic_icap_events
                 {where_sql}
                 GROUP BY domain, client_ip

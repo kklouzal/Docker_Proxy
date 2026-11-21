@@ -220,6 +220,27 @@ def _header_text(value: str, *, max_len: int) -> str:
     return _safe_text(unquote(value, errors="replace"), max_len=max_len)
 
 
+# Squid logs the ICAP ``X-Infection-Found`` response header (sent by the ClamAV
+# RESPMOD helper and by c-icap virus_scan when they block a detection) as the
+# last icapobserve field. Its ``Threat=`` parameter is the scanner signature.
+_INFECTION_THREAT_RE = re.compile(r"(?:^|;)\s*Threat\s*=\s*([^;]*)", re.IGNORECASE)
+
+
+def _infection_threat(value: str) -> str:
+    """Return the threat name of a logged ``X-Infection-Found`` header.
+
+    Empty when the header is absent. A header without a usable ``Threat=``
+    parameter is still a detection and yields ``Unknown`` (the c-icap
+    convention for an unnamed threat).
+    """
+    header = _header_text(value, max_len=1024)
+    if not header:
+        return ""
+    match = _INFECTION_THREAT_RE.search(header)
+    threat = match.group(1).strip() if match else ""
+    return (threat or "Unknown")[:255]
+
+
 def _parse_status(result_code: str) -> int:
     raw = _safe_text(result_code, max_len=96)
     if "/" not in raw:
@@ -473,6 +494,7 @@ def _normalize_icap_row(row: Any) -> dict[str, Any]:
         "icap_io_time_ms": _safe_int(row[21], 0) if len(row) > 21 else 0,
         "icap_bytes_sent": _safe_int(row[22], 0) if len(row) > 22 else 0,
         "icap_bytes_received": _safe_int(row[23], 0) if len(row) > 23 else 0,
+        "av_threat": _safe_text(row[24] if len(row) > 24 else "", max_len=255),
     }
     data["service_label"] = _service_label(data["service_family"])
     data["target_display"] = (
@@ -626,6 +648,7 @@ class DiagnosticStore:
                                 icap_io_time_ms INT NOT NULL DEFAULT 0,
                                 icap_bytes_sent BIGINT NOT NULL DEFAULT 0,
                                 icap_bytes_received BIGINT NOT NULL DEFAULT 0,
+                                av_threat VARCHAR(255) NOT NULL DEFAULT '',
                                 raw TEXT NOT NULL,
                                 created_ts BIGINT NOT NULL,
                                 UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
@@ -706,6 +729,10 @@ class DiagnosticStore:
                             (
                                 "icap_bytes_received",
                                 "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_received BIGINT NOT NULL DEFAULT 0 AFTER icap_bytes_sent",
+                            ),
+                            (
+                                "av_threat",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN av_threat VARCHAR(255) NOT NULL DEFAULT '' AFTER icap_bytes_received",
                             ),
                         ):
                             exists = conn.execute(
@@ -1218,6 +1245,9 @@ class DiagnosticStore:
             if len(row) > extended_start + 6
             else 0
         )
+        av_threat = _infection_threat(
+            row[extended_start + 7] if len(row) > extended_start + 7 else ""
+        )
         icap_metadata_parts = []
         if icap_service:
             icap_metadata_parts.append(f"service={icap_service}")
@@ -1263,6 +1293,7 @@ class DiagnosticStore:
             "icap_io_time_ms": icap_io_time_ms,
             "icap_bytes_sent": icap_bytes_sent,
             "icap_bytes_received": icap_bytes_received,
+            "av_threat": av_threat,
             "raw": _bounded_raw_line(line),
         }
 
@@ -1306,6 +1337,7 @@ class DiagnosticStore:
             int(row["icap_io_time_ms"]),
             int(row["icap_bytes_sent"]),
             int(row["icap_bytes_received"]),
+            str(row["av_threat"]),
             str(row["raw"]),
             int(_now()),
         )
@@ -1380,8 +1412,8 @@ class DiagnosticStore:
                 proxy_id, event_key, ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                 adapt_summary, adapt_details, host, user_agent, sni, exclusion_rule, ssl_exception,
                 webfilter_allow, cache_bypass, service_family, icap_service, icap_outcome, icap_status,
-                icap_response_time_ms, icap_io_time_ms, icap_bytes_sent, icap_bytes_received, raw, created_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                icap_response_time_ms, icap_io_time_ms, icap_bytes_sent, icap_bytes_received, av_threat, raw, created_ts
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             batch.rows,
         )
@@ -1455,10 +1487,10 @@ class DiagnosticStore:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
                 "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\' OR LOWER(icap_service) LIKE %s ESCAPE '\\\\' OR LOWER(icap_outcome) LIKE %s ESCAPE '\\\\'"
+                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\' OR LOWER(icap_service) LIKE %s ESCAPE '\\\\' OR LOWER(icap_outcome) LIKE %s ESCAPE '\\\\' OR LOWER(av_threat) LIKE %s ESCAPE '\\\\'"
                 ")",
             )
-            params.extend([like] * 10)
+            params.extend([like] * 11)
         where_sql = "WHERE " + " AND ".join(where)
         lim = max(1, min(200, int(limit)))
 
@@ -1470,7 +1502,7 @@ class DiagnosticStore:
                     adapt_summary, adapt_details, host, user_agent, sni,
                     exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
                     icap_service, icap_outcome, icap_status, icap_response_time_ms,
-                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, av_threat
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
@@ -1519,7 +1551,7 @@ class DiagnosticStore:
                     adapt_summary, adapt_details, host, user_agent, sni,
                     exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
                     icap_service, icap_outcome, icap_status, icap_response_time_ms,
-                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, av_threat
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
@@ -1958,7 +1990,7 @@ class DiagnosticStore:
                     adapt_summary, adapt_details, host, user_agent, sni,
                     exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
                     icap_service, icap_outcome, icap_status, icap_response_time_ms,
-                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, av_threat
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY icap_time_ms DESC, ts DESC, id DESC

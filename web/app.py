@@ -8228,8 +8228,8 @@ def observability_export():
                         if privacy
                         else row.get("client_ip", ""),
                         row.get("target_display", ""),
-                        row.get("adapt_summary", ""),
-                        row.get("av_status_label", ""),
+                        row.get("av_threat", ""),
+                        "BLOCKED",
                     ],
                 )
             for row in payload.get("adblock_rows", []):
@@ -8629,7 +8629,7 @@ def _observability_metrics_response():
         )
         emit(
             "docker_proxy_observability_malware_attempts",
-            "Potential AV findings in the selected window.",
+            "AV detections (scanner-reported threats) in the selected window.",
             security_summary.get("potential_findings"),
         )
 

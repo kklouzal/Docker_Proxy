@@ -249,7 +249,7 @@
       <div class="stat compact-stat"><div class="stat-k">Cache hit rate</div><div class="stat-v">{{ pct(payload.summary.cache_hit_pct) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Clients</div><div class="stat-v">{{ num(payload.summary.clients) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">SSL/TLS error events</div><div class="stat-v">{{ num(payload.ssl.summary.total_events) }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ num(payload.security.summary.potential_findings) }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">AV detections</div><div class="stat-v">{{ num(payload.security.summary.potential_findings) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Ad-block and web-filter blocks</div><div class="stat-v">{{ num(payload.security.summary.combined_blocks) }}</div></div>
     </div>
   </div>
@@ -327,10 +327,10 @@
         </div>
       </div>
       <div>
-        <div class="small"><strong>Potential AV findings by domain</strong></div>
+        <div class="small"><strong>AV detections by domain</strong></div>
         <div class="hero-badges">
           {% for row in payload.security.av_top_targets %}<span class="badge danger" title="{{ row.full_label }}">{{ row.label }} &middot; {{ num(row.count) }}</span>{% endfor %}
-          {% if not payload.security.av_top_targets %}<span class="small muted">No potential AV findings in this window.</span>{% endif %}
+          {% if not payload.security.av_top_targets %}<span class="small muted">No AV detections in this window.</span>{% endif %}
         </div>
       </div>
       <div>
@@ -536,7 +536,7 @@
   <div class="card-body content-stack">
     <div class="summary-grid">
       <div class="stat compact-stat"><div class="stat-k">AV scans</div><div class="stat-v">{{ num(payload.summary.av_events) }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ num(payload.summary.potential_findings) }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">AV detections</div><div class="stat-v">{{ num(payload.summary.potential_findings) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Ad-block blocks</div><div class="stat-v">{{ num(payload.summary.adblock_blocks) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Web-filter blocks</div><div class="stat-v">{{ num(payload.summary.webfilter_blocks) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Blocked categories</div><div class="stat-v">{{ num(payload.summary.webfilter_categories) }}</div></div>
@@ -547,7 +547,7 @@
 </section>
 
 <section class="card">
-  <div class="card-header"><h2 class="card-title">Potential AV findings</h2><span class="badge">{{ payload.av_rows|length }} of {{ num(payload.summary.potential_findings) }}</span></div>
+  <div class="card-header"><h2 class="card-title">AV detections</h2><span class="badge">{{ payload.av_rows|length }} of {{ num(payload.summary.potential_findings) }}</span></div>
   <div class="card-body content-stack">
     {% if payload.av_top_targets %}
     <div class="hero-badges">
@@ -556,14 +556,14 @@
     {% endif %}
     {% if payload.av_rows %}
     <div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col" class="num">Time</th><th scope="col">Client</th><th scope="col">Target</th><th scope="col">Scanner detail</th><th scope="col" class="num">Scan time</th><th scope="col">Matched request</th><th scope="col" class="num">Actions</th></tr></thead>
+      <thead><tr><th scope="col" class="num">Time</th><th scope="col">Client</th><th scope="col">Target</th><th scope="col">Threat</th><th scope="col" class="num">Scan time</th><th scope="col">Matched request</th><th scope="col" class="num">Actions</th></tr></thead>
       <tbody>
         {% for row in payload.av_rows %}
         <tr>
           <td class="num"><span class="small obs-nowrap">{{ fmt_ts(row.ts) }}</span></td>
           <td class="mono">{{ row.client_ip }}</td>
           <td><div class="stack-sm"><span class="mono obs-truncate" title="{{ row.target_display }}">{{ row.target_display }}</span>{{ url_line(row.url) }}</div></td>
-          <td><div class="stack-sm">{% if row.adapt_summary_short %}<span class="small obs-clamp" title="{{ row.adapt_summary }}">{{ row.adapt_summary_short }}</span>{% endif %}{% if row.adapt_details_short %}<span class="small muted obs-clamp" title="{{ row.adapt_details }}">{{ row.adapt_details_short }}</span>{% endif %}</div></td>
+          <td><div class="stack-sm"><span class="mono obs-truncate" title="{{ row.av_threat }}">{{ row.av_threat }}</span>{% if row.icap_service %}<span class="small muted">{{ row.icap_service }}</span>{% endif %}</div></td>
           <td class="num">{{ num(row.icap_time_ms) }} ms</td>
           <td>{% if row.correlated_request %}<span class="small">{{ row.correlated_request.method }} {{ row.correlated_request.result_code }} &middot; {{ bytes(row.correlated_request.bytes) }}</span>{% else %}<span class="small muted">No request record</span>{% endif %}</td>
           <td class="num"><div class="obs-actions"><a class="btn" href="{{ url_for('observability', pane='security', q=row.target_display, window=window) }}">Focus</a><a class="btn" href="{{ url_for('clamav', window=window) }}">ClamAV</a></div></td>
@@ -571,7 +571,7 @@
         {% endfor %}
       </tbody>
     </table></div>
-    {% else %}<div class="surface-note small">No potential AV findings matched this window{% if search %} and search{% endif %}. {{ num(payload.summary.av_events) }} AV scans were logged.</div>{% endif %}
+    {% else %}<div class="surface-note small">No AV detections matched this window{% if search %} and search{% endif %}. {{ num(payload.summary.av_events) }} AV scans were logged.</div>{% endif %}
   </div>
 </section>
 
@@ -694,7 +694,7 @@
       <div class="stat compact-stat"><div class="stat-k">Traffic</div><div class="stat-v">{{ bytes(payload.cache_savings.total_bytes) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Served from cache ({{ pct(payload.cache_savings.byte_hit_pct) }})</div><div class="stat-v">{{ bytes(payload.cache_savings.estimated_saved_bytes) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Web-filter blocks</div><div class="stat-v">{{ num(payload.security.summary.webfilter_blocks) }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Potential AV findings</div><div class="stat-v">{{ num(payload.security.summary.potential_findings) }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">AV detections</div><div class="stat-v">{{ num(payload.security.summary.potential_findings) }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Audit events</div><div class="stat-v">{% if payload.audit and payload.audit.error %}unavailable{% else %}{{ num(payload.audit.summary.events if payload.audit else 0) }}{% endif %}</div></div>
     </div>
   </div>
@@ -750,15 +750,15 @@
     </div>
   </section>
   <section class="card split-right">
-    <div class="card-header"><h2 class="card-title">Potential malware</h2><span class="badge">AV findings</span></div>
+    <div class="card-header"><h2 class="card-title">Malware detections</h2><span class="badge">AV detections</span></div>
     <div class="card-body">
       <div class="table-wrap"><table class="table">
-        <thead><tr><th scope="col">Domain</th><th scope="col">Client</th><th scope="col" class="num">Findings</th><th scope="col" class="num">Last seen</th></tr></thead>
+        <thead><tr><th scope="col">Domain</th><th scope="col">Client</th><th scope="col" class="num">Detections</th><th scope="col" class="num">Last seen</th></tr></thead>
         <tbody>
         {% for row in payload.top_malware_attempts %}
           <tr><td class="mono"><span class="obs-truncate" title="{{ row.domain }}">{{ row.domain or '-' }}</span></td><td class="mono">{{ row.client_label }}</td><td class="num">{{ num(row.attempts) }}</td><td class="num"><span class="small obs-nowrap">{{ fmt_ts(row.last_seen) }}</span></td></tr>
         {% else %}
-          <tr><td colspan="4" class="muted">No potential AV findings in this window.</td></tr>
+          <tr><td colspan="4" class="muted">No AV detections in this window.</td></tr>
         {% endfor %}
         </tbody>
       </table></div>

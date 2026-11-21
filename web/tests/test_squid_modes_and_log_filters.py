@@ -623,6 +623,31 @@ def test_render_icap_include_keeps_body_methods_when_preview_is_disabled() -> No
     )
 
 
+def test_icapobserve_logformat_is_identical_in_every_writer() -> None:
+    """Template, entrypoint and SquidController emit one icapobserve layout.
+
+    Its last field logs the scanner's X-Infection-Found ICAP response header,
+    the authoritative AV detection signal the diagnostic ingestion stores.
+    """
+    import re
+
+    from services.squid_core import SquidController  # type: ignore
+
+    repo_root = Path(__file__).resolve().parents[2]
+    template = (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8")
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    template_line = re.search(r"^logformat icapobserve .*$", template, re.MULTILINE)
+    entrypoint_line = re.search(
+        r"^SAFE_ICAP_OBSERVE_FMT='([^']*)'$", entrypoint, re.MULTILINE
+    )
+    assert template_line is not None
+    assert entrypoint_line is not None
+    controller_line = SquidController._ICAP_OBSERVE_LOGFORMAT.replace("\t", "\\t")
+
+    assert template_line.group(0) == entrypoint_line.group(1) == controller_line
+    assert controller_line.endswith("\\t%icap::<st\\t%{X-Infection-Found}icap::<h")
+
+
 def test_repo_template_includes_cache_first_defaults() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / "squid" / "squid.conf.template").read_text(encoding="utf-8")

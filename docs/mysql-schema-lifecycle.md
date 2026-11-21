@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 38.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 39.
 
 ## Version ownership
 
@@ -44,6 +44,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 36 | `retire_adblock_cache_stats` | Drops `adblock_cache_stats` (`DROP TABLE IF EXISTS`; seeded with zero hits/misses/evictions and never read or updated) and deletes the write-only `adblock_proxy_meta` keys `cache_last_flush` / `cache_current_size`. `cache_flush_requested` stayed at the time; the cache-flush request was later retired, so nothing reads or seeds it and leftover rows are inert. |
 | 37 | `saml_assertion_replay_cache` | `saml_assertion_replay` single-use claims of accepted SAML assertions (primary key: SHA-256 of IdP entity ID plus assertion ID) with the `expires_ts` index used by control-plane housekeeping to prune expired claims. It has no `proxy_id` column, so proxy lifecycle discovery never treats it as proxy-scoped. |
 | 38 | `saml_metadata_refresh_schedule` | Adds `saml_auth_profiles.refresh_failures` (consecutive failed metadata refreshes) and `next_refresh_ts` (earliest next background refresh; `0` = due now) for the Admin UI's automatic SAML metadata refresh. Existing rows start due, so an enabled provider refreshes on the first background pass after the upgrade. |
+| 39 | `diagnostic_icap_av_threat` | Adds `diagnostic_icap_events.av_threat`, the threat name from the ICAP `X-Infection-Found` response header (Squid `%{X-Infection-Found}icap::<h`) that the ClamAV RESPMOD helper and c-icap virus_scan send when they block a detection. Non-null with an empty-string default: existing rows and ICAP log lines written before the field was added record no detection. |
 
 ## Lifecycle model
 

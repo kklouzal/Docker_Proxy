@@ -67,7 +67,14 @@ def _icap_line(
     icap_time_ms: int,
     adapt_summary: str,
     adapt_details: str,
+    threat: str = "",
 ) -> str:
+    """Build an icapobserve line; ``threat`` uses the current extended layout.
+
+    Without a threat the line keeps the legacy 15-field layout, which still
+    parses; with one it carries the AV RESPMOD metadata and the logged
+    ``X-Infection-Found`` header (URL-escaped, as Squid writes it).
+    """
     fields = [
         str(ts),
         master_xaction,
@@ -85,6 +92,19 @@ def _icap_line(
         "",
         "",
     ]
+    if threat:
+        fields.extend(
+            [
+                "av_resp",
+                "ICAP_MOD",
+                "200",
+                str(icap_time_ms),
+                str(icap_time_ms),
+                "719",
+                "336",
+                f"Type=0;%20Resolution=2;%20Threat={threat};",
+            ]
+        )
     return "\t".join(fields)
 
 
@@ -1442,8 +1462,9 @@ def test_observability_queries_surface_ssl_security_and_performance(
             method="GET",
             url="https://malware.example/dropper.exe",
             icap_time_ms=44,
-            adapt_summary="virus_scan RESPMOD Eicar FOUND",
-            adapt_details="Malware blocked by scanner",
+            adapt_summary="",
+            adapt_details="",
+            threat="Eicar-Signature",
         ),
     )
 
@@ -1559,7 +1580,8 @@ def test_observability_queries_surface_ssl_security_and_performance(
     assert security_payload["summary"]["potential_findings"] == 1
     assert security_payload["summary"]["adblock_blocks"] == 4
     assert security_payload["summary"]["webfilter_blocks"] == 1
-    assert security_payload["av_rows"][0]["av_status_label"] == "Potential finding"
+    assert security_payload["av_rows"][0]["av_threat"] == "Eicar-Signature"
+    assert security_payload["av_rows"][0]["icap_service"] == "av_resp"
     assert (
         security_payload["av_rows"][0]["correlated_request"]["client_ip"]
         == "192.0.2.40"
@@ -1591,7 +1613,8 @@ def test_observability_queries_surface_ssl_security_and_performance(
     overview = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False)
     assert overview["summary"]["request_records"] == 3
     assert overview["ssl"]["summary"]["total_events"] == 5
-    assert overview["security"]["summary"]["combined_blocks"] == 5
+    # 1 AV detection + 4 ad-block blocks + 1 web-filter block.
+    assert overview["security"]["summary"]["combined_blocks"] == 6
 
 
 def _no_init_store():
@@ -2139,8 +2162,9 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
             method="GET",
             url="https://phishing.example/payload",
             icap_time_ms=15,
-            adapt_summary="virus_scan RESPMOD Malware FOUND",
-            adapt_details="phishing payload blocked",
+            adapt_summary="",
+            adapt_details="",
+            threat="Html.Phishing.Test",
         ),
     )
 
@@ -2210,6 +2234,7 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
     assert payload["top_malware_attempts"][0]["domain"] == "phishing.example"
     assert payload["top_malware_attempts"][0]["client_label"].startswith("user-")
     assert payload["top_malware_attempts"][0]["client_ip"] == ""
+    assert payload["top_malware_attempts"][0]["sample"] == "Html.Phishing.Test"
     assert payload["top_ssl_bump_failures"][0]["domain"] == "updates.example"
     assert payload["top_spliced_destinations"][0]["domain"] == "updates.example"
     assert payload["per_group"][0]["group"].startswith("group-")
@@ -2577,6 +2602,8 @@ def test_security_and_ssl_totals_cover_the_whole_window(tmp_path, monkeypatch) -
 
     # One older finding behind 30 newer clean scans: the findings list and the
     # leader badges must still show it (they used to sample the newest 20 scans).
+    # The clean scans carry verdict-like words in their ICAP summary/details; only
+    # the scanner's X-Infection-Found threat makes a finding.
     _insert_icap(
         diag_store,
         _icap_line(
@@ -2586,8 +2613,9 @@ def test_security_and_ssl_totals_cover_the_whole_window(tmp_path, monkeypatch) -
             method="GET",
             url="https://dropper.example/file.exe",
             icap_time_ms=12,
-            adapt_summary="virus_scan RESPMOD Eicar FOUND",
+            adapt_summary="",
             adapt_details="",
+            threat="Eicar-Signature",
         ),
     )
     for index in range(30):
@@ -2600,8 +2628,8 @@ def test_security_and_ssl_totals_cover_the_whole_window(tmp_path, monkeypatch) -
                 method="GET",
                 url=f"https://clean{index}.example/",
                 icap_time_ms=3,
-                adapt_summary="av_resp 3",
-                adapt_details="",
+                adapt_summary="virus_scan RESPMOD Eicar FOUND",
+                adapt_details="service=antivirus;outcome=blocked",
             ),
         )
 

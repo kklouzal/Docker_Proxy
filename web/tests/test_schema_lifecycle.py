@@ -565,8 +565,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "retire_adblock_cache_stats",
         "saml_assertion_replay_cache",
         "saml_metadata_refresh_schedule",
+        "diagnostic_icap_av_threat",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 38
+    assert schema_lifecycle.latest_schema_version() == 39
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -1270,6 +1271,18 @@ def test_saml_assertion_replay_cache_migration() -> None:
         saml_auth._SAML_ASSERTION_REPLAY_DDL
     ) == schema_lifecycle._normalize_sql(create_sql)
     assert "saml_assertion_replay" in mysql_state_validation._REQUIRED_TABLES
+
+
+def test_diagnostic_icap_av_threat_migration() -> None:
+    by_version = {spec.version: spec for spec in schema_lifecycle._migration_specs()}
+    spec = by_version[39]
+    assert spec.name == "diagnostic_icap_av_threat"
+    assert [(column.table, column.name) for column in spec.columns] == [
+        ("diagnostic_icap_events", "av_threat")
+    ]
+    # Additive and non-null with a default, so rows ingested by a proxy that
+    # predates the column keep inserting.
+    assert "NOT NULL DEFAULT ''" in spec.columns[0].ddl
 
 
 def test_saml_metadata_refresh_schedule_migration() -> None:
