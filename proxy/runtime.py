@@ -277,25 +277,17 @@ def _incompatible_operation_targets(operations: list[Any] | None) -> list[str]:
     )
 
 
-def _operation_target_kind_present(
-    operations: list[Any] | None,
-    *,
-    operation_type: str,
-    target_kind: str,
-) -> bool:
-    return any(
-        _operation_type(operation) == operation_type
-        and _operation_target_kind(operation) == target_kind
-        for operation in operations or []
+def _is_adblock_artifact_build_operation(operation: Any) -> bool:
+    return (
+        _operation_type(operation) == "adblock_refresh"
+        and _operation_target_kind(operation) == "adblock_artifact_build"
     )
 
 
-def _operations_request_adblock_artifact_build(operations: list[Any] | None) -> bool:
-    return _operation_target_kind_present(
-        operations,
-        operation_type="adblock_refresh",
-        target_kind="adblock_artifact_build",
-    )
+# How long an adblock_artifact_build operation waits for the Admin UI builder
+# (list downloads plus compile) before it fails. The proxy never compiles; it
+# keeps serving its active artifact and applies later builds on regular syncs.
+_ADBLOCK_BUILD_WAIT_SECONDS = 1800
 
 
 def _operation_requests_config_force(operation: Any) -> bool:
@@ -3183,65 +3175,6 @@ class ProxyRuntime:
             "degraded": not snapshot_ok,
         }
 
-    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any] | None:
-        """Honor a pending operator refresh; None means no request is pending.
-
-        Only the observed request token is cleared, so a refresh requested while
-        the build runs stays pending for the next build.
-        """
-
-        def failure(exc: Exception, default: str) -> dict[str, Any]:
-            return {
-                "ok": False,
-                "changed": False,
-                "detail": public_error_message(exc, default=default),
-                "revision_id": None,
-                "adblock_settings_version": None,
-                "artifact_sha256": "",
-                "download_pending": False,
-            }
-
-        try:
-            refresh_requested = int(self.adblock_store.get_refresh_requested())
-        except Exception as exc:
-            return failure(exc, "Adblock refresh request could not be read.")
-        if not refresh_requested:
-            return None
-        try:
-            result = self.adblock_artifacts.build_active_artifact(
-                refresh_lists=True,
-                created_by="proxy-runtime",
-                source_kind="background",
-            )
-        except Exception as exc:
-            return failure(exc, "Adblock artifact build failed.")
-        revision = result.get("revision")
-        if bool(result.get("ok")) and not bool(result.get("download_pending")):
-            try:
-                self.adblock_store.clear_refresh_requested(refresh_requested)
-            except Exception:
-                # The build result stands; the uncleared request only causes
-                # one redundant rebuild later.
-                log_exception_throttled(
-                    logger,
-                    "proxy.runtime.adblock_refresh_clear",
-                    interval_seconds=300.0,
-                    message="Failed to clear the honored adblock refresh request",
-                )
-        return {
-            "ok": bool(result.get("ok")),
-            "changed": bool(result.get("changed")),
-            "detail": str(result.get("detail") or "").strip(),
-            "revision_id": _int_or_none(getattr(revision, "revision_id", None)),
-            "adblock_settings_version": _int_or_none(
-                getattr(revision, "settings_version", None),
-            ),
-            "artifact_sha256": str(
-                getattr(revision, "artifact_sha256", "") or "",
-            ).strip(),
-            "download_pending": bool(result.get("download_pending")),
-        }
-
     def sync_adblock_state(
         self,
         *,
@@ -4550,6 +4483,11 @@ class ProxyRuntime:
                 "executed_operation_types": [],
                 "unsupported_operation_types": [],
             }
+        deferred_notes: list[str] = []
+        if ledger is not None and claimed_operations:
+            claimed_operations, deferred_notes = (
+                self._defer_adblock_builds_awaiting_admin(ledger, claimed_operations)
+            )
         try:
             result = self._sync_from_db_unlocked(
                 force=bool(
@@ -4591,8 +4529,122 @@ class ProxyRuntime:
                     interval_seconds=300.0,
                     message="Failed to record claimed operation results; stale-claim recovery will requeue them",
                 )
+        if deferred_notes:
+            result = {
+                **result,
+                "detail": "\n".join(
+                    part
+                    for part in (
+                        str(result.get("detail") or "").strip(),
+                        *deferred_notes,
+                    )
+                    if part
+                ),
+            }
         self._capture_recovery_bundle_after_sync(result)
         return result
+
+    def _adblock_build_wait_detail(self, operation: Any) -> str:
+        """Why the artifact an adblock build operation targets is not built yet.
+
+        The Admin UI builder downloads the lists and compiles every artifact;
+        the operation is ready once the active artifact has the queued settings
+        version (or a newer one, which supersedes it) and the operator's list
+        refresh request has been consumed by a build. Returns "" when ready or
+        when the target is invalid (the completion check then fails it).
+        """
+        target = _int_or_none(getattr(operation, "target_ref", None))
+        if target is None:
+            return ""
+        try:
+            refresh_requested = int(self.adblock_store.get_refresh_requested())
+            active = self.adblock_artifacts.get_active_artifact_metadata()
+            active_version = (
+                None if active is None else _int_or_none(active.settings_version)
+            )
+            if active_version is not None and (
+                active_version > target
+                or (active_version == target and not refresh_requested)
+            ):
+                return ""
+            build_status = self.adblock_store.get_artifact_build_status()
+        except Exception as exc:
+            return (
+                "Waiting for the Admin UI adblock builder; its state could not "
+                "be read: "
+                + public_error_message(exc, default="adblock store unavailable.")
+            )
+        waiting_for = []
+        if active_version is None or active_version < target:
+            waiting_for.append(
+                f"an artifact for settings version {target} (active: "
+                f"{'none' if active_version is None else active_version})"
+            )
+        if refresh_requested:
+            waiting_for.append("the requested list refresh")
+        detail = "Waiting for the Admin UI adblock builder to publish " + " and ".join(
+            waiting_for
+        )
+        last_build = str(build_status.get("detail") or "").strip()
+        if last_build:
+            outcome = "ok" if build_status.get("ok") else "failed"
+            detail = f"{detail}. Last build ({outcome}): {last_build}"
+        return f"{detail}."
+
+    def _defer_adblock_builds_awaiting_admin(
+        self,
+        ledger: Any,
+        operations: list[Any],
+    ) -> tuple[list[Any], list[str]]:
+        """Return claimed build operations whose artifact is not built yet.
+
+        Such an operation goes back to pending (it is claimed again on the next
+        sync, every PROXY_SYNC_INTERVAL_SECONDS or sooner after a nudge) and is
+        failed once it waited _ADBLOCK_BUILD_WAIT_SECONDS. Releasing it keeps it
+        out of the ledger's stale-applying recovery. Returns the operations to
+        reconcile now and a note per deferred operation.
+        """
+        remaining: list[Any] = []
+        notes: list[str] = []
+        now = time.time()
+        for operation in operations:
+            if not _is_adblock_artifact_build_operation(operation):
+                remaining.append(operation)
+                continue
+            wait_detail = self._adblock_build_wait_detail(operation)
+            if not wait_detail:
+                remaining.append(operation)
+                continue
+            operation_id = getattr(operation, "operation_id", 0)
+            age = now - float(getattr(operation, "created_ts", 0) or 0)
+            if age >= _ADBLOCK_BUILD_WAIT_SECONDS:
+                status = "failed"
+                detail = (
+                    "The Admin UI adblock builder did not publish the artifact "
+                    f"within {_ADBLOCK_BUILD_WAIT_SECONDS // 60} minutes. The proxy "
+                    "keeps serving its active artifact and applies later builds "
+                    f"on regular syncs.\n{wait_detail}"
+                )
+            else:
+                status = "pending"
+                detail = wait_detail
+            try:
+                _mark_claimed_operation_status(
+                    ledger, operation, status=status, detail=detail
+                )
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.defer_adblock_build",
+                    interval_seconds=300.0,
+                    message="Failed to release a waiting adblock build operation; stale-claim recovery will requeue it",
+                )
+            notes.append(
+                f"Adblock build operation #{operation_id} "
+                + ("failed: " if status == "failed" else "is pending: ")
+                + detail
+            )
+        return remaining, notes
 
     def _mark_claimed_operations(
         self,
@@ -4752,55 +4804,6 @@ class ProxyRuntime:
             policy_result.update(operation_evidence)
             policy_result["detail"] = detail
             return policy_result
-
-        if _operations_request_adblock_artifact_build(operations):
-            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
-            if adblock_build_result is None:
-                detail_parts.append(
-                    "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
-                )
-            else:
-                if str(adblock_build_result.get("detail") or "").strip():
-                    detail_parts.append(str(adblock_build_result["detail"]).strip())
-                if not bool(adblock_build_result.get("ok")):
-                    detail = (
-                        "\n".join(detail_parts).strip()
-                        or "Adblock artifact build failed."
-                    )
-                    self.registry.mark_apply_result(
-                        self.proxy_id,
-                        ok=False,
-                        detail=detail,
-                        current_config_sha=self._current_config_sha(),
-                    )
-                    return {
-                        "ok": False,
-                        "detail": detail,
-                        "changed": bool(
-                            cert_changed
-                            or policy_changed
-                            or bool(adblock_build_result.get("changed"))
-                        ),
-                        "cache_cleared": False,
-                        "certificate_changed": cert_changed,
-                        "policy_changed": policy_changed,
-                        "adblock_changed": bool(adblock_build_result.get("changed")),
-                        "pac_changed": False,
-                        "config_changed": False,
-                        "current_config_sha": self._current_config_sha(),
-                        **cert_evidence,
-                        **policy_evidence,
-                        "adblock_revision_id": _int_or_none(
-                            adblock_build_result.get("revision_id"),
-                        ),
-                        "adblock_settings_version": _int_or_none(
-                            adblock_build_result.get("adblock_settings_version"),
-                        ),
-                        "artifact_sha256": str(
-                            adblock_build_result.get("artifact_sha256") or "",
-                        ),
-                        **operation_evidence,
-                    }
 
         adblock_result = _call_sync_with_operations(
             self.sync_adblock_state,

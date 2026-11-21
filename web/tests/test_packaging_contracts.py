@@ -479,7 +479,6 @@ PROXY_PYTHON_RUNTIME_ROOTS = {
     "proxy.public_app",
     "proxy.agent",
     "proxy.forwarding_canary",
-    "tools.adblock_compile",
     "tools.adblock_icap_server",
     "tools.clamav_respmod_icap_server",
     "tools.safe_browsing_acl",

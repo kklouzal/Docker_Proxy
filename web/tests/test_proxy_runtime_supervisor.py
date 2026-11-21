@@ -8,6 +8,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
@@ -8463,11 +8464,171 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     assert "cicap_adblock" not in result["detail"]
 
 
-def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
-    runtime = _runtime_shell()
-    build_calls: list[dict[str, object]] = []
-    cleared_refresh: list[int] = []
+def _build_wait_runtime(
+    monkeypatch,
+    *,
+    target_ref: str = "12",
+    created_ts: float | None = None,
+    refresh_requested: object = 0,
+    active_settings_version: int | None = 12,
+    build_status: dict[str, object] | None = None,
+):
+    """A runtime that claims one adblock build operation from a fake ledger."""
+    import proxy.runtime as runtime_module  # type: ignore
 
+    operation = SimpleNamespace(
+        operation_id=77,
+        operation_type="adblock_refresh",
+        target_kind="adblock_artifact_build",
+        target_ref=target_ref,
+        request_hash="",
+        force=True,
+        created_ts=time.time() if created_ts is None else created_ts,
+        claim_token="claim-77",
+    )
+    marks: list[dict[str, object]] = []
+    reconciled: list[list[object]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, *_args, **_kwargs) -> int:
+            return 0
+
+        def claim_pending(self, *_args, **_kwargs) -> list[object]:
+            return [operation]
+
+        def mark_status(self, operation_id, **kwargs):
+            marks.append({"operation_id": operation_id, **kwargs})
+
+    def get_refresh_requested() -> int:
+        if isinstance(refresh_requested, Exception):
+            raise refresh_requested
+        return int(refresh_requested)
+
+    runtime = _runtime_shell()
+    runtime.adblock_store = SimpleNamespace(
+        get_refresh_requested=get_refresh_requested,
+        get_artifact_build_status=lambda: build_status or {},
+        clear_refresh_requested=lambda _token: pytest.fail(
+            "the proxy never consumes the Admin UI refresh request"
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        get_active_artifact_metadata=lambda: (
+            None
+            if active_settings_version is None
+            else SimpleNamespace(
+                revision_id=40, settings_version=active_settings_version
+            )
+        ),
+        build_active_artifact=lambda **_kwargs: pytest.fail(
+            "the proxy must not download lists or compile artifacts"
+        ),
+    )
+
+    def sync_unlocked(*, operations, **_kwargs):
+        reconciled.append(list(operations))
+        return {"ok": True, "detail": "synced", "executed_operation_types": []}
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = sync_unlocked
+    runtime._capture_recovery_bundle_after_sync = lambda _result: None
+    runtime._mark_claimed_operations = lambda _ledger, operations, _result: (
+        marks.extend(
+            {"operation_id": op.operation_id, "status": "reconciled"}
+            for op in operations
+        )
+    )
+    return runtime, marks, reconciled
+
+
+@pytest.mark.parametrize(
+    ("refresh_requested", "active_settings_version", "waiting_for"),
+    [
+        (0, 11, "an artifact for settings version 12 (active: 11)"),
+        (0, None, "an artifact for settings version 12 (active: none)"),
+        (1700000000, 12, "the requested list refresh"),
+    ],
+)
+def test_sync_defers_adblock_build_until_the_admin_builder_publishes(
+    monkeypatch, refresh_requested, active_settings_version, waiting_for
+) -> None:
+    runtime, marks, reconciled = _build_wait_runtime(
+        monkeypatch,
+        refresh_requested=refresh_requested,
+        active_settings_version=active_settings_version,
+        build_status={"ok": False, "detail": "easylist download timed out"},
+    )
+
+    result = runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    # The rest of the sync runs; the operation goes back to pending.
+    assert reconciled == [[]]
+    assert len(marks) == 1
+    assert marks[0]["status"] == "pending"
+    assert marks[0]["expected_status"] == "applying"
+    assert marks[0]["expected_claim_token"] == "claim-77"
+    assert waiting_for in str(marks[0]["detail"])
+    assert "Last build (failed): easylist download timed out" in str(marks[0]["detail"])
+    assert "Adblock build operation #77 is pending" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("refresh_requested", "active_settings_version"),
+    [(0, 12), (0, 13), (1700000000, 13)],
+)
+def test_sync_reconciles_adblock_build_once_its_artifact_is_published(
+    monkeypatch, refresh_requested, active_settings_version
+) -> None:
+    # Version 12 built (refresh consumed) completes; a newer version
+    # supersedes it in the completion check.
+    runtime, marks, reconciled = _build_wait_runtime(
+        monkeypatch,
+        refresh_requested=refresh_requested,
+        active_settings_version=active_settings_version,
+    )
+
+    runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    assert [[op.operation_id for op in ops] for ops in reconciled] == [[77]]
+    assert marks == [{"operation_id": 77, "status": "reconciled"}]
+
+
+def test_sync_fails_adblock_build_after_the_wait_budget(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime, marks, reconciled = _build_wait_runtime(
+        monkeypatch,
+        created_ts=time.time() - runtime_module._ADBLOCK_BUILD_WAIT_SECONDS - 1,
+        active_settings_version=11,
+    )
+
+    runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    assert reconciled == [[]]
+    assert marks[0]["status"] == "failed"
+    assert "did not publish the artifact within 30 minutes" in str(marks[0]["detail"])
+    assert "keeps serving its active artifact" in str(marks[0]["detail"])
+
+
+def test_sync_keeps_adblock_build_pending_when_builder_state_is_unreadable(
+    monkeypatch,
+) -> None:
+    runtime, marks, reconciled = _build_wait_runtime(
+        monkeypatch,
+        refresh_requested=RuntimeError("refresh request read failed"),
+    )
+
+    runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    assert reconciled == [[]]
+    assert marks[0]["status"] == "pending"
+    assert "state could not be read" in str(marks[0]["detail"])
+
+
+def test_sync_completes_ready_adblock_build_with_active_artifact_evidence() -> None:
+    from proxy import runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
     runtime.ensure_registered = lambda: None
     runtime.bootstrap_revision_if_missing = lambda: None
     runtime._invalidate_health_cache = lambda: None
@@ -8488,35 +8649,10 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
         "detail": "Adblock artifact applied.",
     }
     runtime._ensure_policy_runtime_config = lambda: (True, "", False)
-    runtime._reload_for_policy_update = lambda **_kwargs: (
-        True,
-        "Squid reconfigured for policy update.",
-    )
     runtime._current_config_sha = lambda: "current-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-new"
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None,
-    )
+    runtime.controller = SimpleNamespace()
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
-    runtime.adblock_store = SimpleNamespace(
-        get_refresh_requested=lambda: 1700000000,
-        clear_refresh_requested=cleared_refresh.append,
-    )
-    runtime.adblock_artifacts = SimpleNamespace(
-        build_active_artifact=lambda **kwargs: (
-            build_calls.append(dict(kwargs))
-            or {
-                "ok": True,
-                "changed": True,
-                "detail": "Activated adblock artifact revision 10.",
-                "revision": SimpleNamespace(
-                    revision_id=10,
-                    settings_version=12,
-                    artifact_sha256="artifact-new",
-                ),
-            }
-        )
-    )
     runtime.revisions = SimpleNamespace(
         get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
             revision_id=9,
@@ -8524,146 +8660,23 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
         ),
         latest_apply=lambda _proxy_id: None,
     )
-
-    result = runtime._sync_from_db_unlocked(
-        force=False,
-        artifact_force=True,
-        operations=[
-            SimpleNamespace(
-                operation_type="adblock_refresh",
-                target_kind="adblock_artifact_build",
-                target_ref="12",
-                force=True,
-            )
-        ],
-    )
-
-    assert result["ok"] is True
-    assert result["adblock_settings_version"] == 12
-    assert result["artifact_sha256"] == "artifact-new"
-    assert result["executed_operation_types"] == ["adblock_refresh"]
-    assert "Activated adblock artifact revision 10." in result["detail"]
-    assert build_calls == [
-        {
-            "refresh_lists": True,
-            "created_by": "proxy-runtime",
-            "source_kind": "background",
-        }
-    ]
-    assert cleared_refresh == [1700000000]
-
-
-def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() -> None:
-    runtime = _runtime_shell()
-    adblock_calls: list[bool] = []
-
-    runtime.ensure_registered = lambda: None
-    runtime.bootstrap_revision_if_missing = lambda: None
-    runtime._invalidate_health_cache = lambda: None
-    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
-    runtime.sync_policy_state = lambda force=False: {
-        "ok": True,
-        "changed": False,
-        "reload_required": False,
-    }
-    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
-
-    def sync_adblock_state(*, force=False):
-        adblock_calls.append(force)
-        return {
-            "ok": True,
-            "changed": True,
-            "revision_id": 44,
-            "application_id": 73,
-            "adblock_settings_version": 15,
-            "artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "current_adblock_artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "detail": "Adblock artifact applied.",
-        }
-
-    runtime.sync_adblock_state = sync_adblock_state
-    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
-    runtime._reload_for_policy_update = lambda **_kwargs: (
-        True,
-        "Squid reconfigured for policy update.",
-    )
-    runtime._current_config_sha = lambda: "current-sha"
-    runtime._current_adblock_artifact_sha = lambda: (
-        "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    )
-    runtime.controller = SimpleNamespace(
-        set_adblock_icap_revision_token=lambda _token: None,
-    )
-    runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
-    runtime.adblock_store = SimpleNamespace(
-        get_refresh_requested=lambda: 0,
-        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
-            AssertionError("cleared build operation should not clear refresh again")
-        ),
-    )
-    runtime.adblock_artifacts = SimpleNamespace(
-        build_active_artifact=lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("cleared adblock build operation must not rebuild")
-        )
-    )
-    runtime.revisions = SimpleNamespace(
-        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
-            revision_id=9,
-            config_sha256="current-sha",
-        ),
-        latest_apply=lambda _proxy_id: None,
+    operation = SimpleNamespace(
+        operation_type="adblock_refresh",
+        target_kind="adblock_artifact_build",
+        target_ref="12",
+        request_hash="",
+        force=True,
     )
 
     result = runtime._sync_from_db_unlocked(
-        force=False,
-        artifact_force=True,
-        operations=[
-            SimpleNamespace(
-                operation_type="adblock_refresh",
-                target_kind="adblock_artifact_build",
-                target_ref="14",
-                force=True,
-            )
-        ],
+        force=False, artifact_force=True, operations=[operation]
     )
 
     assert result["ok"] is True
-    assert result["adblock_revision_id"] == 44
-    assert result["adblock_application_id"] == 73
-    assert (
-        result["artifact_sha256"]
-        == "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    )
-    assert result["adblock_settings_version"] == 15
     assert result["executed_operation_types"] == ["adblock_refresh"]
-    assert "build request was already cleared" in result["detail"]
-    assert adblock_calls == [True]
-
-
-def test_runtime_adblock_build_fails_when_refresh_request_unreadable() -> None:
-    runtime = _runtime_shell()
-
-    def unreadable() -> int:
-        msg = "refresh request read failed"
-        raise RuntimeError(msg)
-
-    runtime.adblock_store = SimpleNamespace(
-        get_refresh_requested=unreadable,
-        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
-            AssertionError("an unread request must not be cleared")
-        ),
-    )
-    runtime.adblock_artifacts = SimpleNamespace(
-        build_active_artifact=lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("build must not run without the request state")
-        )
-    )
-
-    result = runtime._build_adblock_artifact_for_runtime_operation()
-
-    assert result is not None
-    assert result["ok"] is False
-    assert result["detail"]
+    assert runtime_module._operation_completion_status(
+        operation, default_status="applied", detail="ok", result=result
+    ) == ("applied", "ok")
 
 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
