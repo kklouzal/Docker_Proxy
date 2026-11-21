@@ -458,10 +458,7 @@ def test_live_sslfilter_granular_policy_stays_proxy_side_only(
     assert toggle_private_params.get("private_saved") == ["1"]
     assert toggle_private_params.get("pac_queue") == ["1"]
     assert toggle_private_params.get("policy_queue") is None
-    assert (
-        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
-        in toggle_private_response.text
-    )
+    assert "Private/local destination setting saved." in toggle_private_response.text
     assert "PAC materialization refresh is queued" in toggle_private_response.text
     assert "Policy change saved; proxy reconciliation is queued" not in (
         toggle_private_response.text
@@ -618,7 +615,8 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
     add_cidr_response = admin_client.admin_post_form(
         "/sslfilter",
         {
-            "action": "add",
+            "action": "add_src",
+            "policy": "nobump",
             "cidr": cidr,
         },
         csrf_path="/sslfilter",
@@ -629,7 +627,8 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
     remove_cidr_response = admin_client.admin_post_form(
         "/sslfilter",
         {
-            "action": "remove",
+            "action": "remove_src",
+            "policy": "nobump",
             "cidr": cidr,
         },
         csrf_path="/sslfilter",

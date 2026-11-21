@@ -105,7 +105,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">TLS and cache policy</span>
     <h1 class="page-title">SSL Filtering</h1>
-    <p class="page-subtitle">Control destination and source exceptions for {{ active_proxy.display_name }}. No-bump means TLS splice/no MITM. No-cache means traffic still uses the proxy but is not stored.</p>
+    <p class="page-subtitle">TLS inspection exceptions and cache bypass for {{ active_proxy.display_name }}. No-bump tunnels TLS without inspection; no-cache still proxies traffic but never stores it.</p>
     <div class="hero-badges">
       <span class="badge">{{ rules.no_bump_domains|length }} no-bump domains</span>
       <span class="badge">{{ rules.no_cache_domains|length }} no-cache domains</span>
@@ -129,7 +129,7 @@
 </section>
 
 {% call scope_notice('proxy', 'Selected proxy only', 'SSL filtering and cache-bypass policy on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>This lets you tune bypass behavior for one proxy without affecting the others.</div>
+<div>A domain or client can be on the no-bump list, the no-cache list, or both.</div>
 {% endcall %}
 
 {{ policy_runtime_card(policy_runtime_state, active_proxy) }}
@@ -160,19 +160,19 @@
   <div class="banner success"><span class="badge ok">Queued</span><div class="banner-copy"><span class="small">PAC materialization refresh is queued for {{ active_proxy.display_name }}; runtime apply is still asynchronous.</span>{% if request.args.get('pac_msg') %}<pre class="small pre-wrap">{{ request.args.get('pac_msg') }}</pre>{% endif %}</div></div>
 {% endif %}
 {% if ok %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering policy updated and queued for proxy reconciliation.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL filtering rules saved.</span></div></div>
 {% endif %}
 {% if err %}
   <div class="banner error"><span class="badge danger">Needs attention</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
 {% endif %}
 {% if request.args.get('private_saved') %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local PAC bypass preference updated and queued for proxy reconciliation.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Private/local destination setting saved.</span></div></div>
 {% endif %}
 {% if request.args.get('inspection_saved') %}
-  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection preference updated and queued for proxy reconciliation.</span></div></div>
+  <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection setting saved.</span></div></div>
 {% endif %}
 {% if request.args.get('compatibility_attempted') %}
-  <div class="banner success"><span class="badge ok">Compatibility set saved</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} new shipped no-bump domains and queued proxy reconciliation.</span></div></div>
+  <div class="banner success"><span class="badge ok">Presets installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} shipped no-bump domains.</span></div></div>
 {% endif %}
 
 <section class="card">
@@ -203,21 +203,6 @@
       </div>
       <div class="surface-note small">Disabled writes a managed <span class="mono">ssl_bump splice all</span> rule so TLS is tunneled without MITM. Enabled restores the normal inspection flow with the no-bump exceptions below.</div>
     </form>
-  </div>
-</section>
-
-<section class="card">
-  <div class="card-header">
-    <h2 class="card-title">At a glance</h2>
-    <span class="badge">policy behavior</span>
-  </div>
-  <div class="card-body">
-    <div class="summary-grid">
-      <div class="stat compact-stat"><div class="stat-k">No-bump</div><div class="stat-v">Splice</div></div>
-      <div class="stat compact-stat"><div class="stat-k">No-cache</div><div class="stat-v">Proxy, no store</div></div>
-      <div class="stat compact-stat"><div class="stat-k">PAC private/local</div><div class="stat-v">{{ 'DIRECT' if rules.exclude_private_nets else 'Proxy' }}</div></div>
-    </div>
-    <div class="surface-note help">No-bump and no-cache are intentionally separate now. A destination or client can be spliced without adding explicit cache-deny rules, cached normally while still being bumped, or both if you add it to both lists.</div>
   </div>
 </section>
 
@@ -278,7 +263,7 @@
         <tbody>
           {% for preset in compatibility_presets %}
           <tr>
-            <td><div class="stack-sm"><span class="mono">{{ preset.title }}</span><span class="small">{{ preset.total }} domains</span></div></td>
+            <td><div class="stack-sm"><strong>{{ preset.title }}</strong><span class="small">{{ preset.total }} domains</span></div></td>
             <td class="small">{{ preset.description }}{% if preset.shared_infrastructure_total %}<div class="surface-note small"><strong>Broad shared infrastructure:</strong> {{ preset.shared_infrastructure_domains|join(', ') }} ({{ preset.shared_infrastructure_total }} effective rules)</div>{% endif %}</td>
             <td class="num"><span class="badge {{ 'ok' if preset.complete else 'warn' }}">{{ preset.installed }}/{{ preset.total }}</span></td>
             <td class="num">
@@ -287,8 +272,8 @@
                 {{ proxy_context_field() }}
                 <input type="hidden" name="action" value="install_compatibility_preset" />
                 <input type="hidden" name="preset_id" value="{{ preset.id }}" />
-                {% if preset.shared_infrastructure_total %}<label class="small"><input type="checkbox" name="allow_shared_infrastructure" /> Include shared CDN/cloud namespaces</label>{% endif %}
-                <button class="btn" type="submit">Install missing</button>
+                {% if preset.shared_infrastructure_total %}<label class="small checkbox-inline"><input class="check" type="checkbox" name="allow_shared_infrastructure" /> Include shared CDN/cloud namespaces</label>{% endif %}
+                <button class="btn" type="submit" {% if preset.complete %}disabled{% endif %}>{{ 'Installed' if preset.complete else 'Install missing' }}</button>
               </form>
             </td>
           </tr>
@@ -300,7 +285,7 @@
         {{ proxy_context_field() }}
         <input type="hidden" name="action" value="install_compatibility_preset" />
         <input type="hidden" name="preset_id" value="all" />
-        <label class="small"><input type="checkbox" name="allow_shared_infrastructure" /> Include disclosed shared CDN/cloud namespaces</label>
+        <label class="small checkbox-inline"><input class="check" type="checkbox" name="allow_shared_infrastructure" /> Include disclosed shared CDN/cloud namespaces</label>
         <button class="btn" type="submit">Install all missing presets</button>
       </form>
     </div>

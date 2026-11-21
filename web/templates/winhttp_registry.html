@@ -189,36 +189,31 @@
     </div>
   </section>
 
+  {% if output.static_registry_available %}
   <div class="grid two-col">
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">Basic REG_BINARY hex</h2>
-        <button class="btn ghost" type="button" data-copy-target="#winhttp-normalized-hex" {% if not output.static_registry_available %}disabled{% endif %}>Copy</button>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-normalized-hex">Copy</button>
       </div>
       <div class="card-body">
-        {% if output.static_registry_available %}
-          <textarea class="compact-textarea" id="winhttp-normalized-hex" rows="8" aria-label="Basic REG_BINARY hex" readonly>{{ output.normalized_hex }}</textarea>
-        {% else %}
-          <div class="surface-note small">Static REG_BINARY output is intentionally disabled when PAC URL or AutoDetect is enabled. Use the advproxy JSON/commands below for those documented settings.</div>
-          <textarea class="compact-textarea" id="winhttp-normalized-hex-empty" rows="4" aria-label="Basic REG_BINARY hex unavailable" readonly></textarea>
-        {% endif %}
+        <textarea class="compact-textarea" id="winhttp-normalized-hex" rows="8" aria-label="Basic REG_BINARY hex" readonly>{{ output.normalized_hex }}</textarea>
       </div>
     </section>
 
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">.reg output</h2>
-        <button class="btn ghost" type="button" data-copy-target="#winhttp-reg-file" {% if not output.static_registry_available %}disabled{% endif %}>Copy</button>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-reg-file">Copy</button>
       </div>
       <div class="card-body">
-        {% if output.static_registry_available %}
-          <textarea class="compact-textarea" id="winhttp-reg-file" rows="8" aria-label="REG file output" readonly>{{ output.reg_file }}</textarea>
-        {% else %}
-          <textarea class="compact-textarea" id="winhttp-reg-file-empty" rows="4" aria-label="REG file output unavailable" readonly></textarea>
-        {% endif %}
+        <textarea class="compact-textarea" id="winhttp-reg-file" rows="8" aria-label="REG file output" readonly>{{ output.reg_file }}</textarea>
       </div>
     </section>
   </div>
+  {% else %}
+  <div class="surface-note small">No REG_BINARY or .reg output: the static registry value cannot express a PAC URL or AutoDetect. Use the advproxy JSON and commands below.</div>
+  {% endif %}
 
   <div class="grid two-col">
     <section class="card">

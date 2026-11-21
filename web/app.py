@@ -5965,7 +5965,7 @@ def _handle_sslfilter_post(store: Any):
     action = _form_action(lower=True)
     policy = _sslfilter_policy_from_form()
 
-    if action in {"apply_policy", "apply_verify"}:
+    if action == "apply_policy":
         ok, detail = _trigger_policy_sync(force=True)
         detail = (
             detail or ("Policy sync requested." if ok else "Policy sync failed.")
@@ -5995,23 +5995,6 @@ def _handle_sslfilter_post(store: Any):
             compatibility_added=added,
             compatibility_attempted=attempted,
         )
-
-    if action == "add":
-        ok, err, canonical = _add_sslfilter_src(
-            store,
-            "nobump",
-            request.form.get("cidr") or "",
-        )
-        if not ok:
-            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
-        return _sslfilter_redirect(ok="1", added="1", value=canonical, policy="nobump")
-
-    if action == "remove":
-        ok, err, canonical = normalize_src_net_rule(request.form.get("cidr") or "")
-        if not ok:
-            return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
-        store.remove_src_net("nobump", canonical)
-        return _sslfilter_redirect(removed="1")
 
     if action in {"add_domain", "add_domain_bulk"}:
         if policy not in {"nobump", "nocache"}:

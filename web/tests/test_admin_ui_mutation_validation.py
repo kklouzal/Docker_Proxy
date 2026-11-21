@@ -146,10 +146,7 @@ def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selecte
 
     page = client.get(location)
     text = page.get_data(as_text=True)
-    assert (
-        "Private/local PAC bypass preference updated and queued for proxy reconciliation."
-        in text
-    )
+    assert "Private/local destination setting saved." in text
     assert "PAC materialization refresh is queued for Edge-2" in text
     assert "Policy change saved; proxy reconciliation is queued" not in text
     assert "fc00::/7" in text
@@ -188,7 +185,7 @@ def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
     text = page.get_data(as_text=True)
     assert "Sync not queued" in text
     assert "Policy changes were saved, but proxy reconciliation was not queued." in text
-    assert "SSL filtering policy updated and queued" not in text
+    assert "SSL filtering rules saved." not in text
 
 
 def test_policy_queue_refuses_missing_desired_sha(monkeypatch, tmp_path) -> None:
@@ -686,11 +683,6 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         ),
         (
             "/sslfilter",
-            {"action": "add", "cidr": "bad-cidr"},
-            "err=",
-        ),
-        (
-            "/sslfilter",
             {"action": "add_domain", "policy": "invalid", "domain": "example.test"},
             "err=Invalid+domain+policy",
         ),
@@ -706,7 +698,7 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         ),
         (
             "/sslfilter",
-            {"action": "remove", "cidr": ""},
+            {"action": "remove_src", "policy": "nobump", "cidr": ""},
             "err=CIDR+is+required",
         ),
     ],

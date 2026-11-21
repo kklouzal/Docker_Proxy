@@ -253,20 +253,24 @@ def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None
     assert store.no_bump_src_nets == ["10.1.2.0/24"]
 
     with loaded.module.app.test_request_context(
-        "/sslfilter", method="POST", data={"action": "add", "cidr": "172.31.250.0/24"}
-    ):
-        legacy_add = loaded.module._handle_sslfilter_post(store)
-    assert _params(legacy_add.location)["ok"] == ["1"]
-    assert "172.31.250.0/24" in store.no_bump_src_nets
-
-    with loaded.module.app.test_request_context(
         "/sslfilter",
         method="POST",
-        data={"action": "remove", "cidr": "172.31.250.0/24"},
+        data={"action": "remove_src", "policy": "nobump", "cidr": "10.1.2.0/24"},
     ):
-        legacy_remove = loaded.module._handle_sslfilter_post(store)
-    assert _params(legacy_remove.location)["removed"] == ["1"]
-    assert "172.31.250.0/24" not in store.no_bump_src_nets
+        removed = loaded.module._handle_sslfilter_post(store)
+    assert _params(removed.location)["removed"] == ["1"]
+    assert "10.1.2.0/24" not in store.no_bump_src_nets
+
+    # The retired policy-less "add"/"remove" aliases are not accepted.
+    for retired in ("add", "remove"):
+        with loaded.module.app.test_request_context(
+            "/sslfilter",
+            method="POST",
+            data={"action": retired, "cidr": "172.31.250.0/24"},
+        ):
+            ignored = loaded.module._handle_sslfilter_post(store)
+        assert urlsplit(ignored.location).path == "/sslfilter"
+        assert "172.31.250.0/24" not in store.no_bump_src_nets
 
     with loaded.module.app.test_request_context(
         "/sslfilter", method="POST", data={"action": "unknown"}
