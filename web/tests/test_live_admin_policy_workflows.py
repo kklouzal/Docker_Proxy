@@ -653,10 +653,7 @@ def test_live_sslfilter_and_webfilter_whitelist_workflows(
         "Policy change saved; proxy reconciliation is queued"
         in add_whitelist_response.text
     )
-    assert (
-        "Whitelist entry saved and queued for proxy reconciliation."
-        in add_whitelist_response.text
-    )
+    assert "Whitelist entry saved." in add_whitelist_response.text
     assert "Whitelist entry added." not in add_whitelist_response.text
     assert whitelist_domain in add_whitelist_response.text
 

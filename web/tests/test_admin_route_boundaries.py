@@ -5626,7 +5626,7 @@ def test_webfilter_whitelist_read_failure_is_shown_not_empty(
     body = response.get_data(as_text=True)
     assert "Whitelist unavailable: Operation failed." in body
     assert "No whitelist entries yet." not in body
-    assert "Each proxy holds up to 10,000 entries." in body
+    assert "up to 10,000 entries per proxy." in body
 
 
 def test_adblock_refresh_reports_error_when_list_statuses_read_fails(

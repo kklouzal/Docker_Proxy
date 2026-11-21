@@ -143,6 +143,7 @@ def test_webfilter_save_validates_source_url_and_whitelist(
     ):
         invalid = loaded.module._handle_webfilter_post(store, "categories")
     assert _params(invalid.location)["err_source"] == ["1"]
+    assert _params(invalid.location)["err_detail"] != [""]
     assert not hasattr(store, "last_set_settings")
 
     with loaded.module.app.test_request_context(
@@ -157,6 +158,8 @@ def test_webfilter_save_validates_source_url_and_whitelist(
         disabled_internal = loaded.module._handle_webfilter_post(store, "categories")
     disabled_params = _params(disabled_internal.location)
     assert "err_source" not in disabled_params
+    # A save that needs no feed refresh still confirms it was saved.
+    assert disabled_params["saved"] == ["1"]
     assert store.last_set_settings["enabled"] is False
     assert (
         store.last_set_settings["source_url"] == "http://127.0.0.1/private-feed.tar.gz"

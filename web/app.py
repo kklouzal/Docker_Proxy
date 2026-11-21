@@ -5779,8 +5779,13 @@ def _handle_webfilter_post(store: Any, tab: str):
         if source_url and category_refresh_required:
             try:
                 source_url = _validate_webfilter_source_url(source_url)
-            except ValueError:
-                return _redirect_to("webfilter", tab="categories", err_source="1")
+            except ValueError as exc:
+                return _redirect_to(
+                    "webfilter",
+                    tab="categories",
+                    err_source="1",
+                    err_detail=public_error_message(exc),
+                )
 
         try:
             _webfilter_set_settings(
@@ -5809,10 +5814,15 @@ def _handle_webfilter_post(store: Any, tab: str):
                     "safe_browsing_lists",
                 ),
             )
-        except ValueError:
-            return _redirect_to("webfilter", tab="categories", err_source="1")
+        except ValueError as exc:
+            return _redirect_to(
+                "webfilter",
+                tab="categories",
+                err_source="1",
+                err_detail=public_error_message(exc),
+            )
         if not category_refresh_required:
-            return _redirect_to("webfilter", tab="categories")
+            return _redirect_to("webfilter", tab="categories", saved="1")
         return _redirect_after_policy_refresh(
             "webfilter",
             store,
@@ -5871,8 +5881,12 @@ def _handle_webfilter_post(store: Any, tab: str):
                 safe_browsing_api_key=safe_browsing_api_key,
                 safe_browsing_lists=safe_browsing_lists,
             )
-        except ValueError:
-            return _redirect_to("webfilter", tab="categories", err_source="1")
+        except ValueError as exc:
+            return _redirect_to(
+                "webfilter",
+                tab="categories",
+                err=public_error_message(exc),
+            )
         return _redirect_after_policy_refresh(
             "webfilter",
             store,
@@ -5889,6 +5903,7 @@ def _handle_webfilter_post(store: Any, tab: str):
                 "webfilter",
                 tab="whitelist",
                 wl_err=(err or "1"),
+                wl_value=entry[:300],
             )
         return _redirect_after_policy_refresh(
             "webfilter",
@@ -9334,7 +9349,6 @@ def adblock():
         refresh_no_lists=(request.args.get("refresh_no_lists") == "1"),
         store_unavailable=unavailable,
         window=window_i,
-        window_label=_window_label(window_i),
         adblock_icap_summary=adblock_icap_summary,
         active_artifact=active_artifact,
         artifact_build=artifact_build,
@@ -9429,14 +9443,16 @@ def webfilter():
         whitelist_max_entries=WEBFILTER_WHITELIST_MAX_ENTRIES,
         safe_browsing_status=safe_browsing_status,
         window=window_i,
-        window_label=_window_label(window_i),
         err=(request.args.get("err") or ""),
         err_source=(request.args.get("err_source") == "1"),
+        err_detail=(request.args.get("err_detail") or ""),
+        saved=(request.args.get("saved") == "1"),
         err_safe_browsing_lists=(request.args.get("err_safe_browsing_lists") == "1"),
         err_safe_browsing_key=(request.args.get("err_safe_browsing_key") == "1"),
         safe_browsing_saved=(request.args.get("safe_browsing_saved") == "1"),
         wl_ok=(request.args.get("wl_ok") == "1"),
         wl_err=(request.args.get("wl_err") or ""),
+        wl_value=(request.args.get("wl_value") or ""),
     )
 
 
@@ -9474,16 +9490,14 @@ def sslfilter():
             return _redirect_to("sslfilter", err=public_error_message(exc))
 
     rules = store.list_all()
-    pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
+    _pac_target, pac_url, pac_warning = _selected_proxy_pac_context()
     policy_runtime_state = _policy_runtime_state(get_proxy_id())
     return render_template(
         "sslfilter.html",
         rules=rules,
         policy_runtime_state=policy_runtime_state,
-        pac_target=pac_target,
         pac_url=pac_url,
         pac_warning=pac_warning,
-        private_dst_nets=store.private_dst_nets,
         private_dst_metadata=pac_private_local_destination_metadata(),
         compatibility_presets=store.list_compatibility_presets(),
         ok=(request.args.get("ok") == "1"),

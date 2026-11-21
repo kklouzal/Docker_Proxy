@@ -1056,6 +1056,7 @@ a.brand:hover{
   align-items:center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.03);
@@ -1065,6 +1066,7 @@ a.brand:hover{
   display:flex;
   align-items:center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .webfilter-toggle{

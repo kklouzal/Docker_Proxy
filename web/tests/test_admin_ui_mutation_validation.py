@@ -258,7 +258,7 @@ def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
     assert "Whitelist entries on this page apply only to Edge-2." in text
     assert "Policy change saved; proxy reconciliation is queued" in text
     assert "not yet proven applied" in text
-    assert "Whitelist entry saved and queued for proxy reconciliation." in text
+    assert "Whitelist entry saved." in text
     assert "Whitelist entry added." not in text
 
 
@@ -296,7 +296,7 @@ def test_webfilter_whitelist_reports_reconcile_queue_failure_without_success(
     text = page.get_data(as_text=True)
     assert "Sync not queued" in text
     assert "Policy changes were saved, but proxy reconciliation was not queued." in text
-    assert "Whitelist entry saved and queued" not in text
+    assert "Whitelist entry saved." not in text
 
 
 def test_sslfilter_forms_preserve_selected_proxy_context(monkeypatch, tmp_path) -> None:
@@ -962,3 +962,21 @@ def test_pac_rejected_profile_and_backup_input_is_kept_for_correction(
     assert 'value="bad host!"' in body
     assert 'value="8080"' in body
     assert store.backup_proxies == []
+
+
+def test_webfilter_rejected_whitelist_entry_is_kept_for_correction(
+    monkeypatch, tmp_path
+):
+    loaded, client = _loaded(monkeypatch, tmp_path)
+
+    response = _post(
+        client,
+        "/webfilter?tab=whitelist",
+        {"tab": "whitelist", "action": "whitelist_add", "whitelist_domain": "bad host"},
+    )
+
+    location = response.headers.get("Location", "")
+    assert "wl_err=" in location
+    page = client.get(location).get_data(as_text=True)
+    assert 'value="bad host"' in page
+    assert loaded.operation_ledger.operations == []
