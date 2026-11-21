@@ -1940,8 +1940,20 @@ def test_substitute_request_host_preserves_private_lan_fallback_hosts(
     )
 
 
-def test_emergency_pac_request_host_substitution_replaces_invalid_host() -> None:
+def test_emergency_pac_request_host_substitution_replaces_invalid_host(
+    monkeypatch,
+) -> None:
     from services import pac_renderer  # type: ignore
+
+    # The emergency PAC serves control-plane outages: pin the unavailable
+    # chain store (primary proxy only, no DIRECT) instead of depending on
+    # whether a test database happens to be reachable.
+    def _unavailable_store():
+        msg = "PAC store unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _unavailable_store)
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _unavailable_store)
 
     rendered = pac_request.substitute_request_host(
         pac_renderer.build_emergency_pac(),
