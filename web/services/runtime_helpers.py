@@ -51,15 +51,6 @@ def normalize_config_bool(value: object | None, *, default: bool = False) -> boo
     return default
 
 
-def normalize_icap_worker_count(value: object) -> int:
-    """Parse and clamp an ICAP worker count to the supported 1..4 range."""
-    try:
-        workers = int(str(value).strip())
-    except Exception:
-        workers = 1
-    return max(1, min(workers, 4))
-
-
 def env_bool(name: str, *, default: bool) -> bool:
     """Parse an operational environment flag; empty or unknown keeps ``default``.
 
