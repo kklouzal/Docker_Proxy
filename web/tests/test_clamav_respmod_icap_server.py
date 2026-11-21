@@ -5074,6 +5074,7 @@ def _streaming_server(server, scanner, **overrides):
         "client_timeout": 0.5,
         "max_connections": 4,
         "stream_hold_bytes": 8,
+        "progressive_hold_bytes": 8,
     }
     options.update(overrides)
     return StreamingServer(("127.0.0.1", 0), **options)
@@ -5217,6 +5218,24 @@ def test_hold_covers_at_least_one_percent_of_a_declared_length() -> None:
         assert srv.stream_hold_bytes_for(b"10001") == 101
         # Never verified, so nothing is held back.
         assert srv.stream_hold_bytes_for(str((1 << 20) + 1).encode()) == 0
+
+
+def test_hold_size_per_mode() -> None:
+    server = _load_server()
+    mode = server.HoldMode
+    with _streaming_server(
+        server, CleanScanner(), stream_hold_bytes=8, progressive_hold_bytes=3
+    ) as srv:
+        # Pages and scripts: a fixed small tail, no percentage of the length.
+        assert srv.stream_hold_bytes_for(b"10001", mode=mode.PROGRESSIVE) == 3
+        assert srv.stream_hold_bytes_for(None, mode=mode.PROGRESSIVE) == 3
+        assert srv.stream_hold_bytes_for(b"10001", mode=mode.WHOLE) == 1 << 20
+        big = str((1 << 20) + 1).encode()
+        for each in mode:
+            assert srv.stream_hold_bytes_for(big, mode=each) == 0
+    with _streaming_server(server, CleanScanner(), progressive_hold_bytes=0) as srv:
+        # Never zero: an infected page must still be cut off before its end.
+        assert srv.progressive_hold_bytes == 1
 
 
 def test_streamed_unknown_length_over_limit_fail_closed_aborts() -> None:
@@ -5576,35 +5595,35 @@ def test_clamd_size_limit_is_handled_like_the_helper_scan_limit(
         assert "action=block_unverified" in caplog.text
 
 
-# --- Whole-body hold for content rendered while it arrives -------------------
+# --- Verdict hold by content type ------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("content_type", "whole"),
+    ("content_type", "mode"),
     [
-        (b"Content-Type: text/html; charset=utf-8\r\n", True),
-        (b"Content-Type: TEXT/HTML\r\n", True),
-        (b"Content-Type: application/xhtml+xml\r\n", True),
-        (b"Content-Type: text/javascript\r\n", True),
-        (b"Content-Type: application/x-javascript\r\n", True),
-        (b"Content-Type: text/jscript\r\n", True),
-        (b"Content-Type: image/svg+xml\r\n", True),
-        (b"Content-Type: application/pdf\r\n", True),
-        (b"", True),  # missing: browsers sniff it
-        (b"Content-Type: \r\n", True),
-        (b"Content-Type: html\r\n", True),
-        (b"Content-Type: video/mp4\r\nContent-Type: text/html\r\n", True),
-        (b"Content-Type: video/mp4\r\n", False),
-        (b"Content-Type: audio/mpeg\r\n", False),
-        (b"Content-Type: application/octet-stream\r\n", False),
-        (b"Content-Type: application/zip\r\n", False),
-        (b"Content-Type: text/plain\r\n", False),
+        (b"Content-Type: text/html; charset=utf-8\r\n", "PROGRESSIVE"),
+        (b"Content-Type: TEXT/HTML\r\n", "PROGRESSIVE"),
+        (b"Content-Type: application/xhtml+xml\r\n", "PROGRESSIVE"),
+        (b"Content-Type: text/javascript\r\n", "PROGRESSIVE"),
+        (b"Content-Type: application/x-javascript\r\n", "PROGRESSIVE"),
+        (b"Content-Type: text/jscript\r\n", "PROGRESSIVE"),
+        (b"Content-Type: image/svg+xml\r\n", "WHOLE"),
+        (b"Content-Type: application/pdf\r\n", "WHOLE"),
+        (b"", "WHOLE"),  # missing: browsers sniff it
+        (b"Content-Type: \r\n", "WHOLE"),
+        (b"Content-Type: html\r\n", "WHOLE"),
+        (b"Content-Type: video/mp4\r\nContent-Type: text/html\r\n", "WHOLE"),
+        (b"Content-Type: video/mp4\r\n", "TAIL"),
+        (b"Content-Type: audio/mpeg\r\n", "TAIL"),
+        (b"Content-Type: application/octet-stream\r\n", "TAIL"),
+        (b"Content-Type: application/zip\r\n", "TAIL"),
+        (b"Content-Type: text/plain\r\n", "TAIL"),
     ],
 )
-def test_whole_body_hold_classification(content_type: bytes, whole: bool) -> None:
+def test_hold_mode_classification(content_type: bytes, mode: str) -> None:
     server = _load_server()
     http_header = b"HTTP/1.1 200 OK\r\n" + content_type + b"Content-Length: 9\r\n\r\n"
-    assert server._http_response_held_whole(http_header) is whole
+    assert server._http_response_hold_mode(http_header) is server.HoldMode[mode]
 
 
 def test_held_body_spools_beyond_its_memory_limit_in_order() -> None:
@@ -5627,31 +5646,44 @@ def test_held_body_spools_beyond_its_memory_limit_in_order() -> None:
 _HTML_PARTS = [b"<html>" + b"A" * 20, b"B" * 20, b"C" * 20 + b"</html>"]
 
 
-@pytest.mark.parametrize("fail_open", [True, False])
-def test_html_is_held_whole_and_delivered_after_a_clean_verdict(
-    fail_open: bool,
+@pytest.mark.parametrize(
+    "content_type", [b"text/html; charset=utf-8", b"text/javascript"]
+)
+def test_html_and_javascript_stream_with_the_small_tail_hold(
+    content_type: bytes,
 ) -> None:
     server = _load_server()
     scanner = MarkerScanner()
     payload = b"".join(_HTML_PARTS)
     http_header = (
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Type: "
+        + content_type
+        + b"\r\n"
         + f"Content-Length: {len(payload)}\r\n\r\n".encode()
     )
-    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+    with _streaming_server(
+        server, scanner, stream_hold_bytes=1 << 10, progressive_hold_bytes=8
+    ) as icap_server:
         seen, response, _ending = _run_stream(icap_server, http_header, _HTML_PARTS)
 
-    # Far beyond the 8-byte tail hold, yet nothing reaches Squid early.
-    assert seen == [b"", b"", b""]
+    # Far below the download tail hold, yet forwarded while it arrives; only
+    # the newest 8 bytes wait for the verdict.
+    _header, first, terminated = _decode_icap_response_body(seen[0])
+    assert first == _HTML_PARTS[0][:-8]
+    assert terminated is False
+    _header, second, _ = _decode_icap_response_body(seen[1])
+    assert second == payload[: len(_HTML_PARTS[0]) + len(_HTML_PARTS[1]) - 8]
     adapted_header, body, terminated = _decode_icap_response_body(response)
     assert f"Content-Length: {len(payload)}\r\n".encode() in adapted_header
     assert body == payload
     assert terminated is True
     assert icap_server.stats.counters == {"clean": 1}
+    # A small page keeps the short clamd verdict timeout once forwarded.
+    assert scanner.verdict_timeouts == [None]
 
 
 @pytest.mark.parametrize("fail_open", [True, False])
-def test_infected_held_html_gets_the_block_page(fail_open: bool) -> None:
+def test_infected_streamed_html_is_cut_off_before_its_tail(fail_open: bool) -> None:
     server = _load_server()
     scanner = MarkerScanner()
     parts = [*_HTML_PARTS[:2], MARKER + _HTML_PARTS[2]]
@@ -5661,8 +5693,52 @@ def test_infected_held_html_gets_the_block_page(fail_open: bool) -> None:
         + f"Content-Length: {len(payload)}\r\n\r\n".encode()
     )
     with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    assert terminated is False
+    assert body == payload[:-8]
+    assert ending in {"reset", "eof"}
+    assert icap_server.stats.counters == {"infected": 1, "stream_aborts": 1}
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_infected_html_within_the_tail_hold_gets_the_block_page(
+    fail_open: bool,
+) -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [b"<p>", MARKER]
+    payload = b"".join(parts)
+    http_header = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+    )
+    with _streaming_server(
+        server, scanner, fail_open=fail_open, progressive_hold_bytes=len(payload)
+    ) as icap_server:
         seen, response, _ending = _run_stream(icap_server, http_header, parts)
 
+    assert seen == [b"", b""]
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert b"Detection: Marker" in response
+    assert icap_server.stats.counters == {"infected": 1}
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_infected_held_svg_gets_the_block_page(fail_open: bool) -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [*_HTML_PARTS[:2], MARKER + _HTML_PARTS[2]]
+    payload = b"".join(parts)
+    http_header = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+    )
+    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    # Far beyond the 8-byte tail holds, yet nothing reaches Squid early.
     assert seen == [b"", b"", b""]
     assert b"HTTP/1.1 403 Forbidden" in response
     assert b"Detection: Marker" in response
@@ -5689,13 +5765,13 @@ def test_large_held_body_waits_for_the_scan_timeout() -> None:
 
 
 @pytest.mark.parametrize("fail_open", [True, False])
-def test_held_html_over_the_scan_limit_keeps_the_over_limit_policy(
+def test_held_svg_over_the_scan_limit_keeps_the_over_limit_policy(
     fail_open: bool,
 ) -> None:
     server = _load_server()
     scanner = RecordingScanner()
-    parts = [b"<html>" + b"A" * 20, b"B" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+    parts = [b"<svg>" + b"A" * 21, b"B" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\n\r\n"
     with _streaming_server(
         server, scanner, fail_open=fail_open, max_scan_bytes=30
     ) as icap_server:

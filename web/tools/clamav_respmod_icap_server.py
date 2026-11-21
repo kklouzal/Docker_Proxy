@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import collections
 import contextlib
+import enum
 import logging
 import os
 import re
@@ -58,25 +59,30 @@ STREAM_HOLD_PERCENT = 1
 # Socket inactivity bound once a RESPMOD body is flowing; matches Squid's
 # icap_io_timeout so a slow origin or client is not cut off by the helper.
 DEFAULT_BODY_TIMEOUT = 300.0
-# Verdict wait after a streamed (larger than the hold) body: clamd scan time
+# Verdict wait after a body larger than stream_hold_bytes: clamd scan time
 # grows with size, and timing out there would deliver an unscanned tail in
-# fail-open mode. Kept below Squid's icap_io_timeout (300 s). Held (small)
-# bodies keep the short clamd timeout so a hung clamd cannot stall browsing.
+# fail-open mode. Kept below Squid's icap_io_timeout (300 s). Smaller bodies
+# (held whole, or pages/scripts streamed with the progressive tail) keep the
+# short clamd timeout so a hung clamd cannot stall browsing.
 DEFAULT_SCAN_TIMEOUT = 120.0
 # Held body bytes kept in memory per response before spilling to a temp file.
 DEFAULT_HELD_MEMORY_BYTES = 1024 * 1024
 # Largest piece of a held body written to Squid at once.
 HELD_WRITE_BYTES = 1024 * 1024
-# Media types a browser renders or executes while they arrive (HTML, the
-# WHATWG JavaScript MIME type essence list, SVG, PDF): delivered whole after a
-# clean verdict, never progressively. Video, audio and downloads keep the
-# rolling tail hold.
-FULL_HOLD_MEDIA_TYPES = frozenset(
+# Media types delivered whole after a clean verdict, never progressively.
+FULL_HOLD_MEDIA_TYPES = frozenset({"image/svg+xml", "application/pdf"})
+# Bytes of an HTML/JavaScript body withheld until the verdict (owner decision
+# 2026-11-21: stream pages and scripts for speed). Everything before this tail
+# reaches the browser while it downloads; an infected body is cut off before
+# the tail, so a script never completes (browsers run only complete scripts)
+# and a page never finishes loading. A body this small is answered whole.
+DEFAULT_PROGRESSIVE_HOLD_BYTES = 1024
+# HTML and the WHATWG JavaScript MIME type essence list. Video, audio and other
+# downloads keep the larger rolling tail hold.
+PROGRESSIVE_MEDIA_TYPES = frozenset(
     {
         "text/html",
         "application/xhtml+xml",
-        "image/svg+xml",
-        "application/pdf",
         # https://mimesniff.spec.whatwg.org/#javascript-mime-type
         "application/ecmascript",
         "application/javascript",
@@ -188,12 +194,12 @@ class _BodyStream:
     keeps the 403 block page and the fail-open 204 for small responses.
 
     Held bytes stay in memory up to ``memory_limit`` and then go to an
-    unlinked temporary file, so a body held whole until its verdict (HTML,
-    scripts, SVG, PDF: up to the scan limit) does not live in RAM.
+    unlinked temporary file, so a body held whole until its verdict (SVG,
+    PDF, unusable Content-Type: up to the scan limit) does not live in RAM.
     """
 
     hold_bytes: int
-    # Held whole until the verdict (content rendered while it arrives).
+    # Held whole until the verdict (HoldMode.WHOLE).
     whole: bool = False
     memory_limit: int = DEFAULT_HELD_MEMORY_BYTES
     held_length: int = 0
@@ -1137,13 +1143,21 @@ def _http_header_for_body_replay(http_header: bytes, body_length: int | None) ->
     return CRLF.join(replay_lines) + HEADER_END
 
 
-def _http_response_held_whole(http_header: bytes) -> bool:
-    """Whether the response is delivered only after a clean verdict.
+class HoldMode(enum.Enum):
+    """How much of a RESPMOD body is withheld from Squid until the verdict."""
 
-    True for FULL_HOLD_MEDIA_TYPES (case-insensitive essence, parameters
-    ignored). A missing, empty, malformed or repeated Content-Type is held
-    too: browsers sniff such responses and may render them as HTML, so they
-    must not reach the client before the verdict.
+    TAIL = "tail"  # downloads: the rolling stream_hold_bytes tail
+    PROGRESSIVE = "progressive"  # HTML/JavaScript: a small tail
+    WHOLE = "whole"  # SVG, PDF, unusable Content-Type: everything
+
+
+def _http_response_hold_mode(http_header: bytes) -> HoldMode:
+    """Classify a response by its Content-Type for the verdict hold.
+
+    The essence is compared case-insensitively, parameters ignored. A missing,
+    empty, malformed or repeated Content-Type is held whole: browsers sniff
+    such responses and may render them as HTML, so they must not reach the
+    client before the verdict.
     """
     values = [
         line.split(b":", 1)[1]
@@ -1151,11 +1165,16 @@ def _http_response_held_whole(http_header: bytes) -> bool:
         if b":" in line and line.split(b":", 1)[0].strip().lower() == b"content-type"
     ]
     if len(values) != 1:
-        return True
-    essence = values[0].split(b";", 1)[0].strip().lower()
-    if not essence or b"/" not in essence:
-        return True
-    return essence.decode("ascii", errors="replace") in FULL_HOLD_MEDIA_TYPES
+        return HoldMode.WHOLE
+    raw_essence = values[0].split(b";", 1)[0].strip().lower()
+    if not raw_essence or b"/" not in raw_essence:
+        return HoldMode.WHOLE
+    essence = raw_essence.decode("ascii", errors="replace")
+    if essence in FULL_HOLD_MEDIA_TYPES:
+        return HoldMode.WHOLE
+    if essence in PROGRESSIVE_MEDIA_TYPES:
+        return HoldMode.PROGRESSIVE
+    return HoldMode.TAIL
 
 
 def blocked_response(signature: str | None) -> bytes:
@@ -1495,8 +1514,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 try:
                     result = scanner.finish(
                         verdict_timeout=server.scan_timeout
-                        if stream.headers_sent
-                        or stream.length > server.stream_hold_bytes
+                        if stream.length > server.stream_hold_bytes
                         else None
                     )
                 except Exception as exc:
@@ -1636,13 +1654,12 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     # The body may legitimately idle for longer than the
                     # header-phase client timeout (slow origin, slow client).
                     self.request.settimeout(self.server.body_timeout)
-                    whole = _http_response_held_whole(http_header)
+                    mode = _http_response_hold_mode(http_header)
                     stream = _BodyStream(
                         hold_bytes=self.server.stream_hold_bytes_for(
-                            _http_declared_content_length(http_header),
-                            whole=whole,
+                            _http_declared_content_length(http_header), mode=mode
                         ),
-                        whole=whole,
+                        whole=mode is HoldMode.WHOLE,
                     )
                     try:
                         self._stream_respmod_body(
@@ -1794,6 +1811,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         max_connections: int = DEFAULT_MAX_CONNECTIONS,
         max_scans: int = DEFAULT_MAX_SCANS,
         stream_hold_bytes: int = DEFAULT_STREAM_HOLD_BYTES,
+        progressive_hold_bytes: int = DEFAULT_PROGRESSIVE_HOLD_BYTES,
         body_timeout: float = DEFAULT_BODY_TIMEOUT,
         scan_timeout: float = DEFAULT_SCAN_TIMEOUT,
     ) -> None:
@@ -1807,6 +1825,8 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.max_connections = max_connections
         self.max_scans = max_scans
         self.stream_hold_bytes = max(0, stream_hold_bytes)
+        # At least one byte, so an infected body can always be cut off.
+        self.progressive_hold_bytes = max(1, progressive_hold_bytes)
         self.body_timeout = max(client_timeout, body_timeout)
         self.scan_timeout = max(clamd_timeout, scan_timeout)
         self._request_slots = threading.BoundedSemaphore(max_connections)
@@ -1830,20 +1850,21 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.stats.emit_if_due()
 
     def stream_hold_bytes_for(
-        self, declared_length: bytes | None, *, whole: bool = False
+        self, declared_length: bytes | None, *, mode: HoldMode = HoldMode.TAIL
     ) -> int:
         """Return the bytes withheld from Squid until the clamd verdict.
 
-        That is at least ``stream_hold_bytes`` and at least
-        STREAM_HOLD_PERCENT of a declared length, or the whole body up to the
-        scan limit when ``whole`` (content rendered while it arrives). A
-        declared length over the scan limit is never verified, so nothing is
-        held for it.
+        TAIL: at least ``stream_hold_bytes`` and at least STREAM_HOLD_PERCENT
+        of a declared length. PROGRESSIVE: ``progressive_hold_bytes``. WHOLE:
+        the whole body up to the scan limit. A declared length over the scan
+        limit is never verified, so nothing is held for it.
         """
         if declared_length is not None and int(declared_length) > self.max_scan_bytes:
             return 0
-        if whole:
+        if mode is HoldMode.WHOLE:
             return self.max_scan_bytes
+        if mode is HoldMode.PROGRESSIVE:
+            return self.progressive_hold_bytes
         if declared_length is None:
             return self.stream_hold_bytes
         length = int(declared_length)

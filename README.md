@@ -397,15 +397,21 @@ can lower, but never raise, that scheduled-housekeeping bound.
   withheld until clamd's verdict (at least 256 KiB, or
   `CLAMAV_RESPMOD_STREAM_HOLD_BYTES`, and at least 1% of a declared length).
   - A clean response completes normally once the verdict arrives.
-  - Content a browser renders or runs while it arrives is held whole and
-    delivered only after a clean verdict, so an infected one gets the 403
-    page (or the fail-closed answer) like a small file: `Content-Type`
-    `text/html`, `application/xhtml+xml`, `image/svg+xml`,
-    `application/pdf` and the JavaScript types of the WHATWG MIME Sniffing
-    list (`text/javascript`, `application/javascript`,
+  - Pages and scripts stream with a much smaller held tail (1 KiB) so the
+    browser can parse and render them while they download: `Content-Type`
+    `text/html`, `application/xhtml+xml` and the JavaScript types of the
+    WHATWG MIME Sniffing list (`text/javascript`, `application/javascript`,
     `application/x-javascript`, `application/ecmascript`, ...), compared
-    case-insensitively without parameters. A response without a usable
-    `Content-Type` (missing, empty, malformed or repeated) is held too,
+    case-insensitively without parameters. An infected one larger than the
+    tail is cut off before its end: the page never finishes loading and the
+    script never completes (browsers run only complete scripts), but a
+    partially delivered page may already have been rendered, including inline
+    scripts, before the verdict (owner decision 2026-11-21, for speed). Pages
+    and scripts up to 1 KiB still get the 403 page.
+  - `image/svg+xml` and `application/pdf` are held whole and delivered only
+    after a clean verdict, so an infected one gets the 403 page (or the
+    fail-closed answer) like a small file. A response without a usable
+    `Content-Type` (missing, empty, malformed or repeated) is held whole too,
     because browsers sniff such responses and may render them as HTML.
     Video, audio and other downloads keep streaming with the tail hold.
     Held bytes stay in memory up to 1 MiB per response and then in an
@@ -425,10 +431,12 @@ can lower, but never raise, that scheduled-housekeeping bound.
   - With fail-closed AV, a scan failure or scan-limit overrun after delivery
     started aborts the same way; before delivery started it returns the
     502/403 page as before.
-  - After a large body arrives the helper waits up to `CLAMD_SCAN_TIMEOUT`
-    (120 s by default; keep it at least the remote clamd's scan time for the
-    largest scanned file and below Squid's `icap_io_timeout`) for the verdict;
-    small bodies keep `CLAMD_TIMEOUT`. A body may idle for up to
+  - After a body larger than the 256 KiB download hold
+    (`CLAMAV_RESPMOD_STREAM_HOLD_BYTES`) arrives, whatever its type, the
+    helper waits up to `CLAMD_SCAN_TIMEOUT` (120 s by default; keep it at
+    least the remote clamd's scan time for the largest scanned file and below
+    Squid's `icap_io_timeout`) for the verdict; smaller bodies keep
+    `CLAMD_TIMEOUT`. A body may idle for up to
     `CLAMAV_RESPMOD_BODY_TIMEOUT` (300 s) between bytes, so slow or stalling
     origins are not cut off.
   - Squid passes a paused or slow client on to the helper as a paused body,
