@@ -92,7 +92,7 @@
                     {% if proxy_inventory %}
                     <form method="get" action="{{ request.path }}" class="proxy-switcher">
                         {% for key, value in request.args.items() %}
-                            {% if key != 'proxy_id' %}
+                            {% if key not in ['proxy_id', 'ok', 'msg'] %}
                             <input type="hidden" name="{{ key }}" value="{{ value }}">
                             {% endif %}
                         {% endfor %}

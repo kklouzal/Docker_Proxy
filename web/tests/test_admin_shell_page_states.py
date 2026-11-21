@@ -98,3 +98,14 @@ def test_certs_page_hides_download_until_a_ca_exists(monkeypatch, tmp_path) -> N
 
     assert "/certs/download/" not in body
     assert "Generate CA" in body
+
+
+def test_proxy_switcher_drops_one_shot_feedback_params(monkeypatch, tmp_path) -> None:
+    _loaded, client = _client(monkeypatch, tmp_path)
+
+    body = client.get("/?ok=1&msg=queued&pane=x").get_data(as_text=True)
+
+    assert 'id="proxy-id"' in body
+    assert '<input type="hidden" name="pane" value="x">' in body
+    assert '<input type="hidden" name="msg"' not in body
+    assert '<input type="hidden" name="ok"' not in body
