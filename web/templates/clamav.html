@@ -1,5 +1,4 @@
 {% extends "layout.html" %}
-{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}ClamAV · Docker Proxy{% endblock %}
 
@@ -20,8 +19,6 @@
     <a class="btn ghost" href="{{ url_for('observability', pane='performance', window=window) }}">Latency pane</a>
   </div>
 </section>
-
-{% call scope_notice('proxy', 'Selected proxy only', 'Settings, health checks, and tests on this page affect only ' ~ active_proxy.display_name ~ '.') %}{% endcall %}
 
 <div class="actions">
   <form method="post" action="{{ url_for('clamav_toggle') }}">

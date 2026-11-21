@@ -665,11 +665,6 @@ a.brand:hover{
   box-shadow: 0 14px 34px rgba(0,0,0,.24);
 }
 
-.scope-notice-proxy{
-  border-color: rgba(122,162,255,.24);
-  background: linear-gradient(180deg, rgba(122,162,255,.12), rgba(255,255,255,.04));
-}
-
 .scope-notice-global{
   border-color: rgba(155,135,255,.24);
   background: linear-gradient(180deg, rgba(155,135,255,.12), rgba(255,255,255,.04));
@@ -713,8 +708,7 @@ a.brand:hover{
 
 .scope-notice-details,
 .help,
-.label,
-.alert{
+.label{
   color: var(--muted-2);
   font-size: 12px;
   line-height: 1.5;
@@ -912,19 +906,6 @@ a.brand:hover{
   letter-spacing: .2px;
 }
 
-.alert{
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(255,255,255,.12);
-  background: rgba(255,255,255,.04);
-}
-
-.alert.error{
-  border-color: rgba(255,107,107,.24);
-  background: rgba(255,107,107,.10);
-  color: rgba(255,255,255,.92);
-}
-
 .banner{
   display:flex;
   align-items:flex-start;
@@ -934,6 +915,12 @@ a.brand:hover{
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(255,255,255,.04);
   box-shadow: var(--shadow);
+}
+
+/* The badge keeps its one-line label; the copy takes the remaining width. */
+.banner > .badge{
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .compact-banner{

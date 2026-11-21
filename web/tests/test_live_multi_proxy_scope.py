@@ -51,12 +51,12 @@ def test_live_remote_layout_pins_internal_links_and_actions_to_active_proxy(
 @pytest.mark.parametrize(
     ("path", "expected_text"),
     [
-        ("/squid/config", "Selected proxy configuration"),
+        ("/squid/config", "Pages and actions in this tab target this proxy"),
         ("/adblock", "Shared subscriptions + selected proxy runtime"),
         ("/webfilter", "Shared category feed + selected proxy enforcement"),
         ("/certs", "Shared certificate authority"),
-        ("/administration", "Shared control-plane access"),
-        ("/proxies", "Registered proxy inventory and targeting"),
+        ("/administration", "Admin UI access"),
+        ("/proxies", "All registered proxies"),
     ],
 )
 def test_live_remote_scope_notices_render_on_key_pages(

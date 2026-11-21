@@ -38,29 +38,29 @@
 </section>
 
 {% if load_error %}
-<div class="alert error" role="alert">Observability data could not be loaded from MySQL, so the figures below are empty rather than zero activity. Check the Admin UI logs for the database error, then reload.</div>
+<div class="banner error" role="alert"><span class="badge danger">Unavailable</span><div class="banner-copy"><span class="small">Observability data could not be loaded from MySQL, so the figures below are empty rather than zero activity. Check the Admin UI logs for the database error, then reload.</span></div></div>
 {% endif %}
 {% if pane == 'overview' %}
   {% if request.args.get('logs_cleared') == '1' %}
-  <div class="surface-note small" role="status">Clear Logs completed. Wiped stored MySQL observability history from {{ request.args.get('clear_tables', '0') }} tables across the fleet.</div>
+  <div class="banner success" role="status"><span class="badge ok">Cleared</span><div class="banner-copy"><span class="small">Clear Logs completed. Wiped stored MySQL observability history from {{ request.args.get('clear_tables', '0') }} tables across the fleet.</span></div></div>
   {% elif request.args.get('clear_error') == '1' %}
-  <div class="alert error" role="alert">Clear Logs failed. Stored MySQL observability history was left unchanged; check Admin UI logs for the database error.</div>
+  <div class="banner error" role="alert"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Clear Logs failed. Stored MySQL observability history was left unchanged; check Admin UI logs for the database error.</span></div></div>
   {% else %}
   <div class="surface-note small">Clear Logs is a fleet-wide database maintenance action. It wipes stored MySQL request, SSL, security, web-filter, ad-block, and performance log history for every proxy without changing proxy configuration or policy settings.</div>
   {% endif %}
 {% elif pane == 'reports' %}
   {% if request.args.get('schedule_saved') == '1' %}
-  <div class="surface-note small" role="status">Export preset saved. Use Export now to download it with its saved view, format, window, and identity mode.</div>
+  <div class="banner success" role="status"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Export preset saved. Use Export now to download it with its saved view, format, window, and identity mode.</span></div></div>
   {% elif request.args.get('schedule_error') == '1' %}
-  <div class="alert error" role="alert">Export preset was not saved. Check Admin UI logs for the database error.</div>
+  <div class="banner error" role="alert"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">Export preset was not saved. Check Admin UI logs for the database error.</span></div></div>
   {% endif %}
 {% elif pane == 'ssl' %}
   {% if request.args.get('error') == '1' %}
-  <div class="alert error" role="alert">No-bump exclusion was not saved. {{ request.args.get('msg', '') }}</div>
+  <div class="banner error" role="alert"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">No-bump exclusion was not saved. {{ request.args.get('msg', '') }}</span></div></div>
   {% elif request.args.get('policy_error') == '1' %}
-  <div class="alert error" role="alert">No-bump exclusion for {{ search }} was saved, but proxy reconciliation was not queued. {{ request.args.get('policy_msg', '') }}</div>
+  <div class="banner error" role="alert"><span class="badge danger">Sync not queued</span><div class="banner-copy"><span class="small">No-bump exclusion for {{ search }} was saved, but proxy reconciliation was not queued. {{ request.args.get('policy_msg', '') }}</span></div></div>
   {% elif request.args.get('policy_queue') == '1' %}
-  <div class="surface-note small" role="status">No-bump exclusion for {{ search }} saved; proxy reconciliation is queued, not yet proven applied.</div>
+  <div class="banner success" role="status"><span class="badge ok">Queued</span><div class="banner-copy"><span class="small">No-bump exclusion for {{ search }} saved; proxy reconciliation is queued, not yet proven applied.</span></div></div>
   {% endif %}
 {% endif %}
 
@@ -81,16 +81,16 @@
   </div>
   <div class="card-body content-stack">
     {% if request.args.get('settings_saved') == '1' %}
-    <div class="surface-note small" role="status">Retention settings saved. Daily housekeeping will clear observability records older than {{ request.args.get('retention_days', retention.retention_days) }} days.</div>
+    <div class="banner success" role="status"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">Retention settings saved. Daily housekeeping will clear observability records older than {{ request.args.get('retention_days', retention.retention_days) }} days.</span></div></div>
     {% elif request.args.get('settings_error') == '1' %}
-    <div class="alert error" role="alert">Retention settings were not saved. Check Admin UI logs for the database error.</div>
+    <div class="banner error" role="alert"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">Retention settings were not saved. Check Admin UI logs for the database error.</span></div></div>
     {% endif %}
     {% if request.args.get('maintenance_run') == '1' %}
-    <div class="surface-note small" role="status">Database maintenance completed. Pruned records older than {{ request.args.get('retention_days', retention.retention_days) }} days, then analyzed and optimized {{ request.args.get('maintained_tables', '0') }} tables.</div>
+    <div class="banner success" role="status"><span class="badge ok">Completed</span><div class="banner-copy"><span class="small">Database maintenance completed. Pruned records older than {{ request.args.get('retention_days', retention.retention_days) }} days, then analyzed and optimized {{ request.args.get('maintained_tables', '0') }} tables.</span></div></div>
     {% elif request.args.get('maintenance_busy') == '1' %}
-    <div class="surface-note small" role="status">Database maintenance is already running. The manual request was skipped.</div>
+    <div class="banner info" role="status"><span class="badge">Skipped</span><div class="banner-copy"><span class="small">Database maintenance is already running. The manual request was skipped.</span></div></div>
     {% elif request.args.get('maintenance_error') == '1' %}
-    <div class="alert error" role="alert">Database maintenance failed. Check Admin UI logs for the database error.</div>
+    <div class="banner error" role="alert"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Database maintenance failed. Check Admin UI logs for the database error.</span></div></div>
     {% endif %}
     <form class="form" method="post" action="{{ url_for('observability_settings') }}">
       {{ csrf_field() }}
@@ -633,9 +633,9 @@
 
 {% elif pane == 'remediation' %}
 {% if request.args.get('remediation_ok') == '1' %}
-<div class="surface-note small" role="status">{{ request.args.get('remediation_msg', 'Remediation action completed.') }}</div>
+<div class="banner success" role="status"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">{{ request.args.get('remediation_msg', 'Remediation action completed.') }}</span></div></div>
 {% elif request.args.get('remediation_error') == '1' %}
-<div class="alert error" role="alert">Remediation action failed. {{ request.args.get('remediation_msg', 'No policy change was saved.') }}</div>
+<div class="banner error" role="alert"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">Remediation action failed. {{ request.args.get('remediation_msg', 'No policy change was saved.') }}</span></div></div>
 {% endif %}
 <section class="card">
   <div class="card-header"><h2 class="card-title">Remediation suggestions</h2><span class="badge">{{ window_text }}</span></div>

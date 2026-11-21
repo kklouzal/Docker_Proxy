@@ -1,5 +1,4 @@
 {% extends "layout.html" %}
-{% from "_scope_macros.html" import scope_notice %}
 
 {% block title %}Squid Config · Docker Proxy{% endblock %}
 
@@ -27,10 +26,6 @@
             <a class="btn ghost" href="{{ url_for('certs') }}">Certificates</a>
         </div>
 </section>
-
-{% call scope_notice('proxy', 'Selected proxy configuration', 'Every tab on this page edits only ' ~ active_proxy.display_name ~ '.') %}
-<div>Changes here stay pinned to this proxy even if another browser tab switches proxies.</div>
-{% endcall %}
 
 {% if config_runtime_state %}
 <section class="card">

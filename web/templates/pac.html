@@ -1,5 +1,4 @@
 {% extends "layout.html" %}
-{% from "_scope_macros.html" import scope_notice %}
 {% from "_policy_runtime_state.html" import pac_runtime_card with context %}
 
 {% block title %}PAC Builder · Docker Proxy{% endblock %}
@@ -19,10 +18,6 @@
       <a class="btn ghost" href="{{ url_for('sslfilter') }}">Open SSL Filtering</a>
     </div>
 </section>
-
-{% call scope_notice('proxy', 'Selected proxy only', 'PAC profiles on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>Clients fetch PAC content from this proxy's own PAC listener.</div>
-{% endcall %}
 
 {% set create_form = profile_form if profile_form and profile_form.profile_id is none else none %}
 {% if form_error %}

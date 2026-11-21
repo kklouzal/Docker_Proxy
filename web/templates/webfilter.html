@@ -33,10 +33,6 @@
   <li><strong>{{ active_proxy.display_name }} only:</strong> whether filtering is enabled here, which categories are blocked here, and the domain test on this page.</li>
 </ul>
 {% endcall %}
-{% elif tab == 'whitelist' %}
-{% call scope_notice('proxy', 'Selected proxy only', 'Whitelist entries on this page apply only to ' ~ active_proxy.display_name ~ '.') %}
-<div>Whitelisted domains are allowed before category blocking.</div>
-{% endcall %}
 {% endif %}
 
 <div class="page-tabs">
@@ -153,9 +149,7 @@
       <div class="card-body">
         <div class="stack-lg">
           {% if err_source %}
-            <div class="alert error">
-              Not saved: a valid category source URL is required to enable web filtering.{% if err_detail %} {{ err_detail }}{% endif %}
-            </div>
+            <div class="banner error compact-banner"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">A valid category source URL is required to enable web filtering.{% if err_detail %} {{ err_detail }}{% endif %}</span></div></div>
           {% endif %}
 
           <section class="surface-panel">
@@ -272,14 +266,10 @@
                 </div>
               {% endif %}
               {% if err_safe_browsing_lists %}
-                <div class="alert error">
-                  Select at least one Google Safe Browsing threat list before enabling Safe Browsing.
-                </div>
+                <div class="banner error compact-banner"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">Select at least one Google Safe Browsing threat list before enabling Safe Browsing.</span></div></div>
               {% endif %}
               {% if err_safe_browsing_key %}
-                <div class="alert error">
-                  Enter a Google Safe Browsing API key before enabling Safe Browsing, or leave Safe Browsing disabled.
-                </div>
+                <div class="banner error compact-banner"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">Enter a Google Safe Browsing API key before enabling Safe Browsing, or leave Safe Browsing disabled.</span></div></div>
               {% endif %}
 
               <label class="check-row">
@@ -369,19 +359,13 @@
 
           </div>
           {% if settings.safe_browsing_last_error %}
-          <div class="alert error">
-            Safe Browsing refresh error: {{ settings.safe_browsing_last_error }}
-          </div>
+          <div class="banner error compact-banner"><span class="badge danger">Refresh failed</span><div class="banner-copy"><span class="small">Safe Browsing refresh error: {{ settings.safe_browsing_last_error }}</span></div></div>
           {% endif %}
           {% if settings.last_error %}
           {% if 'timed out' in settings.last_error|lower and not settings.last_success %}
-          <div class="alert warning">
-            The first category build timed out. Each build may run for up to 30 minutes before it is treated as failed.
-          </div>
+          <div class="banner warning compact-banner"><span class="badge warn">Timed out</span><div class="banner-copy"><span class="small">The first category build timed out. Each build may run for up to 30 minutes before it is treated as failed.</span></div></div>
           {% else %}
-          <div class="alert error">
-            Last refresh error: {{ settings.last_error }}
-          </div>
+          <div class="banner error compact-banner"><span class="badge danger">Refresh failed</span><div class="banner-copy"><span class="small">Last refresh error: {{ settings.last_error }}</span></div></div>
           {% endif %}
           {% endif %}
           <div class="surface-note small">The feed downloads when filtering is first enabled and then refreshes on a schedule.</div>

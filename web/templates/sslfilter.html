@@ -1,5 +1,4 @@
 {% extends 'layout.html' %}
-{% from "_scope_macros.html" import scope_notice %}
 {% from "_policy_runtime_state.html" import policy_runtime_card with context %}
 {% block title %}SSL Filtering · Docker Proxy{% endblock %}
 
@@ -127,10 +126,6 @@
     <a class="btn ghost" href="{{ url_for('observability', pane='cache') }}">Cache view</a>
   </div>
 </section>
-
-{% call scope_notice('proxy', 'Selected proxy only', 'SSL filtering and cache-bypass policy on this page belong only to ' ~ active_proxy.display_name ~ '.') %}
-<div>A domain or client can be on the no-bump list, the no-cache list, or both.</div>
-{% endcall %}
 
 {{ policy_runtime_card(policy_runtime_state, active_proxy) }}
 

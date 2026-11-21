@@ -254,8 +254,9 @@ def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
 
     page = client.get(location)
     text = page.get_data(as_text=True)
-    assert "Selected proxy only" in text
-    assert "Whitelist entries on this page apply only to Edge-2." in text
+    # The header proxy bar is the page's scope indicator.
+    assert '<option value="edge-2" selected>' in text
+    assert "Pages and actions in this tab target this proxy" in text
     assert "Policy change saved; proxy reconciliation is queued" in text
     assert "not yet proven applied" in text
     assert "Whitelist entry saved." in text

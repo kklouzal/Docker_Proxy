@@ -9,8 +9,8 @@
   </div>
 </section>
 
-{% if message %}<div class="alert success" role="status">Action completed: {{ message }}</div>{% endif %}
-{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+{% if message %}<div class="banner success" role="status"><span class="badge ok">Done</span><div class="banner-copy"><span class="small">Action completed: {{ message }}</span></div></div>{% endif %}
+{% if error %}<div class="banner error" role="alert"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">{{ error }}</span></div></div>{% endif %}
 
 <section class="card" aria-labelledby="pending-requests-heading">
   <div class="card-header">
