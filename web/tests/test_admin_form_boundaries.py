@@ -765,8 +765,7 @@ def test_adblock_runtime_toggle_queues_only_selected_proxy_without_shared_refres
         (
             {"action": "save_lists", "enabled_default": "on"},
             lambda store: (
-                store.refresh_requested == 1
-                and store.statuses[0].enabled is True
+                store.refresh_requested == 1 and store.statuses[0].enabled is True
             ),
         ),
         (
