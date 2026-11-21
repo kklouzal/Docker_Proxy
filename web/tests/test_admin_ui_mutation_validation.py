@@ -346,6 +346,9 @@ def test_ssl_error_exclusion_quick_action_queues_sslfilter_policy_sync(
     assert loaded.operation_ledger.operations[-1].proxy_id == "default"
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].status == "pending"
+    audit = [r for r in loaded.audit_store.records if r["kind"] == "ssl_errors_exclude"]
+    assert [r["ok"] for r in audit] == [True]
+    assert "domain=blocked.example" in audit[0]["detail"]
 
 
 def test_ssl_error_exclusion_quick_action_reports_invalid_domain_without_sync(
@@ -361,6 +364,9 @@ def test_ssl_error_exclusion_quick_action_reports_invalid_domain_without_sync(
     assert "error=1" in location
     assert loaded.sslfilter_store.no_bump_domains == []
     assert loaded.operation_ledger.operations == []
+    audit = [r for r in loaded.audit_store.records if r["kind"] == "ssl_errors_exclude"]
+    assert [r["ok"] for r in audit] == [False]
+    assert "domain=not a host" in audit[0]["detail"]
 
 
 @pytest.mark.parametrize(

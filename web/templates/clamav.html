@@ -94,7 +94,7 @@
                   <div class="config-field-card" data-config-field="{{ field.key }}">
                     {% if field.input_type == 'checkbox' %}
                       <label class="check-row config-check-row">
-                        <input class="check" type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
+                        <input type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
                         <span>{{ field.label }}</span>
                       </label>
                     {% elif field.input_type == 'select' %}

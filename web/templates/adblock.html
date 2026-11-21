@@ -72,7 +72,7 @@
       <form method="post" action="{{ url_for('adblock') }}">
         {{ csrf_field() }}
         <label class="check-row">
-          <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
+          <input type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
           Route eligible requests through ad blocking on {{ active_proxy.display_name }}
         </label>
         <div class="actions">
@@ -150,7 +150,7 @@
             {% for st in statuses %}
             <tr>
               <td>
-                <input class="check" type="checkbox" name="enabled_{{ st.key }}" aria-label="Enable {{ st.key }} list" {% if st.enabled %}checked{% endif %} />
+                <input type="checkbox" name="enabled_{{ st.key }}" aria-label="Enable {{ st.key }} list" {% if st.enabled %}checked{% endif %} />
               </td>
               <td>
                 <div><strong>{{ st.key }}</strong></div>

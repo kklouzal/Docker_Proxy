@@ -160,7 +160,7 @@
         {{ csrf_field() }}
         <input type="hidden" name="action" value="toggle_direct" />
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="direct_enabled" value="on" {% if chain_settings is none or chain_settings.direct_enabled %}checked{% endif %} />
+          <input type="checkbox" name="direct_enabled" value="on" {% if chain_settings is none or chain_settings.direct_enabled %}checked{% endif %} />
           Append DIRECT fallback
         </label>
         <div class="actions">

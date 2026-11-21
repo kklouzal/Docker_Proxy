@@ -223,7 +223,7 @@
         {{ proxy_context_field() }}
         <input type="hidden" name="action" value="toggle_private" />
         <label class="check-row">
-          <input class="check" type="checkbox" name="exclude_private_nets" {% if rules.exclude_private_nets %}checked{% endif %} />
+          <input type="checkbox" name="exclude_private_nets" {% if rules.exclude_private_nets %}checked{% endif %} />
           <span>Send common private/local destination ranges DIRECT in generated PAC files</span>
         </label>
         <div class="actions"><button class="btn primary" type="submit">Save</button></div>
@@ -272,7 +272,7 @@
                 {{ proxy_context_field() }}
                 <input type="hidden" name="action" value="install_compatibility_preset" />
                 <input type="hidden" name="preset_id" value="{{ preset.id }}" />
-                {% if preset.shared_infrastructure_total %}<label class="small checkbox-inline"><input class="check" type="checkbox" name="allow_shared_infrastructure" /> Include shared CDN/cloud namespaces</label>{% endif %}
+                {% if preset.shared_infrastructure_total %}<label class="small checkbox-inline"><input type="checkbox" name="allow_shared_infrastructure" /> Include shared CDN/cloud namespaces</label>{% endif %}
                 <button class="btn" type="submit" {% if preset.complete %}disabled{% endif %}>{{ 'Installed' if preset.complete else 'Install missing' }}</button>
               </form>
             </td>
@@ -285,7 +285,7 @@
         {{ proxy_context_field() }}
         <input type="hidden" name="action" value="install_compatibility_preset" />
         <input type="hidden" name="preset_id" value="all" />
-        <label class="small checkbox-inline"><input class="check" type="checkbox" name="allow_shared_infrastructure" /> Include disclosed shared CDN/cloud namespaces</label>
+        <label class="small checkbox-inline"><input type="checkbox" name="allow_shared_infrastructure" /> Include disclosed shared CDN/cloud namespaces</label>
         <button class="btn" type="submit">Install all missing presets</button>
       </form>
     </div>

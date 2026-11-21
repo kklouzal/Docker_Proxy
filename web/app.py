@@ -3230,9 +3230,24 @@ def _redirect_after_policy_refresh(
     store: Any,
     *,
     force: bool = True,
+    audit_kind: str = "",
+    audit_detail: str = "",
     **params,
 ):
     ok, detail = _best_effort_refresh_managed_policy(store, force=force)
+    if audit_kind:
+        _record_audit_event(
+            audit_kind,
+            ok=ok,
+            detail=_audit_safe_detail(
+                f"{audit_detail} detail="
+                + (
+                    (detail or "saved")
+                    if ok
+                    else _policy_refresh_failure_detail(detail)
+                ),
+            ),
+        )
     if ok:
         params.setdefault("policy_queue", "1")
         if detail:
@@ -4359,13 +4374,18 @@ def _present_adblock_build_state(
     }
 
 
+# Every timestamp the Admin UI shows is UTC and says so; spa.js
+# formatUtcTimestamp renders the same format.
+_UI_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
+
+
 @app.template_filter("datetimeformat")
 def _datetimeformat(ts: object) -> str:
     try:
         i = int(ts)  # type: ignore[arg-type]
         if i <= 0:
             return ""
-        return datetime.fromtimestamp(i, UTC).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(i, UTC).strftime(_UI_TIMESTAMP_FORMAT)
     except Exception:
         return ""
 
@@ -4376,17 +4396,87 @@ def _ensure_background_services() -> None:
         _background_coordinator.ensure_started()
 
 
+# One-shot result parameters that redirects append for the page's feedback
+# banners. The proxy switcher drops them so another proxy's page never shows
+# this proxy's result; navigation parameters (tab, pane, window, q, ...) stay.
+_PROXY_SWITCHER_DROPPED_PARAMS = frozenset(
+    {
+        "proxy_id",
+        "apply_all_msg",
+        "apply_all_ok",
+        "apply_msg",
+        "apply_ok",
+        "cert_recovery",
+        "cert_recovery_error",
+        "clear_error",
+        "clear_tables",
+        "compatibility_added",
+        "compatibility_attempted",
+        "default_set",
+        "eicar",
+        "eicar_detail",
+        "err",
+        "err_detail",
+        "err_safe_browsing_key",
+        "err_safe_browsing_lists",
+        "err_source",
+        "error",
+        "icap_detail",
+        "icap_sample",
+        "inspection_saved",
+        "invalid",
+        "logs_cleared",
+        "maintained_tables",
+        "maintenance_busy",
+        "maintenance_error",
+        "maintenance_run",
+        "msg",
+        "ok",
+        "pac_msg",
+        "pac_queue",
+        "pending",
+        "policy_error",
+        "policy_msg",
+        "policy_queue",
+        "private_saved",
+        "refresh_no_lists",
+        "refresh_requested",
+        "remediation_domain",
+        "remediation_error",
+        "remediation_msg",
+        "remediation_ok",
+        "removed",
+        "retention_days",
+        "reverted",
+        "safe_browsing_saved",
+        "saved",
+        "schedule_error",
+        "schedule_saved",
+        "settings_error",
+        "settings_msg",
+        "settings_ok",
+        "settings_saved",
+        "toggle_error",
+        "toggle_msg",
+        "wl_err",
+        "wl_ok",
+        "wl_value",
+    }
+)
+
+
 @app.context_processor
 def inject_now():
     def fmt_ts(ts: int) -> str:
         try:
-            return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d %H:%M:%S")
+            return datetime.fromtimestamp(int(ts), UTC).strftime(_UI_TIMESTAMP_FORMAT)
         except Exception:
             return ""
 
     return {
         "asset_version": _asset_version,
         "fmt_ts": fmt_ts,
+        "proxy_switcher_dropped_params": _PROXY_SWITCHER_DROPPED_PARAMS,
         "observability_default_window": OBSERVABILITY_DEFAULT_WINDOW,
         "version_header_status": _initial_version_header_status(),
     }
@@ -8962,12 +9052,18 @@ def ssl_errors_exclude():
         extracted_domain = _extract_domain(raw_domain)
         ok, detail, domain = validate_domain_rule(extracted_domain)
     if not ok:
+        detail = detail or "Invalid domain."
+        _record_audit_event(
+            "ssl_errors_exclude",
+            ok=False,
+            detail=_audit_safe_detail(f"domain={raw_domain} detail={detail}"),
+        )
         return _redirect_to(
             "observability",
             pane="ssl",
             q="",
             error="1",
-            msg=detail or "Invalid domain.",
+            msg=detail,
         )
     store = get_sslfilter_store()
     try:
@@ -8979,27 +9075,42 @@ def ssl_errors_exclude():
             interval_seconds=30.0,
             message="Failed to add SSL error exclusion",
         )
+        detail = public_error_message(exc, default="SSL exclusion was not saved.")
+        _record_audit_event(
+            "ssl_errors_exclude",
+            ok=False,
+            detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
+        )
         return _redirect_to(
             "observability",
             pane="ssl",
             q=domain,
             error="1",
-            msg=public_error_message(exc, default="SSL exclusion was not saved."),
+            msg=detail,
         )
     if ok:
+        saved_domain = canonical or domain
         return _redirect_after_policy_refresh(
             "observability",
             store,
             force=True,
+            audit_kind="ssl_errors_exclude",
+            audit_detail=f"domain={saved_domain}",
             pane="ssl",
-            q=(canonical or domain),
+            q=saved_domain,
         )
+    detail = detail or "SSL exclusion was not saved."
+    _record_audit_event(
+        "ssl_errors_exclude",
+        ok=False,
+        detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
+    )
     return _redirect_to(
         "observability",
         pane="ssl",
         q=domain,
         error="1",
-        msg=detail or "SSL exclusion was not saved.",
+        msg=detail,
     )
 
 

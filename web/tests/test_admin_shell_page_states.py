@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlsplit
 
+from flask import render_template_string
+
 from .admin_route_test_utils import (
     FakeOperationLedger,
     FakeProxyClient,
@@ -103,9 +105,25 @@ def test_certs_page_hides_download_until_a_ca_exists(monkeypatch, tmp_path) -> N
 def test_proxy_switcher_drops_one_shot_feedback_params(monkeypatch, tmp_path) -> None:
     _loaded, client = _client(monkeypatch, tmp_path)
 
-    body = client.get("/?ok=1&msg=queued&pane=x").get_data(as_text=True)
+    body = client.get(
+        "/?ok=1&msg=queued&pane=x&tab=y&saved=1&invalid=bad&policy_queue=1"
+    ).get_data(as_text=True)
 
     assert 'id="proxy-id"' in body
     assert '<input type="hidden" name="pane" value="x">' in body
-    assert '<input type="hidden" name="msg"' not in body
-    assert '<input type="hidden" name="ok"' not in body
+    assert '<input type="hidden" name="tab" value="y">' in body
+    for name in ("msg", "ok", "saved", "invalid", "policy_queue"):
+        assert f'<input type="hidden" name="{name}"' not in body
+
+
+def test_rendered_timestamps_name_their_utc_zone(monkeypatch, tmp_path) -> None:
+    loaded, _client_unused = _client(monkeypatch, tmp_path)
+    app = loaded.module.app
+
+    with app.test_request_context("/"):
+        html = render_template_string(
+            "{{ ts | datetimeformat }}|{{ fmt_ts(ts) }}|{{ 0 | datetimeformat }}",
+            ts=86_400,
+        )
+
+    assert html == "1970-01-02 00:00:00 UTC|1970-01-02 00:00:00 UTC|"

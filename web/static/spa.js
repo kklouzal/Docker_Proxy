@@ -390,7 +390,7 @@
     if (!Number.isFinite(seconds) || seconds <= 0) return '';
     const date = new Date(seconds * 1000);
     if (Number.isNaN(date.getTime())) return '';
-    return date.toISOString().slice(0, 19).replace('T', ' ');
+    return `${date.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
   };
 
   const renderOperationRow = (operation) => {

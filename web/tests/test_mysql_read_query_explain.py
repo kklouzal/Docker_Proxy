@@ -248,11 +248,15 @@ def test_mysql_observability_correlation_readers_use_index_ranges(
     def read_for_proxy(proxy_id: str) -> tuple[str, int, int]:
         token = set_proxy_id(proxy_id)
         try:
-            policy_candidates = store.list_request_candidates_for_policy_event(
-                around_ts=center,
-                url="https://hot.example.test/objects/",
-                client_ip="10.0.0.10",
-                domain="hot.example.test",
+            [policy_candidates] = store.list_request_candidates_for_policy_events(
+                [
+                    {
+                        "ts": center,
+                        "url": "https://hot.example.test/objects/",
+                        "client_ip": "10.0.0.10",
+                        "domain": "hot.example.test",
+                    },
+                ],
                 window_seconds=600,
                 limit=5,
             )

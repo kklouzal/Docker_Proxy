@@ -208,7 +208,7 @@
       <div>
         <input type="hidden" name="resolve_hostnames" value="0" />
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="resolve_hostnames" value="1" {% if resolve_hostnames %}checked{% endif %} />
+          <input type="checkbox" name="resolve_hostnames" value="1" {% if resolve_hostnames %}checked{% endif %} />
           Show reverse-DNS hostnames for clients
         </label>
         <div class="small muted">Lookups are best-effort and cached; clients without a PTR record show their IP only.</div>
@@ -219,7 +219,7 @@
       <div>
         <input type="hidden" name="privacy" value="0" />
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="privacy" value="1" {% if privacy %}checked{% endif %} />
+          <input type="checkbox" name="privacy" value="1" {% if privacy %}checked{% endif %} />
           Pseudonymize clients and subnets
         </label>
         <div class="small muted">Replaces client IPs and subnets with stable pseudonyms in this view and its exports, so rows still correlate without exposing raw identities.</div>
@@ -822,7 +822,7 @@
         </div>
         <div>
           <input type="hidden" name="privacy" value="0" />
-          <label class="checkbox-inline"><input class="check" type="checkbox" name="privacy" value="1" checked /> Pseudonymize clients in this preset</label>
+          <label class="checkbox-inline"><input type="checkbox" name="privacy" value="1" checked /> Pseudonymize clients in this preset</label>
         </div>
         <div class="actions"><button class="btn primary" type="submit">Save preset</button></div>
       </form>

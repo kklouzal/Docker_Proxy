@@ -49,7 +49,7 @@
           <div class="checkbox-grid">
             {% for scheme, label in [('http', 'HTTP URLs'), ('https', 'HTTPS URLs'), ('ftp', 'FTP URLs'), ('socks', 'SOCKS mapping')] %}
               <label class="checkbox-inline">
-                <input class="check" type="checkbox" name="destination_schemes" value="{{ scheme }}" {% if scheme in form.destination_schemes %}checked{% endif %} />
+                <input type="checkbox" name="destination_schemes" value="{{ scheme }}" {% if scheme in form.destination_schemes %}checked{% endif %} />
                 <span>{{ label }}</span>
               </label>
             {% endfor %}
@@ -58,7 +58,7 @@
         </div>
 
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="use_custom_proxy_map" {% if form.use_custom_proxy_map %}checked{% endif %} />
+          <input type="checkbox" name="use_custom_proxy_map" {% if form.use_custom_proxy_map %}checked{% endif %} />
           <span>Advanced: custom proxy map string</span>
         </label>
         <div>
@@ -80,7 +80,7 @@
           <div class="surface-note small">Entries may be one per line or semicolon-separated. Commas are rejected because .reg binary values already use comma-separated bytes.</div>
         </div>
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="include_local_bypass" {% if form.include_local_bypass %}checked{% endif %} />
+          <input type="checkbox" name="include_local_bypass" {% if form.include_local_bypass %}checked{% endif %} />
           <span>Add &lt;local&gt; bypass entry</span>
         </label>
         <div>
@@ -89,7 +89,7 @@
           <div class="surface-note small">Optional. Must be an absolute http:// or https:// URL with a host; credentials, fragments, whitespace, and command metacharacters are rejected.</div>
         </div>
         <label class="checkbox-inline">
-          <input class="check" type="checkbox" name="autodetect" {% if form.autodetect %}checked{% endif %} />
+          <input type="checkbox" name="autodetect" {% if form.autodetect %}checked{% endif %} />
           <span>Enable AutoDetect/WPAD in advproxy JSON</span>
         </label>
         <div>

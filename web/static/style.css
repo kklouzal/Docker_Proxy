@@ -970,6 +970,10 @@ a.brand:hover{
   gap: 4px;
   min-width: 0;
   overflow-wrap: anywhere;
+  /* One-line copy sits on the badge's center line; longer copy starts at
+     the top as before. */
+  min-height: 28px;
+  align-content: center;
 }
 
 .stat{
@@ -1373,13 +1377,6 @@ select:focus{
   border: 1px solid rgba(255,255,255,.10);
   border-radius: var(--radius-sm);
   background: rgba(255,255,255,.03);
-}
-
-input.check{
-  width: auto;
-  margin: 0;
-  padding: 0;
-  accent-color: var(--accent);
 }
 
 .actions{
@@ -1962,10 +1959,6 @@ pre{
   display:inline-flex;
   align-items:center;
   gap:.5rem;
-}
-
-.checkbox-inline input{
-  margin:0;
 }
 
 .metric-label{

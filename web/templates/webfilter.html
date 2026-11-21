@@ -283,7 +283,7 @@
               {% endif %}
 
               <label class="check-row">
-                <input class="check" type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
+                <input type="checkbox" name="safe_browsing_enabled" value="on" {% if settings.safe_browsing_enabled %}checked{% endif %}>
                 Enable Safe Browsing
               </label>
 
@@ -292,7 +292,7 @@
                 <input id="safe-browsing-api-key" class="input" type="password" name="safe_browsing_api_key" value="" autocomplete="new-password" placeholder="{{ 'Configured - enter a new key to replace' if settings.safe_browsing_api_key else 'AIza...' }}">
                 {% if settings.safe_browsing_api_key %}
                   <label class="checkbox-inline">
-                    <input class="check" type="checkbox" name="safe_browsing_clear_key" value="on">
+                    <input type="checkbox" name="safe_browsing_clear_key" value="on">
                     Clear stored API key
                   </label>
                 {% endif %}
@@ -304,7 +304,7 @@
                 {% set gsb_lists = settings.safe_browsing_lists or ['se-4b','mw-4b','uws-4b'] %}
                 {% for list_id, label in [('se-4b','Social engineering / phishing'), ('mw-4b','Malware'), ('uws-4b','Unwanted software'), ('uwsa-4b','Android unwanted software'), ('pha-4b','Potentially harmful Android apps')] %}
                   <label class="checkbox-inline">
-                    <input class="check" type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
+                    <input type="checkbox" name="safe_browsing_lists" value="{{ list_id }}" {% if list_id in gsb_lists %}checked{% endif %}>
                     {{ label }} <span class="mono">{{ list_id }}</span>
                   </label>
                 {% endfor %}

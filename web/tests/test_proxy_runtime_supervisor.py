@@ -4179,10 +4179,6 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
             )
             return SimpleNamespace(application_id=77)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
@@ -4193,7 +4189,6 @@ def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fail
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "old-sha")
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
     runtime._restart_adblock_service = lambda: next(restarts)
 
@@ -4262,10 +4257,6 @@ def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrit
             )
             return SimpleNamespace(application_id=77)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         root.mkdir(parents=True, exist_ok=True)
@@ -4276,7 +4267,6 @@ def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrit
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
     runtime._restart_adblock_service = lambda: (
         restarts.append(True)
@@ -4324,15 +4314,10 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
             msg = "no-op force sync should not churn existing adblock apply rows"
             raise AssertionError(msg)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     restarts = []
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime._restart_adblock_service = lambda: (
         restarts.append(True)
         or (
@@ -4408,10 +4393,6 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
             )
             return SimpleNamespace(application_id=17)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
@@ -4426,7 +4407,6 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
     runtime._restart_adblock_service = lambda: (
         restarts.append(True)
@@ -4492,10 +4472,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
             )
             return SimpleNamespace(application_id=18)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
@@ -4506,7 +4482,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
     runtime._restart_adblock_service = lambda: (
         restarts.append(True)
@@ -4600,10 +4575,6 @@ def test_sync_adblock_state_changed_artifact_reloads_helper_in_process(
             )
             return SimpleNamespace(application_id=43)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     class Controller:
         def restart_squid(self, **_kwargs) -> NoReturn:
             msg = "changed adblock artifact must not restart Squid"
@@ -4651,7 +4622,6 @@ def test_sync_adblock_state_changed_artifact_reloads_helper_in_process(
         adblock_service_restarter=None,
     )
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
 
     result = runtime.sync_adblock_state(force=True)
@@ -4723,10 +4693,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_corrupt_wit
             )
             return SimpleNamespace(application_id=19)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
         root = Path(directory)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
@@ -4737,7 +4703,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_corrupt_wit
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=None)
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime.adblock_compiled_dir = str(compiled)
     runtime._restart_adblock_service = lambda: (
         restarts.append(True)
@@ -4786,14 +4751,9 @@ def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None
             )
             return SimpleNamespace(application_id=11)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
     runtime._restart_adblock_service = lambda: (True, "restarted")
 
     result = runtime.sync_adblock_state(force=True)
@@ -4842,14 +4802,9 @@ def test_sync_adblock_state_refreshes_stale_apply_for_current_artifact() -> None
             )
             return SimpleNamespace(application_id=12)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
 
     result = runtime.sync_adblock_state(force=True)
 
@@ -4880,14 +4835,9 @@ def test_sync_adblock_state_reports_missing_apply_record_failure() -> None:
             msg = "db unavailable"
             raise RuntimeError(msg)
 
-    class Store:
-        def init_db(self) -> None:
-            pass
-
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
     runtime.adblock_artifacts = Artifacts()
-    runtime.adblock_store = Store()
 
     result = runtime.sync_adblock_state(force=True)
 

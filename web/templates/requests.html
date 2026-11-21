@@ -44,7 +44,7 @@
               <option value="604800">7 days</option>
               <option value="2592000">30 days</option>
             </select>
-            <label class="checkbox-inline"><input class="check" type="checkbox" name="duration_mode" value="indefinite"> No expiry</label>
+            <label class="checkbox-inline"><input type="checkbox" name="duration_mode" value="indefinite"> No expiry</label>
             {% else %}
             <p class="small muted">{{ r.approval_unavailable_reason }}</p>
             {% endif %}

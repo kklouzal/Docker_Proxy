@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 # Windowed request aggregates without a better grouping index must range-scan
 # (proxy_id, ts): production statistics drift made the optimizer full-scan the
 # proxy's whole retention (466k rows, seconds) for a 24 h window (see 3a4ec5f).
-# Queries grouped by domain or client_ip keep the optimizer's choice, which uses
-# the (proxy_id, domain|client_ip, ts) indexes in group order.
+# Queries a better index serves stay unpinned (each says why): unfiltered
+# GROUP BY domain / client_ip (the (proxy_id, domain|client_ip, ...) indexes in
+# group order), bump_mode, and the result_code IN list.
 _REQUESTS_IN_WINDOW = (
     "diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)"
 )

@@ -192,11 +192,15 @@ def test_policy_candidate_query_ignores_blank_client_ip_for_domain_time_match(
         lambda *_args, **_kwargs: {},
     )
 
-    candidates = store.list_request_candidates_for_policy_event(
-        around_ts=1000,
-        url="https://example.test/policy",
-        client_ip="   ",
-        domain="example.test",
+    [candidates] = store.list_request_candidates_for_policy_events(
+        [
+            {
+                "ts": 1000,
+                "url": "https://example.test/policy",
+                "client_ip": "   ",
+                "domain": "example.test",
+            },
+        ],
         window_seconds=30,
         limit=3,
     )
@@ -265,11 +269,15 @@ def test_policy_candidate_queries_order_ties_by_id(monkeypatch) -> None:
         lambda *_args, **_kwargs: {},
     )
 
-    policy_candidates = request_store.list_request_candidates_for_policy_event(
-        around_ts=1000,
-        url="https://example.test/policy",
-        client_ip="192.0.2.10",
-        domain="example.test",
+    [policy_candidates] = request_store.list_request_candidates_for_policy_events(
+        [
+            {
+                "ts": 1000,
+                "url": "https://example.test/policy",
+                "client_ip": "192.0.2.10",
+                "domain": "example.test",
+            },
+        ],
         window_seconds=30,
         limit=3,
     )

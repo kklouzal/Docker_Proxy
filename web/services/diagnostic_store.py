@@ -1539,33 +1539,6 @@ class DiagnosticStore:
             bucket.append(normalized)
         return grouped
 
-    def list_request_candidates_for_policy_event(
-        self,
-        *,
-        around_ts: int,
-        url: str = "",
-        client_ip: str = "",
-        domain: str = "",
-        window_seconds: int = 300,
-        limit: int = 5,
-        service: str = "",
-        icap_limit_per_transaction: int = 5,
-    ) -> list[dict[str, Any]]:
-        return self.list_request_candidates_for_policy_events(
-            [
-                {
-                    "ts": around_ts,
-                    "url": url,
-                    "client_ip": client_ip,
-                    "domain": domain,
-                },
-            ],
-            window_seconds=window_seconds,
-            limit=limit,
-            service=service,
-            icap_limit_per_transaction=icap_limit_per_transaction,
-        )[0]
-
     def list_request_candidates_for_policy_events(
         self,
         events: list[dict[str, Any]],

@@ -3182,7 +3182,6 @@ class ProxyRuntime:
         operations: list[Any] | None = None,
     ) -> dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
-        self.adblock_store.init_db()
         current_sha = self._current_adblock_artifact_sha()
 
         if revision_meta is None:

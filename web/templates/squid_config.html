@@ -270,37 +270,37 @@
                         </div>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_expire" {% if overrides and overrides.override_expire %}checked{% endif %} />
+                            <input type="checkbox" name="override_expire" {% if overrides and overrides.override_expire %}checked{% endif %} />
                             <span>Override origin expiry/max-age minimums (override-expire)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="override_lastmod" {% if overrides and overrides.override_lastmod %}checked{% endif %} />
+                            <input type="checkbox" name="override_lastmod" {% if overrides and overrides.override_lastmod %}checked{% endif %} />
                             <span>Override recently modified heuristic guard (override-lastmod)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="reload_into_ims" {% if overrides and overrides.reload_into_ims %}checked{% endif %} />
+                            <input type="checkbox" name="reload_into_ims" {% if overrides and overrides.reload_into_ims %}checked{% endif %} />
                             <span>Convert reload/no-cache requests into conditional revalidation (reload-into-ims)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="ignore_reload" {% if overrides and overrides.ignore_reload %}checked{% endif %} />
+                            <input type="checkbox" name="ignore_reload" {% if overrides and overrides.ignore_reload %}checked{% endif %} />
                             <span>Ignore client reload/no-cache requests (ignore-reload)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="ignore_no_store" {% if overrides and overrides.ignore_no_store %}checked{% endif %} />
+                            <input type="checkbox" name="ignore_no_store" {% if overrides and overrides.ignore_no_store %}checked{% endif %} />
                             <span>Ignore origin no-store responses (ignore-no-store)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="ignore_private" {% if overrides and overrides.ignore_private %}checked{% endif %} />
+                            <input type="checkbox" name="ignore_private" {% if overrides and overrides.ignore_private %}checked{% endif %} />
                             <span>Ignore origin private responses (ignore-private)</span>
                         </label>
 
                         <label class="check-row">
-                            <input class="check" type="checkbox" name="acknowledge_cache_override_risk" />
+                            <input type="checkbox" name="acknowledge_cache_override_risk" />
                             <span>I explicitly acknowledge that newly enabling any override can serve stale, private, or no-store content. This acknowledgement is enforced by the server and is not required to disable overrides.</span>
                         </label>
 
@@ -390,7 +390,7 @@
                                 >
                                     {% if field.input_type == 'checkbox' %}
                                         <label class="check-row config-check-row">
-                                            <input form="safe-config-form" class="check" type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
+                                            <input form="safe-config-form" type="checkbox" id="{{ field.key }}" name="{{ field.key }}" {% if value %}checked{% endif %} />
                                             <span>{{ field.label }}</span>
                                         </label>
                                     {% elif field.input_type == 'select' %}

@@ -272,8 +272,8 @@
             {% else %}
                 Not refreshed
             {% endif %}
-            {% if saml_status.metadata_usable_until_ts %} Cached metadata usable until {{ saml_status.metadata_usable_until_ts | datetimeformat }} UTC.{% endif %}
-            {% if profile.enabled %} Automatic refresh: {% if profile.next_refresh_ts %}next attempt {{ profile.next_refresh_ts | datetimeformat }} UTC{% else %}due now{% endif %}{% if profile.refresh_failures %} ({{ profile.refresh_failures }} consecutive failure{{ 's' if profile.refresh_failures != 1 }}){% endif %}.{% endif %}
+            {% if saml_status.metadata_usable_until_ts %} Cached metadata usable until {{ saml_status.metadata_usable_until_ts | datetimeformat }}.{% endif %}
+            {% if profile.enabled %} Automatic refresh: {% if profile.next_refresh_ts %}next attempt {{ profile.next_refresh_ts | datetimeformat }}{% else %}due now{% endif %}{% if profile.refresh_failures %} ({{ profile.refresh_failures }} consecutive failure{{ 's' if profile.refresh_failures != 1 }}){% endif %}.{% endif %}
             {% if saml_status.idp_entity_id %} IdP entity: <span class="mono">{{ saml_status.idp_entity_id }}</span>.{% endif %}
         </div>
     </div>
