@@ -457,8 +457,9 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
     assert "WORKDIR /app" in dockerfile
     assert "COPY web/app.py /app/app.py" in dockerfile
     assert "COPY web/wsgi.py /app/wsgi.py" in dockerfile
+    assert "COPY web/gunicorn_worker.py /app/gunicorn_worker.py" in dockerfile
     assert "directory=/app" in supervisord
-    assert "wsgi:app" in launcher.build_gunicorn_argv(
+    argv = launcher.build_gunicorn_argv(
         {},
         launcher.AdminUiHttpsRuntimeConfig(
             enabled=False,
@@ -467,6 +468,9 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
             source="test",
         ),
     )
+    assert "wsgi:app" in argv
+    worker_class = argv[argv.index("--worker-class") + 1]
+    assert worker_class == "gunicorn_worker.AdminThreadWorker"
     _assert_staged_wsgi_import(
         tmp_path,
         entrypoint_module="wsgi",

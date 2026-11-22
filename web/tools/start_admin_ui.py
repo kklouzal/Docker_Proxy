@@ -440,6 +440,8 @@ def build_gunicorn_argv(
         "-b",
         bind,
         "wsgi:app",
+        "--worker-class",
+        "gunicorn_worker.AdminThreadWorker",
         "--workers",
         numeric["WEB_WORKERS"],
         "--threads",
