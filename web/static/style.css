@@ -1057,6 +1057,10 @@ a.brand:hover{
   overflow-wrap: anywhere;
 }
 
+.policy-rule-table .select-col{
+  width: 2.5rem;
+}
+
 .error-token-guidance > .grid{
   padding: 0 16px 16px;
 }

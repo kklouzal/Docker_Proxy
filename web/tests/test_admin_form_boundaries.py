@@ -282,6 +282,62 @@ def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None
     assert _params(removed.location)["removed"] == ["1"]
     assert "10.1.2.0/24" not in store.no_bump_src_nets
 
+    # Several checked rows are removed in one submit; a row's own Remove
+    # button (``only``) removes just that row even when others are checked.
+    for cidr in ("10.9.1.0/24", "10.9.2.0/24", "10.9.3.0/24"):
+        with loaded.module.app.test_request_context(
+            "/sslfilter",
+            method="POST",
+            data={"action": "add_src", "policy": "nobump", "cidr": cidr},
+        ):
+            loaded.module._handle_sslfilter_post(store)
+    with loaded.module.app.test_request_context(
+        "/sslfilter",
+        method="POST",
+        data={
+            "action": "remove_src",
+            "policy": "nobump",
+            "cidr": ["10.9.1.0/24", "10.9.2.0/24"],
+            "only": "10.9.3.0/24",
+        },
+    ):
+        only = loaded.module._handle_sslfilter_post(store)
+    assert _params(only.location)["removed"] == ["1"]
+    assert store.no_bump_src_nets == ["10.9.1.0/24", "10.9.2.0/24"]
+    with loaded.module.app.test_request_context(
+        "/sslfilter",
+        method="POST",
+        data={
+            "action": "remove_src",
+            "policy": "nobump",
+            "cidr": ["10.9.1.0/24", "10.9.2.0/24"],
+            "selected": "1",
+        },
+    ):
+        bulk = loaded.module._handle_sslfilter_post(store)
+    assert _params(bulk.location)["removed"] == ["2"]
+    assert store.no_bump_src_nets == []
+    # One invalid selection rejects the whole batch.
+    for cidr in ("10.9.4.0/24",):
+        with loaded.module.app.test_request_context(
+            "/sslfilter",
+            method="POST",
+            data={"action": "add_src", "policy": "nobump", "cidr": cidr},
+        ):
+            loaded.module._handle_sslfilter_post(store)
+    with loaded.module.app.test_request_context(
+        "/sslfilter",
+        method="POST",
+        data={
+            "action": "remove_src",
+            "policy": "nobump",
+            "cidr": ["10.9.4.0/24", "bad"],
+        },
+    ):
+        rejected = loaded.module._handle_sslfilter_post(store)
+    assert "err" in _params(rejected.location)
+    assert store.no_bump_src_nets == ["10.9.4.0/24"]
+
     # The retired policy-less "add"/"remove" aliases are not accepted.
     for retired in ("add", "remove"):
         with loaded.module.app.test_request_context(

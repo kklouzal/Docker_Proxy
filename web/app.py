@@ -6033,6 +6033,23 @@ def _sslfilter_policy_from_form() -> str:
     return (request.form.get("policy") or "").strip().lower()
 
 
+def _sslfilter_removal_values(field: str) -> list[str]:
+    """Entries to remove: a row's own Remove button, else every checked row.
+
+    Each table is one form, so a row button names its entry in ``only`` and
+    the checked rows arrive as repeated ``field`` values.
+    """
+    only = (request.form.get("only") or "").strip()
+    if only:
+        return [only]
+    values: list[str] = []
+    for raw in request.form.getlist(field):
+        value = (raw or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
 def _sslfilter_redirect(**params: Any):
     return _redirect_after_policy_refresh(
         "sslfilter",
@@ -6127,13 +6144,21 @@ def _handle_sslfilter_post(store: Any):
         return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
 
     if action == "remove_domain":
-        if policy in {"nobump", "nocache"}:
-            ok, err, canonical = validate_domain_rule(request.form.get("domain") or "")
+        if policy not in {"nobump", "nocache"}:
+            return _redirect_to("sslfilter", err="Invalid domain policy.")
+        canonicals: list[str] = []
+        for value in _sslfilter_removal_values("domain"):
+            ok, err, canonical = validate_domain_rule(value)
             if not ok:
                 return _redirect_to("sslfilter", err=err or "Invalid domain.")
+            canonicals.append(canonical)
+        if not canonicals:
+            return _redirect_to(
+                "sslfilter", err="Select at least one domain to remove."
+            )
+        for canonical in canonicals:
             store.remove_domain(policy, canonical)
-            return _sslfilter_redirect(removed="1")
-        return _redirect_to("sslfilter", err="Invalid domain policy.")
+        return _sslfilter_redirect(removed=str(len(canonicals)))
 
     if action in {"add_src", "add_src_bulk"}:
         if policy not in {"nobump", "nocache"}:
@@ -6167,13 +6192,19 @@ def _handle_sslfilter_post(store: Any):
         return _sslfilter_redirect(ok="1", added=added, value=last_value, policy=policy)
 
     if action == "remove_src":
-        if policy in {"nobump", "nocache"}:
-            ok, err, canonical = normalize_src_net_rule(request.form.get("cidr") or "")
+        if policy not in {"nobump", "nocache"}:
+            return _redirect_to("sslfilter", err="Invalid CIDR policy.")
+        canonicals = []
+        for value in _sslfilter_removal_values("cidr"):
+            ok, err, canonical = normalize_src_net_rule(value)
             if not ok:
                 return _redirect_to("sslfilter", err=err or "Invalid CIDR.")
+            canonicals.append(canonical)
+        if not canonicals:
+            return _redirect_to("sslfilter", err="Select at least one CIDR to remove.")
+        for canonical in canonicals:
             store.remove_src_net(policy, canonical)
-            return _sslfilter_redirect(removed="1")
-        return _redirect_to("sslfilter", err="Invalid CIDR policy.")
+        return _sslfilter_redirect(removed=str(len(canonicals)))
 
     if action == "toggle_private":
         store.set_exclude_private_nets(request.form.get("exclude_private_nets") == "on")

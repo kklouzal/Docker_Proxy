@@ -697,7 +697,7 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         (
             "/sslfilter",
             {"action": "remove_domain", "policy": "nobump", "domain": ""},
-            "err=Domain+is+required",
+            "err=Select+at+least+one+domain",
         ),
         (
             "/sslfilter",
@@ -707,7 +707,7 @@ def test_webfilter_save_rejects_internal_source_without_queueing_sync(
         (
             "/sslfilter",
             {"action": "remove_src", "policy": "nobump", "cidr": ""},
-            "err=CIDR+is+required",
+            "err=Select+at+least+one+CIDR",
         ),
     ],
 )

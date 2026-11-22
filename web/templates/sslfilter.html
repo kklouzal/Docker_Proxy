@@ -7,28 +7,36 @@
 {%- endmacro %}
 
 {% macro policy_table(items, policy, kind, value_name) -%}
+  {% set field = 'domain' if kind == 'domain' else 'cidr' %}
   <div class="table-note">Current ({{ items|length }}):</div>
-  <div class="table-wrap"><table class="table policy-rule-table">
-    <thead><tr><th>{{ value_name }}</th><th class="num">Action</th></tr></thead>
-    <tbody>
-      {% for item in items %}
-        <tr>
-          <td class="mono">{{ item }}</td>
-          <td class="num">
-            <form method="post" action="{{ url_for('sslfilter') }}">
-              {{ csrf_field() }}
-              {{ proxy_context_field() }}
-              <input type="hidden" name="action" value="{{ 'remove_domain' if kind == 'domain' else 'remove_src' }}" />
-              <input type="hidden" name="policy" value="{{ policy }}" />
-              <input type="hidden" name="{{ 'domain' if kind == 'domain' else 'cidr' }}" value="{{ item }}" />
-              <button class="btn ghost" type="submit">Remove</button>
-            </form>
-          </td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table></div>
-  {% if items|length == 0 %}<div class="surface-note small">No entries configured.</div>{% endif %}
+  {% if items|length == 0 %}
+  <div class="surface-note small">No entries configured.</div>
+  {% else %}
+  <form method="post" action="{{ url_for('sslfilter') }}" data-bulk-select-form>
+    {{ csrf_field() }}
+    {{ proxy_context_field() }}
+    <input type="hidden" name="action" value="{{ 'remove_domain' if kind == 'domain' else 'remove_src' }}" />
+    <input type="hidden" name="policy" value="{{ policy }}" />
+    <div class="table-wrap"><table class="table policy-rule-table">
+      <thead><tr>
+        <th class="select-col"><input type="checkbox" data-select-all aria-label="Select all {{ value_name|lower }} entries" /></th>
+        <th>{{ value_name }}</th><th class="num">Action</th>
+      </tr></thead>
+      <tbody>
+        {% for item in items %}
+          <tr>
+            <td class="select-col"><input type="checkbox" name="{{ field }}" value="{{ item }}" data-select-item aria-label="Select {{ item }}" /></td>
+            <td class="mono">{{ item }}</td>
+            <td class="num"><button class="btn ghost" type="submit" name="only" value="{{ item }}">Remove</button></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    <div class="actions">
+      <button class="btn danger" type="submit" name="selected" value="1" data-confirm-message="Remove the selected entries?" data-select-required>Remove selected</button>
+    </div>
+  </form>
+  {% endif %}
 {%- endmacro %}
 
 {% macro domain_card(title, badge, policy, items, help_text) -%}
@@ -165,6 +173,9 @@
 {% endif %}
 {% if request.args.get('inspection_saved') %}
   <div class="banner success"><span class="badge ok">Saved</span><div class="banner-copy"><span class="small">SSL inspection setting saved.</span></div></div>
+{% endif %}
+{% if request.args.get('removed') %}
+  <div class="banner success"><span class="badge ok">Removed</span><div class="banner-copy"><span class="small">Removed {{ request.args.get('removed') }} {{ 'entry' if request.args.get('removed') == '1' else 'entries' }}.</span></div></div>
 {% endif %}
 {% if request.args.get('compatibility_attempted') %}
   <div class="banner success"><span class="badge ok">Presets installed</span><div class="banner-copy"><span class="small">Added {{ request.args.get('compatibility_added') or 0 }} shipped no-bump domains.</span></div></div>

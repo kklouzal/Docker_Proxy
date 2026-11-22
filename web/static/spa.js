@@ -287,6 +287,32 @@
     return window.confirm(UNSAVED_CONFIG_MESSAGE);
   };
 
+  // Tables with row checkboxes: the header box selects every row, and the
+  // "selected" action is enabled only while at least one row is checked.
+  const syncBulkSelection = (form, selectAll = null) => {
+    const items = Array.from(form.querySelectorAll('input[type="checkbox"][data-select-item]'));
+    if (selectAll !== null) {
+      items.forEach((item) => { item.checked = selectAll; });
+    }
+    const checked = items.filter((item) => item.checked).length;
+    const all = form.querySelector('input[type="checkbox"][data-select-all]');
+    if (all instanceof HTMLInputElement) {
+      all.checked = items.length > 0 && checked === items.length;
+      all.indeterminate = checked > 0 && checked < items.length;
+    }
+    form.querySelectorAll('[data-select-required]').forEach((button) => {
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = checked === 0;
+        if (checked > 0) {
+          button.textContent = `Remove selected (${checked})`;
+          button.dataset.confirmMessage = `Remove ${checked} selected ${checked === 1 ? 'entry' : 'entries'}?`;
+        } else {
+          button.textContent = 'Remove selected';
+        }
+      }
+    });
+  };
+
   const confirmRequestedAction = (trigger, form = null) => {
     const message = trigger instanceof HTMLElement && trigger.dataset.confirmMessage
       ? trigger.dataset.confirmMessage
@@ -1153,6 +1179,7 @@
     }
 
     bindCopyTargets(container);
+    container.querySelectorAll('form[data-bulk-select-form]').forEach((form) => syncBulkSelection(form));
     enhanceConfigPage(container);
     bindLogViewer(container);
     scheduleAutoRedirect(container);
@@ -1671,6 +1698,10 @@
       const select = event.target instanceof HTMLSelectElement ? event.target : null;
       if (select && select.dataset.autosubmit !== undefined && select.form) {
         select.form.submit();
+      }
+      const box = event.target instanceof HTMLInputElement ? event.target : null;
+      if (box && box.type === 'checkbox' && box.form && box.form.hasAttribute('data-bulk-select-form')) {
+        syncBulkSelection(box.form, box.hasAttribute('data-select-all') ? box.checked : null);
       }
     });
     document.addEventListener('click', onDocumentClick, true);
