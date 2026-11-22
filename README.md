@@ -674,6 +674,7 @@ Common issues:
 - **Proxy actions are unavailable**: verify the selected proxy is registered and has a reachable management URL.
 - **AV health is red**: verify `CLAMD_HOST:CLAMD_PORT`; the proxy container expects a remote `clamd` service.
 - **Modern SaaS or meeting apps break under TLS inspection**: splice the vendor domains, use the compatibility presets, and prefer PAC-based routing for clients that need DIRECT fallbacks.
+- **"Could not verify your browser" / CAPTCHA loops**: bot checks (Cloudflare Turnstile, hCaptcha, Arkose) score the TLS and HTTP fingerprint of the connection they see; on a bumped connection that is Squid's, not the browser's. Install the "Bot checks / CAPTCHA" compatibility preset, and splice the protected site itself if it still challenges. New configs also stop advertising the proxy: `forwarded_for delete`, `via off`, and Cache-Control is forwarded only when the client sent one (Squid otherwise adds `Cache-Control: max-age=<refresh_pattern max>`). Existing configs keep their Privacy settings until changed on the Squid config page.
 - **Transparent HTTP interception loops**: exempt the proxy host/container source traffic before redirecting client TCP/80 to the intercept listener.
 - **HTTPS interception appears bypassed for some apps**: check for HTTP/3/QUIC over UDP/443 and enforce TCP fallback at the router/firewall if those clients must traverse Squid policy.
 

@@ -2382,14 +2382,14 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "forwarded_for",
         "forwarded_for",
         "select",
-        _tunable_or_default_if_none("forwarded_for_value", ""),
+        _tunable_or_default_if_none("forwarded_for_value", "delete"),
         _posted_choice_reader(
             "forwarded_for_value",
             allowed=("", "on", "off", "transparent", "delete", "truncate"),
             default="",
         ),
         choices=FORWARDED_FOR_CHOICES,
-        help_text="Controls how Squid emits X-Forwarded-For upstream.",
+        help_text="Controls the X-Forwarded-For header sent upstream. delete (the default for new configs) keeps LAN client addresses private and avoids marking requests as proxied.",
     ),
     _field(
         "via_on",
@@ -2398,9 +2398,9 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "via on",
         "via",
         "checkbox",
-        _tunable_bool_or_default("via", True),
+        _tunable_bool_or_default("via", False),
         _checkbox_reader("via_on"),
-        help_text="RFC-style Via header in forwarded requests and responses.",
+        help_text="Adds a Via header naming this proxy to forwarded requests and responses. Off by default: sites with bot checks treat it as a proxy signal.",
     ),
     _field(
         "follow_x_forwarded_for_value",

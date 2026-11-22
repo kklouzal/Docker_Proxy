@@ -598,6 +598,33 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
         ),
     ),
     CompatibilityPreset(
+        id="bot-checks",
+        title="Bot checks / CAPTCHA",
+        description="Cloudflare Turnstile, hCaptcha and Arkose (FunCaptcha) score the browser's own TLS and HTTP fingerprint; through an inspecting proxy they see the proxy's fingerprint and fail with 'could not verify your browser' or loop.",
+        domains=(
+            "challenges.cloudflare.com",
+            "hcaptcha.com",
+            "*.hcaptcha.com",
+            "arkoselabs.com",
+            "*.arkoselabs.com",
+            "funcaptcha.com",
+            "*.funcaptcha.com",
+        ),
+    ),
+    CompatibilityPreset(
+        id="nvidia-app",
+        title="NVIDIA app / GeForce",
+        description="NVIDIA app driver lookup, catalog and download hosts (geforce.com, nvidiagrid.net, nvidia.com).",
+        domains=(
+            "nvidia.com",
+            "*.nvidia.com",
+            "geforce.com",
+            "*.geforce.com",
+            "nvidiagrid.net",
+            "*.nvidiagrid.net",
+        ),
+    ),
+    CompatibilityPreset(
         id="identity-mfa",
         title="Identity and MFA services",
         description="Okta explicitly forbids SSL proxy inspection/modification for Okta Verify/FastPass endpoints; Duo Authentication Proxy uses pinned certificates and customer-specific API hostnames, so this preset includes the stable Okta domains and Duo top-level service/download domains only.",

@@ -134,7 +134,8 @@ def test_build_template_options_defaults_match_perf_baseline() -> None:
     assert options["sslproxy_session_ttl_seconds"] == 600
     assert options["sslproxy_session_cache_size_mb"] == 0
     assert options["sslproxy_cert_sign_hash"] == "sha256"
-    assert options["via_on"] is True
+    assert options["via_on"] is False
+    assert options["forwarded_for_value"] == "delete"
     assert options["strip_query_terms_on"] is True
     assert options["request_header_max_size_kb"] == 64
     assert options["reply_header_max_size_kb"] == 64
@@ -186,6 +187,60 @@ def test_generated_template_defaults_to_rock_cache_store() -> None:
     assert "store_avg_object_size 13 KB" in config
     assert "http_upgrade_request_protocols websocket deny all" in config
     assert "http_upgrade_request_protocols OTHER deny all" in config
+
+
+def test_generated_config_hides_proxy_headers_by_default() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options({}, max_workers=4)
+    )
+    lines = config.splitlines()
+
+    assert "forwarded_for delete" in lines
+    assert "via off" in lines
+    assert "via on" not in lines
+    assert "acl client_sent_cache_control req_header Cache-Control ." in lines
+    assert (
+        "request_header_access Cache-Control deny !client_sent_cache_control" in lines
+    )
+    # Regenerating from the rendered config keeps the choices and does not
+    # duplicate the Cache-Control rule.
+    reparsed = controller.generate_config_from_template(
+        build_template_options(controller.get_tunable_options(config), max_workers=4)
+    )
+    assert reparsed.splitlines().count("via off") == 1
+    assert reparsed.splitlines().count("forwarded_for delete") == 1
+    assert (
+        reparsed.splitlines().count(
+            "request_header_access Cache-Control deny !client_sent_cache_control"
+        )
+        == 1
+    )
+
+
+def test_generated_config_keeps_explicit_via_and_forwarded_for_choices() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+    tunables = controller.get_tunable_options(
+        "forwarded_for on\nvia on\nhttp_port 3128\n"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options(tunables, max_workers=4)
+    )
+
+    assert "forwarded_for on" in config.splitlines()
+    assert "via on" in config.splitlines()
 
 
 def test_generated_config_preserves_valid_icap_username_header_token() -> None:

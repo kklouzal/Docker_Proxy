@@ -217,7 +217,10 @@ include /etc/squid/conf.d/20-icap.conf
 
 # Privacy and header handling
 # Forwarding metadata, client anonymity, and parser tolerance.
-via on
+forwarded_for delete
+via off
+acl client_sent_cache_control req_header Cache-Control .
+request_header_access Cache-Control deny !client_sent_cache_control
 strip_query_terms on
 request_header_max_size 64 KB
 reply_header_max_size 64 KB

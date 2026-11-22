@@ -30,6 +30,15 @@ from services.squid_host_overrides import (
 logger = logging.getLogger(__name__)
 
 
+# Squid adds "Cache-Control: max-age=<refresh_pattern max>" to forwarded
+# requests that carried none. Browsers never send that, so bot checks read it
+# as a proxy tell; forward Cache-Control only when the client sent one.
+CLIENT_CACHE_CONTROL_ONLY_LINES = (
+    "acl client_sent_cache_control req_header Cache-Control .",
+    "request_header_access Cache-Control deny !client_sent_cache_control",
+)
+
+
 class SquidController(_CoreSquidController):
     # -------------------------------------------------------------------------
     # Input validation helpers for config injection prevention
@@ -752,7 +761,12 @@ class SquidController(_CoreSquidController):
         )
         icap_retry_limit = int_value("icap_retry_limit", 0, minimum=0)
 
-        forwarded_for_value_raw = str(options.get("forwarded_for_value") or "").strip()
+        # New configs strip X-Forwarded-For and Via: they leak LAN client
+        # addresses and mark every request as proxied to bot checks.
+        forwarded_for_option = options.get("forwarded_for_value")
+        forwarded_for_value_raw = str(
+            "delete" if forwarded_for_option is None else forwarded_for_option
+        ).strip()
         if forwarded_for_value_raw and forwarded_for_value_raw not in {
             "on",
             "off",
@@ -761,7 +775,7 @@ class SquidController(_CoreSquidController):
             "truncate",
         }:
             forwarded_for_value_raw = ""
-        via_on = bool_value("via_on", True)
+        via_on = bool_value("via_on", False)
         follow_x_forwarded_for_value = self._validate_single_line_value(
             str(options.get("follow_x_forwarded_for_value") or ""),
             "follow_x_forwarded_for",
@@ -1113,6 +1127,7 @@ class SquidController(_CoreSquidController):
         if forwarded_for_value_raw:
             lines.append(f"forwarded_for {forwarded_for_value_raw}")
         lines.append(f"via {'on' if via_on else 'off'}")
+        lines.extend(CLIENT_CACHE_CONTROL_ONLY_LINES)
         if follow_x_forwarded_for_value:
             lines.append(f"follow_x_forwarded_for {follow_x_forwarded_for_value}")
         if client_netmask_value:

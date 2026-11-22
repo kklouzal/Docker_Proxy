@@ -1794,6 +1794,10 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert "wss-primary.slack.com" in presets["developer-collaboration"].domains
     assert "*.atl-paas.net" in presets["developer-collaboration"].domains
     assert "*.okta.com" in presets["identity-mfa"].domains
+    assert "challenges.cloudflare.com" in presets["bot-checks"].domains
+    assert "*.hcaptcha.com" in presets["bot-checks"].domains
+    assert "*.geforce.com" in presets["nvidia-app"].domains
+    assert "*.nvidiagrid.net" in presets["nvidia-app"].domains
 
     store = get_sslfilter_store()
     added, attempted, error = store.install_compatibility_preset(
